@@ -426,7 +426,8 @@
  * Promise<WorkflowPullRequest>} updateStatus Function to update the pull request’s status label and
  * draft state.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} publish Function to merge the
- * pull request and delete the workflow branch.
+ * pull request and delete the workflow branch. The service may leave the merge to the Git service
+ * when a required check is still running, in which case it resolves once the merge is scheduled.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} discard Function to close the
  * pull request and delete the workflow branch.
  */
@@ -1223,6 +1224,8 @@
  * @property {FilteringConditions} [filter] Filtering conditions. Deprecated in favour of `filters`.
  * @property {FilteringConditions[]} [filters] One or more filtering conditions.
  * @property {GroupingConditions | null} [group] Grouping conditions.
+ * @property {Record<string, string[]>} [collapsedGroups] Names of the groups whose entries are
+ * hidden, under each grouping condition’s key. See `getGroupingKey()`.
  * @property {boolean} [showMedia] Whether to show the Media pane.
  */
 
@@ -1264,7 +1267,9 @@
  * @property {SortingConditions} [sort] Sorting conditions.
  * @property {FilteringConditions} [filter] Filtering conditions.
  * @property {FilteringConditions[]} [filters] Unused.
- * @property {GroupingConditions} [group] Grouping conditions.
+ * @property {GroupingConditions | null} [group] Grouping conditions.
+ * @property {Record<string, string[]>} [collapsedGroups] Names of the groups whose assets are
+ * hidden, under each grouping condition’s key. See `getGroupingKey()`.
  * @property {boolean} [showInfo] Whether to show the Info pane.
  */
 

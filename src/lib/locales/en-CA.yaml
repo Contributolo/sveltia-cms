@@ -11,6 +11,8 @@
 create: New
 select: Select
 select_all: Select All
+# Accessible name of the checkbox that selects a single entry or asset in a list
+select_item: Select {$name}
 upload: Upload
 copy: Copy
 download: Download
@@ -107,10 +109,10 @@ clipboard_error: Couldn’t copy to clipboard.
 # Welcome and branding
 # Screen reader announcement when the sign-in page loads
 # {$name} is the app title shown on the sign-in screen, Sveltia CMS by default
-welcome_message: 'Welcome to {$name}'
+welcome_message: Welcome to {$name}
 # Footer text with CMS branding
 # {$name} is the CMS brand name shown in the footer, Sveltia CMS by default
-powered_by: 'Powered by {$name}'
+powered_by: Powered by {$name}
 
 # Shown during initial configuration and data loading
 loading_cms_config: Loading CMS Configuration…
@@ -120,7 +122,7 @@ loading_site_data_error: There was an error while loading site data.
 # OAuth and token authentication
 # Primary sign-in button label for OAuth providers (GitHub, GitLab, etc.)
 # {$service} is the sign-in provider label, such as GitHub or GitLab
-sign_in_with_x: 'Sign In with {$service}'
+sign_in_with_x: Sign In with {$service}
 
 # Access token dialog: alternative authentication method
 sign_in_using_access_token: Sign In Using Access Token
@@ -164,7 +166,7 @@ sign_in_error:
 # Backend and repository validation errors
 # Shown when the configured backend or repository is invalid or inaccessible
 # {$name} is the backend display name like Forgejo and {$version} is the minimum supported version
-backend_unsupported_version: 'The {$name} backend requires {$name} {$version} or later.'
+backend_unsupported_version: The {$name} backend requires {$name} {$version} or later.
 # {$repo} is the repository identifier, typically in owner/repo format
 repository_no_access: You don’t have access to the “{$repo}” repository.
 repository_not_found: The “{$repo}” repository doesn’t exist.
@@ -207,7 +209,7 @@ sign_in_with_mobile_instruction: Scan the QR code below with your phone or table
 # Account menu: user status and repository mode indicators
 # Shown at the top of the account dropdown menu
 # {$name} is the signed-in user’s login name
-signed_in_as_x: 'Signed In as {$name}'
+signed_in_as_x: Signed In as {$name}
 working_with_local_repo: Working with Local Repository
 working_with_test_repo: Working with Test Repository
 
@@ -289,7 +291,7 @@ release_notes: Release Notes
 announcements: Announcements
 # Version badge aria-label in the release notes menu item
 # {$version} is the current app version string
-version_x: 'Version {$version}'
+version_x: Version {$version}
 # Additional help menu items
 report_issue: Report Issue
 share_feedback: Share Feedback
@@ -342,9 +344,9 @@ asset_list: Asset List
 # Collection and folder page titles
 # Used as aria-labels on page containers
 # {$collection} is the current collection label
-x_collection: “{$collection}” Collection
+x_collection: '{$collection} Collection'
 # {$folder} is the current asset folder label
-x_asset_folder: “{$folder}” Asset Folder
+x_asset_folder: '{$folder} Asset Folder'
 
 # Navigation announcements (ARIA live regions)
 # Announce page changes for screen reader users
@@ -439,6 +441,8 @@ grouping_options: Grouping Options
 # Asset type filter and group labels
 type: Type
 all: All
+# Group option for the linked files, which can be hosted anywhere: the host name of the file’s URL
+domain: Domain
 # Asset type labels
 image: Image
 video: Video
@@ -457,6 +461,9 @@ all_assets: All Assets
 global_assets: Global Assets
 # Virtual location listing the files that File/Image fields link to by URL, wherever they are hosted
 linked_files: Linked Files
+# Badge and message shown on a linked file that couldn’t be loaded, e.g. because it has been deleted
+file_unavailable: Unavailable
+file_unavailable_description: This file couldn’t be loaded. It may have been moved or deleted.
 
 # ==============================================================================
 # Entry and Collection Actions
@@ -557,7 +564,7 @@ copy_options: Copy Options
 # Edit menu items with specific asset names
 edit_asset: Edit Asset
 # {$name} is the selected asset name
-edit_x: 'Edit {$name}'
+edit_x: Edit {$name}
 
 # Asset text editor: switch for line wrapping
 wrap_long_lines: Wrap Long Lines
@@ -565,7 +572,7 @@ wrap_long_lines: Wrap Long Lines
 # Rename asset: dialog and validation
 rename_asset: Rename Asset
 # {$name} is the current asset name
-rename_x: 'Rename {$name}'
+rename_x: Rename {$name}
 # Dialog body text indicating how many entries reference this asset
 # {$count} is the number of entries that currently reference the asset
 enter_new_name_for_asset: |
@@ -591,7 +598,7 @@ file_extension_change_warning: The file may not be displayed or handled correctl
 # Replace asset: menu item and dialog title
 replace_asset: Replace Asset
 # {$name} is the asset being replaced
-replace_x: 'Replace {$name}'
+replace_x: Replace {$name}
 
 # File selection prompts: drop zones and file pickers
 # Browse prompt shown when drag-and-drop is unavailable on desktop and pointer devices
@@ -1015,9 +1022,9 @@ unsupported_field_type_x: 'Unsupported field type: {$name}'
 
 # Locale management actions
 # {$locale} is the localized language name being enabled or disabled, e.g., English
-enable_x_locale: 'Enable {$locale}'
-reenable_x_locale: 'Reenable {$locale}'
-disable_x_locale: 'Disable {$locale}'
+enable_x_locale: Enable {$locale}
+reenable_x_locale: Reenable {$locale}
+disable_x_locale: Disable {$locale}
 
 # Locale status messages
 # {$locale} is the localized language name affected by the status change, e.g., English
@@ -1027,7 +1034,7 @@ locale_x_now_disabled: The {$locale} content is now disabled. It will be deleted
 # Repository and site links
 view_in_repository: View in Repository
 # {$service} is the external service label, such as GitHub or GitLab
-view_on_x: 'View on {$service}'
+view_on_x: View on {$service}
 view_on_live_site: View on Live Site
 
 # Deploy preview links. The URL comes from the CI/CD provider connected to the Git backend, so the
@@ -1058,7 +1065,7 @@ deploy_preview:
 # Content copying from other locales
 copy_from: Copy from…
 # {$locale} is the localized language name of the source content being copied, e.g., English
-copy_from_x: 'Copy from {$locale}'
+copy_from_x: Copy from {$locale}
 
 # Translation features
 translation_options: Translation Options
@@ -1071,7 +1078,7 @@ translate_fields: |
     *   {{ Translate Fields }}
 translate_from: Translate from…
 # {$locale} is the localized language name of the source content being translated, e.g., English
-translate_from_x: 'Translate from {$locale}'
+translate_from_x: Translate from {$locale}
 
 # Revert changes
 revert_changes: Revert Changes
@@ -1496,6 +1503,9 @@ cloud_storage:
   aws_s3:
     auth_key_label: Secret Access Key
 
+  bunny_storage:
+    auth_key_label: Storage Zone Password
+
   cloudflare_r2:
     auth_key_label: Secret Access Key
 
@@ -1565,6 +1575,16 @@ config:
     missing_media_folder: The media folder is not defined.
     public_folder_relative_path: The configured public folder is invalid. It must be an absolute path starting with “/”.
     public_folder_absolute_url: An absolute URL for the public folder option is not supported in Sveltia CMS.
+    # {$replacement} is the configured replacement string; Don’t localize `sanitize_replacement`
+    invalid_sanitize_replacement: The `sanitize_replacement` option is set to `{$replacement}`, but it contains a character that can’t be used in a slug, so it can’t stand in for one.
+    # {$option} is the option name (`site_url` or `display_url`) and {$url} is the configured value
+    invalid_url_option: The `{$option}` option is set to `{$url}`, but it must be an absolute URL starting with `https://` or `http://`.
+    # Don’t localize `i18n` and `locales`
+    i18n_no_locales: The `i18n.locales` option must list at least one locale.
+    # {$locale} is the locale code from the configuration; Don’t localize `default_locale` and `locales`
+    i18n_invalid_default_locale: The `default_locale` option is set to `{$locale}`, but it’s not one of the `locales`.
+    # {$locale} is the locale code from the configuration; Don’t localize `initial_locales` and `locales`
+    i18n_invalid_initial_locale: The `initial_locales` option contains `{$locale}`, but it’s not one of the `locales`.
     # {$key} is the unsupported key found in the option map; Don’t localize `transformations`, `raster_image` and `svg`
     invalid_transformation_key: The `transformations` option contains an unsupported `{$key}` key. It must be `raster_image`, `svg` or a supported raster image format.
     # {$key} is the transformation key; Don’t localize `quality`
@@ -1585,6 +1605,16 @@ config:
     file_format_mismatch: The `{$extension}` extension doesn’t match the `{$format}` format.
     # {$slug} is the invalid slug template from the configuration; Don’t localize `path` and `slug`
     invalid_slug_slash: The slug template `{$slug}` is invalid as it cannot contain slashes. To organize entries in subfolders, use the `path` option instead of `slug`.
+    # {$name} is the field name from the configuration; Don’t localize `identifier_field`
+    invalid_identifier_field: The `identifier_field` option refers to `{$name}`, but no such field is defined in the collection.
+    # {$name} is the field name from the configuration; Don’t localize `filter`
+    invalid_filter_field: The `filter` option refers to `{$name}`, but no such field is defined in the collection.
+    # Don’t localize `filter`, `value` and `pattern`
+    invalid_filter_no_condition: The `filter` option must have either the `value` or `pattern` option to match entries against.
+    # {$option} is an option name such as `slug` or `summary` and {$name} is the field name or template tag from the configuration
+    option_field_not_found: The `{$option}` option refers to `{$name}`, but no such field is defined.
+    # {$option} is an option name such as `pattern` or `filter` and {$pattern} is the configured pattern
+    invalid_regex: The `{$option}` option contains an invalid regular expression `{$pattern}`, which is ignored.
     # {$name} is the group name from the configuration; Don’t localize `reorder`, `group` and `view_groups`
     invalid_reorder_group: The `reorder` option refers to a view group named `{$name}`, but no such group is defined in the `view_groups` option.
     # {$name} is the field name from the configuration; Don’t localize `sortable_fields`
@@ -1642,28 +1672,45 @@ config:
     invalid_list_variable_type: The List field’s variable type is invalid. The `widget` option is set to `{$widget}` but it must be `object`.
     # Don’t localize `fields`, and `types`
     invalid_object_field: The Object field cannot have the `fields` and `types` options together.
+    # {$min} and {$max} are option names such as `min` and `max` or `minlength` and `maxlength`
+    invalid_range_options: The `{$min}` option must not be greater than the `{$max}` option.
+    # {$step} is the configured value; Don’t localize `step`
+    invalid_step: The `step` option is set to `{$step}`, but it must be greater than zero.
+    # Don’t localize `options`
+    select_field_no_options: The Select field must have at least one item in the `options` option.
+    # {$value} is the option value from the configuration; Don’t localize `options`
+    select_field_duplicate_option: The Select field’s `options` must be unique, but `{$value}` is used more than once.
+    # {$value} is the default value from the configuration; Don’t localize `default` and `options`
+    select_field_invalid_default: The Select field’s `default` option is set to `{$value}`, but it’s not one of the `options`.
+    # Don’t localize `fields` and `types`
+    list_field_no_subfields: The List field’s `fields` or `types` option must have at least one item. Omit the option for a list of plain values.
+    # Don’t localize `fields` and `types`
+    object_field_no_subfields: The Object field’s `fields` or `types` option must have at least one item.
     # {$collection}, {$file}, and {$field} are referenced names that could not be resolved
     relation_field_invalid_collection: The referenced `{$collection}` collection is invalid or not defined.
     relation_field_invalid_collection_file: The referenced `{$file}` file is invalid or not defined.
     # Don’t localize `file`
     relation_field_missing_file_name: The `file` option must be defined for a relation to a file collection.
     relation_field_invalid_value_field: The referenced value field `{$field}` is invalid or not defined.
+    relation_field_invalid_display_field: The referenced display field `{$field}` is invalid or not defined.
+    relation_field_invalid_search_field: The referenced search field `{$field}` is invalid or not defined.
+    relation_field_invalid_filter_field: The referenced filter field `{$field}` is invalid or not defined.
     unexpected: Unexpected error
 
     # Schema validation errors, reported when the configuration doesn’t match the published JSON
     # schema. In all of these, {$option} is a configuration option path such as `backend.name` or
     # `view_filters[0].pattern`, relative to the collection, file or field named before it.
     # {$type} is a value type name from `schema_value_type` below
-    schema_invalid_type: 'The `{$option}` option must be {$type}.'
+    schema_invalid_type: The `{$option}` option must be {$type}.
     # {$values} is a list of the values the option accepts
     schema_invalid_enum: 'The `{$option}` option must be one of these values: {$values}.'
     # {$value} is the only value the option accepts
-    schema_invalid_const: 'The `{$option}` option must be `{$value}`.'
-    schema_invalid_empty_value: 'The `{$option}` option must be an empty string.'
+    schema_invalid_const: The `{$option}` option must be `{$value}`.
+    schema_invalid_empty_value: The `{$option}` option must be an empty string.
     # {$count} is the exact number of items the option must have
-    schema_invalid_item_count: 'The `{$option}` option must be an array of {$count} items.'
-    schema_invalid_value: 'The `{$option}` option has an invalid value.'
-    schema_missing_option: 'The `{$option}` option is required.'
+    schema_invalid_item_count: The `{$option}` option must be an array of {$count} items.
+    schema_invalid_value: The `{$option}` option has an invalid value.
+    schema_missing_option: The `{$option}` option is required.
     # {$options} is a list of options, one of which must be defined
     schema_missing_one_of: 'One of these options is required: {$options}.'
     # Value type names used in `schema_invalid_type`, each completing the sentence “The option must
@@ -1692,8 +1739,12 @@ config:
     preview_path_date_field_not_found: The `preview_path_date_field` option refers to a field named `{$name}`, but no DateTime field with that name is defined, so the preview link won’t be shown.
     # {$name} is the template tag from the configuration; Don’t localize `preview_path`
     preview_path_field_not_found: The `preview_path` option refers to `{$name}`, but no such field is defined in the collection, so the preview link won’t be shown.
+    # {$name} is the default identifier field name; Don’t localize `identifier_field` and `slug`
+    missing_identifier_field: The collection has no `{$name}` field to name new entries with, so each new entry gets a random slug. Add a `{$name}` field, or set the `identifier_field` or `slug` option.
+    # Don’t localize `i18n`
+    i18n_not_configured: The `i18n` option is enabled, but i18n is not configured at the top level of the configuration or in the collection, so the option has no effect.
     # {$option} is an option path from the configuration, such as `filter.Regulation`
-    schema_unknown_option: 'The `{$option}` option is not defined in the Sveltia CMS configuration schema. It will be ignored. Check for a typo or a syntax mistake.'
+    schema_unknown_option: The `{$option}` option is not defined in the Sveltia CMS configuration schema. It will be ignored. Check for a typo or a syntax mistake.
 
   # Compatibility link appended to unsupported feature messages
   compatibility_link: 'See the compatibility notes for details: {$link}'
