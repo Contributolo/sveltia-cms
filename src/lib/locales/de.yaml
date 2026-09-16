@@ -11,6 +11,8 @@
 create: Neu
 select: Auswählen
 select_all: Alle auswählen
+# Accessible name of the checkbox that selects a single entry or asset in a list
+select_item: '{$name} auswählen'
 upload: Hochladen
 copy: Kopieren
 download: Herunterladen
@@ -439,6 +441,8 @@ grouping_options: Gruppierungsoptionen
 # Asset type filter and group labels
 type: Typ
 all: Alle
+# Group option for the linked files, which can be hosted anywhere: the host name of the file’s URL
+domain: Domain
 # Asset type labels
 image: Bild
 video: Video
@@ -457,6 +461,9 @@ all_assets: Alle Medien
 global_assets: Globale Medien
 # Virtual location listing the files that File/Image fields link to by URL, wherever they are hosted
 linked_files: Verknüpfte Dateien
+# Badge and message shown on a linked file that couldn’t be loaded, e.g. because it has been deleted
+file_unavailable: Nicht verfügbar
+file_unavailable_description: Diese Datei konnte nicht geladen werden. Sie wurde möglicherweise verschoben oder gelöscht.
 
 # ==============================================================================
 # Entry and Collection Actions
@@ -592,6 +599,11 @@ file_extension_change_warning: Die Datei wird möglicherweise nicht korrekt ange
 replace_asset: Medium ersetzen
 # {$name} is the asset being replaced
 replace_x: '{$name} ersetzen'
+# File/Image field: labels of the Replace and Remove buttons
+replace_file: Datei ersetzen
+replace_image: Bild ersetzen
+remove_file: Datei entfernen
+remove_image: Bild entfernen
 
 # File selection prompts: drop zones and file pickers
 # Browse prompt shown when drag-and-drop is unavailable on desktop and pointer devices
@@ -1317,6 +1329,9 @@ list_item_value: Wert des Elements
 # Example: “Add Image”, “Add Author”
 # {$name} is the label of the item type that can be added
 add_x: '{$name} hinzufügen'
+# List item context menu
+# aria-label for the button opening the menu, and for the menu itself
+list_item_options: Optionen für das Listenelement
 
 # List item context menu
 add_item_above: Element darüber einfügen
@@ -1495,6 +1510,8 @@ cloud_storage:
 
   aws_s3:
     auth_key_label: Geheimer Zugriffsschlüssel
+  bunny_storage:
+    auth_key_label: Passwort der Storage Zone
 
   cloudflare_r2:
     auth_key_label: Geheimer Zugriffsschlüssel
@@ -1565,6 +1582,16 @@ config:
     missing_media_folder: Der Medienordner ist nicht definiert.
     public_folder_relative_path: Der konfigurierte öffentliche Ordner ist ungültig. Er muss ein absoluter Pfad sein, der mit „/“ beginnt.
     public_folder_absolute_url: Eine absolute URL für die Option des öffentlichen Ordners wird in Sveltia CMS nicht unterstützt.
+    # {$replacement} is the configured replacement string; Don’t localize `sanitize_replacement`
+    invalid_sanitize_replacement: Die Option `sanitize_replacement` ist auf `{$replacement}` gesetzt, enthält aber ein Zeichen, das in einem Slug nicht vorkommen darf, und kann deshalb keines ersetzen.
+    # {$option} is the option name (`site_url` or `display_url`) and {$url} is the configured value
+    invalid_url_option: Die Option `{$option}` ist auf `{$url}` gesetzt, muss aber eine absolute URL sein, die mit `https://` oder `http://` beginnt.
+    # Don’t localize `i18n` and `locales`
+    i18n_no_locales: Die Option `i18n.locales` muss mindestens eine Sprache enthalten.
+    # {$locale} is the locale code from the configuration; Don’t localize `default_locale` and `locales`
+    i18n_invalid_default_locale: Die Option `default_locale` ist auf `{$locale}` gesetzt, in `locales` ist diese Sprache aber nicht enthalten.
+    # {$locale} is the locale code from the configuration; Don’t localize `initial_locales` and `locales`
+    i18n_invalid_initial_locale: Die Option `initial_locales` enthält `{$locale}`, in `locales` ist diese Sprache aber nicht enthalten.
     # {$key} is the unsupported key found in the option map; Don’t localize `transformations`, `raster_image` and `svg`
     invalid_transformation_key: Die Option `transformations` enthält den nicht unterstützten Schlüssel `{$key}`. Erlaubt sind `raster_image`, `svg` oder ein unterstütztes Rasterbildformat.
     # {$key} is the transformation key; Don’t localize `quality`
@@ -1585,6 +1612,16 @@ config:
     file_format_mismatch: Die Endung `{$extension}` passt nicht zum Format `{$format}`.
     # {$slug} is the invalid slug template from the configuration; Don’t localize `path` and `slug`
     invalid_slug_slash: Die Slug-Vorlage `{$slug}` ist ungültig, da sie keine Schrägstriche enthalten darf. Um Einträge in Unterordnern zu organisieren, verwenden Sie die Option `path` statt `slug`.
+    # {$name} is the field name from the configuration; Don’t localize `identifier_field`
+    invalid_identifier_field: Die Option `identifier_field` verweist auf ein Feld namens `{$name}`, in der Sammlung ist aber kein solches Feld definiert.
+    # {$name} is the field name from the configuration; Don’t localize `filter`
+    invalid_filter_field: Die Option `filter` verweist auf ein Feld namens `{$name}`, in der Sammlung ist aber kein solches Feld definiert.
+    # Don’t localize `filter`, `value` and `pattern`
+    invalid_filter_no_condition: Die Option `filter` braucht entweder die Option `value` oder die Option `pattern`, um Einträge abzugleichen.
+    # {$option} is an option name such as `slug` or `summary` and {$name} is the field name or template tag from the configuration
+    option_field_not_found: Die Option `{$option}` verweist auf `{$name}`, es ist aber kein solches Feld definiert.
+    # {$option} is an option name such as `pattern` or `filter` and {$pattern} is the configured pattern
+    invalid_regex: Die Option `{$option}` enthält den ungültigen regulären Ausdruck `{$pattern}`, der ignoriert wird.
     # {$name} is the group name from the configuration; Don’t localize `reorder`, `group` and `view_groups`
     invalid_reorder_group: Die Option `reorder` verweist auf eine Ansichts-Gruppe namens `{$name}`, in `view_groups` ist aber keine solche Gruppe definiert.
     # {$name} is the field name from the configuration; Don’t localize `sortable_fields`
@@ -1642,6 +1679,20 @@ config:
     invalid_list_variable_type: Der variable Typ des Listen-Feldes ist ungültig. Die Option `widget` ist auf `{$widget}` gesetzt, muss aber `object` sein.
     # Don’t localize `fields`, and `types`
     invalid_object_field: Das Objekt-Feld darf die Optionen `fields` und `types` nicht gemeinsam enthalten.
+    # {$min} and {$max} are option names such as `min` and `max` or `minlength` and `maxlength`
+    invalid_range_options: Die Option `{$min}` darf nicht größer sein als die Option `{$max}`.
+    # {$step} is the configured value; Don’t localize `step`
+    invalid_step: Die Option `step` ist auf `{$step}` gesetzt, muss aber größer als null sein.
+    # Don’t localize `options`
+    select_field_no_options: Das Auswahl-Feld muss in der Option `options` mindestens ein Element enthalten.
+    # {$value} is the option value from the configuration; Don’t localize `options`
+    select_field_duplicate_option: Die `options` des Auswahl-Feldes müssen eindeutig sein, `{$value}` kommt aber mehr als einmal vor.
+    # {$value} is the default value from the configuration; Don’t localize `default` and `options`
+    select_field_invalid_default: Die Option `default` des Auswahl-Feldes ist auf `{$value}` gesetzt, in `options` ist dieser Wert aber nicht enthalten.
+    # Don’t localize `fields` and `types`
+    list_field_no_subfields: Die Option `fields` oder `types` des Listen-Feldes muss mindestens ein Element enthalten. Für eine Liste einfacher Werte die Option weglassen.
+    # Don’t localize `fields` and `types`
+    object_field_no_subfields: Die Option `fields` oder `types` des Objekt-Feldes muss mindestens ein Element enthalten.
     # Don’t localize `fields`, and `types`
     # {$collection}, {$file}, and {$field} are referenced names that could not be resolved
     relation_field_invalid_collection: Die referenzierte Sammlung `{$collection}` ist ungültig oder nicht definiert.
@@ -1649,6 +1700,9 @@ config:
     # Don’t localize `file`
     relation_field_missing_file_name: Für eine Relation zu einer Dateisammlung muss die Option `file` definiert sein.
     relation_field_invalid_value_field: Das referenzierte Wertfeld `{$field}` ist ungültig oder nicht definiert.
+    relation_field_invalid_display_field: Das referenzierte Anzeigefeld `{$field}` ist ungültig oder nicht definiert.
+    relation_field_invalid_search_field: Das referenzierte Suchfeld `{$field}` ist ungültig oder nicht definiert.
+    relation_field_invalid_filter_field: Das referenzierte Filterfeld `{$field}` ist ungültig oder nicht definiert.
     unexpected: Unerwarteter Fehler
 
     # Schema validation errors, reported when the configuration doesn’t match the published JSON
@@ -1693,6 +1747,10 @@ config:
     preview_path_date_field_not_found: Die Option `preview_path_date_field` verweist auf ein Feld namens `{$name}`, es ist aber kein DateTime-Feld mit diesem Namen definiert. Der Vorschau-Link wird daher nicht angezeigt.
     # {$name} is the template tag from the configuration; Don’t localize `preview_path`
     preview_path_field_not_found: Die Option `preview_path` verweist auf `{$name}`, in der Sammlung ist aber kein solches Feld definiert. Der Vorschau-Link wird daher nicht angezeigt.
+    # {$name} is the default identifier field name; Don’t localize `identifier_field` and `slug`
+    missing_identifier_field: Die Sammlung hat kein Feld `{$name}`, nach dem neue Einträge benannt werden könnten, deshalb bekommt jeder neue Eintrag einen zufälligen Slug. Ein Feld `{$name}` ergänzen oder die Option `identifier_field` oder `slug` setzen.
+    # Don’t localize `i18n`
+    i18n_not_configured: Die Option `i18n` ist aktiviert, i18n ist aber weder auf der obersten Ebene der Konfiguration noch in der Sammlung konfiguriert, deshalb hat die Option keine Wirkung.
     # {$option} is an option path from the configuration, such as `filter.Regulation`
     schema_unknown_option: Die Option `{$option}` ist im Konfigurationsschema von Sveltia CMS nicht definiert. Sie wird ignoriert. Prüfen Sie auf einen Tippfehler oder einen Syntaxfehler.
 
