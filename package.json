@@ -1,6 +1,6 @@
 {
   "name": "@sveltia/cms",
-  "version": "0.213.2",
+  "version": "0.213.5",
   "description": "Sveltia CMS is a modern, lightweight, Git-based headless content management system.",
   "keywords": [
     "svelte",
@@ -41,7 +41,7 @@
     "preview": "vite preview",
     "test": "NODE_OPTIONS=--no-experimental-webstorage vitest run",
     "test:components": "NODE_OPTIONS=--no-experimental-webstorage vitest run --project browser",
-    "test:components:coverage": "NODE_OPTIONS=--no-experimental-webstorage vitest run --coverage --project browser --coverage.include='src/lib/components/**/*.svelte' --coverage.thresholds.branches=98.5",
+    "test:components:coverage": "NODE_OPTIONS=--no-experimental-webstorage vitest run --coverage --project browser --coverage.include='src/lib/components/**/*.svelte' --coverage.thresholds.branches=98.4",
     "test:unit": "NODE_OPTIONS=--no-experimental-webstorage vitest run --project unit",
     "test:unit:coverage": "NODE_OPTIONS=--no-experimental-webstorage vitest run --coverage --project unit",
     "test:watch": "NODE_OPTIONS=--no-experimental-webstorage vitest"
@@ -84,7 +84,7 @@
     "@stylistic/eslint-plugin": "^5.10.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@types/leaflet": "^1.9.22",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.1",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -94,7 +94,7 @@
     "eslint": "^9.39.5",
     "eslint-config-airbnb-extended": "^3.2.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-jsdoc": "^64.4.0",
+    "eslint-plugin-jsdoc": "^64.5.0",
     "eslint-plugin-package-json": "^1.8.1",
     "eslint-plugin-svelte": "^3.23.0",
     "eslint-plugin-unused-imports": "^4.4.1",

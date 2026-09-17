@@ -11,13 +11,19 @@ import { getCollection } from '$lib/services/contents/collection';
 import { getCollectionFile } from '$lib/services/contents/collection/files';
 import { forgetDeployments } from '$lib/services/deployments';
 import { refreshProductionSHA } from '$lib/services/deployments/resolve';
-import { getUnpublishedEntryBySlug, unpublishedEntries } from '$lib/services/workflow';
+import {
+  getUnpublishedEntryByBranch,
+  getUnpublishedEntryBySlug,
+  publishingBranches,
+  unpublishedEntries,
+} from '$lib/services/workflow';
 import {
   mergeWorkflowAssets,
   publishWorkflowAssets,
   removeWorkflowAssets,
 } from '$lib/services/workflow/assets';
 import { getBranchName } from '$lib/services/workflow/branch';
+import { trackDeployingEntry } from '$lib/services/workflow/deploy';
 import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
 /**
@@ -72,14 +78,6 @@ const getEventHookArgs = (entry) => {
     collectionFile: fileName ? getCollectionFile(collection, fileName) : undefined,
   };
 };
-
-/**
- * Find the unpublished entry that corresponds to the given workflow branch.
- * @param {string} branch Branch name.
- * @returns {UnpublishedEntry | undefined} Unpublished entry.
- */
-export const getUnpublishedEntryByBranch = (branch) =>
-  unpublishedEntries.current.find(({ workflow }) => workflow.pullRequest.branch === branch);
 
 /**
  * Replace or append the given unpublished entry in the {@link unpublishedEntries} store, keyed by
@@ -247,12 +245,18 @@ export const updateWorkflowStatus = async (entry, status) => {
 };
 
 /**
- * Publish the given unpublished entry by merging the corresponding pull request. The entry is then
- * moved from the unpublished entry list to the regular entry list.
+ * Publishes in flight, keyed by workflow branch. See {@link publishWorkflowEntry}.
+ * @type {Map<string, Promise<void>>}
+ */
+const pendingPublishes = new Map();
+
+/**
+ * Merge the pull request of the given unpublished entry, and move the entry from the unpublished
+ * entry list to the regular entry list once it has.
  * @param {UnpublishedEntry} entry Unpublished entry.
  * @returns {Promise<void>}
  */
-export const publishWorkflowEntry = async (entry) => {
+const mergeWorkflowEntry = async (entry) => {
   const workflow = getWorkflowService();
   const { pullRequest, status } = entry.workflow;
   const deletion = status === 'pending_deletion';
@@ -291,12 +295,42 @@ export const publishWorkflowEntry = async (entry) => {
   publishWorkflowAssets(pullRequest.branch);
   forgetDeployments([pullRequest.headSHA]);
   // The merge put a new commit on the configured branch, so the production build to watch is a
-  // different one now
-  refreshProductionSHA();
+  // different one now. The entry is listed as on its way until that build is done, so the head has
+  // to be known before it’s recorded
+  await refreshProductionSHA();
+  trackDeployingEntry(entry);
 
   if (hookArgs) {
     await callEventHooks({ ...hookArgs, type: postType });
   }
+};
+
+/**
+ * Publish the given unpublished entry by merging the corresponding pull request. The entry is then
+ * moved from the unpublished entry list to the regular entry list. The merge can take minutes when
+ * the Git service waits for a pipeline, long enough for the user to leave and come back to the
+ * entry, so publishing it again meanwhile joins the merge in progress rather than starting another:
+ * the hooks would otherwise fire twice, and so would everything after the merge.
+ * @param {UnpublishedEntry} entry Unpublished entry.
+ * @returns {Promise<void>}
+ */
+export const publishWorkflowEntry = async (entry) => {
+  const { branch } = entry.workflow.pullRequest;
+  const pending = pendingPublishes.get(branch);
+
+  if (pending) {
+    return pending;
+  }
+
+  const promise = mergeWorkflowEntry(entry).finally(() => {
+    pendingPublishes.delete(branch);
+    publishingBranches.current = publishingBranches.current.filter((b) => b !== branch);
+  });
+
+  pendingPublishes.set(branch, promise);
+  publishingBranches.current = [...publishingBranches.current, branch];
+
+  return promise;
 };
 
 /**

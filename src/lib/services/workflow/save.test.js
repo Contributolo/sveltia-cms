@@ -7,14 +7,19 @@ import { createCommitMessage } from '$lib/services/backends/git/shared/commits';
 import { getCommitAuthor } from '$lib/services/backends/save';
 import { allEntries } from '$lib/services/contents';
 import { getCollection } from '$lib/services/contents/collection';
-import { unpublishedEntries } from '$lib/services/workflow';
+import { refreshProductionSHA } from '$lib/services/deployments/resolve';
+import {
+  getUnpublishedEntryByBranch,
+  publishingBranches,
+  unpublishedEntries,
+} from '$lib/services/workflow';
+import { trackDeployingEntry } from '$lib/services/workflow/deploy';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 import {
   deleteWorkflowEntries,
   deleteWorkflowEntry,
   discardWorkflowEntries,
   discardWorkflowEntry,
-  getUnpublishedEntryByBranch,
   publishWorkflowEntry,
   removeUnpublishedEntry,
   saveWorkflowChanges,
@@ -30,6 +35,8 @@ vi.mock('$lib/services/contents/collection', () => ({
 vi.mock('$lib/services/contents/collection/files', () => ({ getCollectionFile: vi.fn() }));
 vi.mock('$lib/services/backends/git/shared/commits');
 vi.mock('$lib/services/backends/save');
+vi.mock('$lib/services/deployments/resolve');
+vi.mock('$lib/services/workflow/deploy');
 
 const workflowService = {
   fetchPullRequests: vi.fn(),
@@ -62,6 +69,7 @@ describe('workflow/save', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     unpublishedEntries.current = [];
+    publishingBranches.current = [];
     allEntries.current = [];
     forkedRepository.current = undefined;
 
@@ -497,6 +505,77 @@ describe('workflow/save', () => {
       // The stale published version is replaced, and the unrelated entry is kept
       expect(published.map((/** @type {any} */ e) => e.id)).toEqual(['other', entry.id]);
       expect(/** @type {any} */ (published.at(-1)).workflow).toBeUndefined();
+
+      // The entry is listed as on its way to the site, once the branch head has been refreshed
+      expect(refreshProductionSHA).toHaveBeenCalledBefore(vi.mocked(trackDeployingEntry));
+      expect(trackDeployingEntry).toHaveBeenCalledWith(entry);
+    });
+
+    test('records the entry as being published while the merge is in flight', async () => {
+      const entry = createEntry('cms/posts/hello', 'pending_publish');
+
+      const { promise: merging, resolve: merge } = /** @type {PromiseWithResolvers<void>} */ (
+        Promise.withResolvers()
+      );
+
+      workflowService.publish.mockReturnValueOnce(merging);
+
+      const promise = publishWorkflowEntry(entry);
+
+      // Recorded right away, so a view opened during the wait shows the entry as busy
+      expect(publishingBranches.current).toEqual(['cms/posts/hello']);
+
+      merge();
+      await promise;
+
+      expect(publishingBranches.current).toEqual([]);
+    });
+
+    test('forgets the entry once the merge has failed', async () => {
+      const entry = createEntry('cms/posts/hello', 'pending_publish');
+
+      workflowService.publish.mockRejectedValueOnce(new Error('Boom'));
+
+      await expect(publishWorkflowEntry(entry)).rejects.toThrow('Boom');
+
+      expect(publishingBranches.current).toEqual([]);
+    });
+
+    test('joins a merge already in flight rather than starting another', async () => {
+      const entry = createEntry('cms/posts/hello', 'pending_publish');
+      const otherEntry = createEntry('cms/posts/other', 'pending_publish');
+
+      const { promise: merging, resolve: merge } = /** @type {PromiseWithResolvers<void>} */ (
+        Promise.withResolvers()
+      );
+
+      workflowService.publish.mockReturnValueOnce(merging);
+
+      const first = publishWorkflowEntry(entry);
+      const second = publishWorkflowEntry(entry);
+      // Another entry’s merge is a separate one
+      const other = publishWorkflowEntry(otherEntry);
+
+      expect(publishingBranches.current).toEqual(['cms/posts/hello', 'cms/posts/other']);
+      // The merge is requested once the pre-publish hook has run
+      await vi.waitFor(() => expect(workflowService.publish).toHaveBeenCalledTimes(2));
+
+      merge();
+      await Promise.all([first, second, other]);
+
+      // The hooks fired once for the joined merge, and once for the other one
+      expect(vi.mocked(callEventHooks).mock.calls.map(([{ type }]) => type)).toEqual([
+        'prePublish',
+        'prePublish',
+        'postPublish',
+        'postPublish',
+      ]);
+      expect(publishingBranches.current).toEqual([]);
+
+      // A later publish is a new one
+      await publishWorkflowEntry(entry);
+
+      expect(workflowService.publish).toHaveBeenCalledTimes(3);
     });
   });
 

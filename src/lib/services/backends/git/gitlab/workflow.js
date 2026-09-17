@@ -47,15 +47,29 @@ const DRAFT_TITLE_PREFIX = 'Draft: ';
  * Merge statuses GitLab reports while its mergeability check is queued or running. The check runs
  * in the background once a merge request is created or pushed to, so one of these is what a merge
  * request opened or updated a moment ago answers with; the real status follows once the check is
- * done.
+ * done. Approval rules are re-synced in the background as well, on a project that has them.
  * @see https://docs.gitlab.com/api/merge_requests/#merge-status
  */
-const TRANSIENT_MERGE_STATUSES = ['preparing', 'unchecked', 'checking'];
+const TRANSIENT_MERGE_STATUSES = ['preparing', 'unchecked', 'checking', 'approvals_syncing'];
 /**
  * How many times, and how often, the merge status is read while it’s transient. The check
  * usually takes a second or two.
  */
 const MERGE_STATUS_POLL = { attempts: 10, interval: 1000 };
+/**
+ * Merge statuses under which a merge request set to auto-merge is still expected to merge on its
+ * own: the pipeline hasn’t finished, the mergeability check is being redone once it has, or the
+ * merge itself is queued. Anything else — `ci_must_pass` once the pipeline has failed, say — means
+ * GitLab is done waiting, even though the auto-merge stays armed in case a job is retried by hand.
+ * @see https://docs.gitlab.com/user/project/merge_requests/auto_merge/
+ */
+const AUTO_MERGE_WAIT_STATUSES = [...TRANSIENT_MERGE_STATUSES, 'ci_still_running', 'mergeable'];
+/**
+ * How often, and for how long at most, a merge request set to auto-merge is read while GitLab
+ * waits for its pipeline. A pipeline takes minutes, so the reads are spaced out. The cap is a
+ * safety net for a merge that never lands, e.g. one GitLab has queued but not carried out.
+ */
+const AUTO_MERGE_POLL = { interval: 10000, maxDuration: 60 * 60 * 1000 };
 
 /**
  * Get the URL-encoded project identifier used in the REST API paths, e.g. the `group/project` path
@@ -409,6 +423,17 @@ export const updateStatus = async (pullRequest, status) => {
 };
 
 /**
+ * Fetch the merge request as it stands.
+ * @param {WorkflowPullRequest} pullRequest Merge request.
+ * @returns {Promise<Record<string, any>>} Merge request returned by the REST API.
+ * @see https://docs.gitlab.com/api/merge_requests/#get-single-mr
+ */
+const fetchMergeRequest = async (pullRequest) =>
+  /** @type {Record<string, any>} */ (
+    await fetchAPI(`/projects/${getProjectId()}/merge_requests/${pullRequest.number}`)
+  );
+
+/**
  * Fetch the merge request’s detailed merge status, which names the single check that stands in the
  * way of an immediate merge, e.g. `ci_still_running`. A transient status is polled until it settles
  * or the attempts run out, in which case the transient status is returned as is.
@@ -418,9 +443,7 @@ export const updateStatus = async (pullRequest, status) => {
  * @see https://docs.gitlab.com/api/merge_requests/#merge-status
  */
 const fetchMergeStatus = async (pullRequest, attemptsLeft = MERGE_STATUS_POLL.attempts) => {
-  const { detailed_merge_status: status } = /** @type {Record<string, any>} */ (
-    await fetchAPI(`/projects/${getProjectId()}/merge_requests/${pullRequest.number}`)
-  );
+  const { detailed_merge_status: status } = await fetchMergeRequest(pullRequest);
 
   if (!TRANSIENT_MERGE_STATUSES.includes(status) || attemptsLeft <= 1) {
     return status;
@@ -432,12 +455,109 @@ const fetchMergeStatus = async (pullRequest, attemptsLeft = MERGE_STATUS_POLL.at
 };
 
 /**
+ * Cancel the auto-merge on the given merge request. Failures are ignored: this is called once the
+ * publish is being reported as failed, and a merge request that has just been merged or closed
+ * has no auto-merge left to cancel.
+ * @param {WorkflowPullRequest} pullRequest Merge request.
+ * @see https://docs.gitlab.com/api/merge_requests/#cancel-merge-when-pipeline-succeeds
+ */
+const cancelAutoMerge = async (pullRequest) => {
+  try {
+    await fetchAPI(
+      `/projects/${getProjectId()}/merge_requests/${pullRequest.number}` +
+        '/cancel_merge_when_pipeline_succeeds',
+      { method: 'POST' },
+    );
+  } catch (/** @type {any} */ ex) {
+    // eslint-disable-next-line no-console
+    console.warn(`Failed to cancel the auto-merge on merge request !${pullRequest.number}.`, ex);
+  }
+};
+
+/**
+ * Wait for GitLab to merge a merge request that has been set to auto-merge. The merge request is
+ * read every so often until it’s merged, in which case this resolves, or until it’s clear that the
+ * merge won’t happen on its own: the pipeline has failed, a new commit has cancelled the
+ * auto-merge, the merge request has been closed, or the wait has run out. Those are reported as
+ * errors, so the entry stays on the Editorial Workflow board rather than being taken for
+ * published. GitLab keeps the auto-merge armed after a failed pipeline, in case a job is retried by
+ * hand, but a merge made that way would happen behind the CMS’s back once it has reported a
+ * failure, so the auto-merge is cancelled along with the report: publishing again is what merges
+ * the entry from then on.
+ * @param {WorkflowPullRequest} pullRequest Merge request.
+ * @param {number} [deadline] Time to give up at, as a Unix timestamp in milliseconds.
+ * @returns {Promise<void>}
+ * @throws {Error} When the merge request won’t be merged, or wasn’t within the time allowed.
+ * @see https://github.com/sveltia/sveltia-cms/issues/992
+ */
+const waitForAutoMerge = async (
+  pullRequest,
+  deadline = Date.now() + AUTO_MERGE_POLL.maxDuration,
+) => {
+  if (Date.now() >= deadline) {
+    await cancelAutoMerge(pullRequest);
+
+    throw new Error(`Timed out waiting for merge request !${pullRequest.number} to be merged`);
+  }
+
+  await sleep(AUTO_MERGE_POLL.interval);
+
+  const mergeRequest = await fetchMergeRequest(pullRequest).catch((ex) => {
+    const status = ex.cause?.status;
+
+    // A network error or a server error says nothing about the merge, which GitLab carries out on
+    // its own, so keep waiting rather than reporting a failure that hasn’t happened. A client
+    // error won’t go away by itself — the session has ended, or the merge request is gone — so
+    // there’s no point in asking again, except when the limit on requests has been hit
+    if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) {
+      throw ex;
+    }
+
+    // eslint-disable-next-line no-console
+    console.warn(`Failed to read merge request !${pullRequest.number}, still waiting.`, ex);
+
+    return undefined;
+  });
+
+  if (mergeRequest) {
+    const {
+      state,
+      merge_when_pipeline_succeeds: autoMerge,
+      detailed_merge_status: status,
+    } = mergeRequest;
+
+    if (state === 'merged') {
+      return;
+    }
+
+    // `locked` is the merge in progress
+    const waiting =
+      state === 'locked' ||
+      (state === 'opened' && !!autoMerge && AUTO_MERGE_WAIT_STATUSES.includes(status));
+
+    if (!waiting) {
+      if (state === 'opened' && autoMerge) {
+        await cancelAutoMerge(pullRequest);
+      }
+
+      throw new Error(
+        `Merge request !${pullRequest.number} was not merged: ${state}, ${status}, ` +
+          `auto-merge ${autoMerge ? 'on' : 'off'}`,
+      );
+    }
+  }
+
+  await waitForAutoMerge(pullRequest, deadline);
+};
+
+/**
  * Merge the merge request and delete the workflow branch. A project or group can require the merge
  * request’s pipeline to succeed before it can be merged; the group-level setting is not exposed by
  * the project API. In that case, GitLab refuses an immediate merge while the pipeline is running,
  * which is likely right after the merge request is opened — always so for a deletion, which can be
  * published as soon as it’s created — so the merge request is set to auto-merge instead, and GitLab
- * merges it once the pipeline has passed.
+ * merges it once the pipeline has passed. Scheduling the merge is not the same as making it: the
+ * pipeline can still fail, so this resolves only once the merge has landed.
  * @param {WorkflowPullRequest} pullRequest Merge request.
  * @see https://docs.gitlab.com/api/merge_requests/#merge-a-merge-request
  * @see https://github.com/sveltia/sveltia-cms/issues/989
@@ -481,6 +601,8 @@ export const publish = async (pullRequest) => {
 
     // The merge request stays open until the pipeline passes, and GitLab removes the branch along
     // with the merge, as requested above. Deleting it here would close the merge request instead
+    await waitForAutoMerge(pullRequest);
+
     return;
   }
 

@@ -33,6 +33,15 @@ export const unpublishedEntriesLoading = createRawState(false);
 export const unpublishedEntriesLoaded = createRawState(false);
 
 /**
+ * Workflow branches of the entries being published, which is to say whose pull request is being
+ * merged. A merge can take minutes when the Git service waits for a pipeline, and the view that
+ * started it is created afresh each time it opens, so the wait is recorded here rather than in that
+ * view: any view can then show the entry as busy.
+ * @type {{ current: string[] }}
+ */
+export const publishingBranches = createRawState([]);
+
+/**
  * Whether everything needed to resolve an entry is available. The unpublished entries are fetched
  * after the initial data load, so an entry opened with a deep link can’t be resolved until they
  * arrive: a draft for a new entry wouldn’t be found at all, and a draft updating a published entry
@@ -86,6 +95,41 @@ export const getUnpublishedEntryBySlug = ({ collectionName, slug }) =>
   unpublishedEntries.current.find(({ workflow }) =>
     isEntryBranch({ branch: workflow.pullRequest.branch, collectionName, slug }),
   );
+
+/**
+ * Find the unpublished entry that corresponds to the given workflow branch.
+ * @param {string} branch Branch name.
+ * @returns {UnpublishedEntry | undefined} Unpublished entry.
+ */
+export const getUnpublishedEntryByBranch = (branch) =>
+  unpublishedEntries.current.find(({ workflow }) => workflow.pullRequest.branch === branch);
+
+/**
+ * Find the unpublished entry that the given draft is editing. The draft holds the entry as it was
+ * when the editor opened it, and the entry can change while the editor stays open — its status from
+ * the status menu or the Editorial Workflow page, its head commit with each save — so the entry is
+ * read from the store rather than from that snapshot. The branch the entry is already associated
+ * with is preferred over the one derived from the slug: the branch keeps the slug the pull request
+ * was opened with, so an entry whose slug has been edited since no longer matches it by slug.
+ * @param {object} args Arguments. A draft can be passed as is.
+ * @param {string} args.collectionName Collection name.
+ * @param {string} [args.fileName] Collection file name, if the entry is a collection file.
+ * @param {Entry} [args.originalEntry] Entry being edited, before the changes. `undefined` for a new
+ * entry, which has no pull request yet.
+ * @returns {UnpublishedEntry | undefined} Unpublished entry.
+ */
+export const getUnpublishedEntryByDraft = ({ collectionName, fileName, originalEntry }) => {
+  if (!originalEntry) {
+    return undefined;
+  }
+
+  const branch = /** @type {UnpublishedEntry} */ (originalEntry).workflow?.pullRequest?.branch;
+
+  return (
+    (branch ? getUnpublishedEntryByBranch(branch) : undefined) ??
+    getUnpublishedEntryBySlug({ collectionName, slug: fileName ?? originalEntry.slug })
+  );
+};
 
 /**
  * Check whether the given entry is awaiting removal from the site. Such an entry can’t be edited:

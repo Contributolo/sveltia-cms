@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 
+import { publishingBranches } from '$lib/services/workflow';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 import { publishWorkflowEntry } from '$lib/services/workflow/save';
 import { validateWorkflowEntry } from '$lib/services/workflow/validate';
@@ -11,7 +12,6 @@ import { waitForToastsToHide } from '$lib/test/toast';
 import PublishEntryButton from './publish-entry-button.svelte';
 
 vi.mock('$lib/services/workflow/save', () => ({
-  getUnpublishedEntryByBranch: vi.fn(),
   upsertUnpublishedEntry: vi.fn(),
   removeUnpublishedEntry: vi.fn(),
   saveWorkflowChanges: vi.fn(),
@@ -27,15 +27,28 @@ vi.mock('$lib/services/workflow/validate', () => ({ validateWorkflowEntry: vi.fn
 /**
  * Build an unpublished entry.
  * @param {string} status Workflow status.
+ * @param {string} [slug] Entry slug.
  * @returns {any} Entry.
  */
-const createEntry = (status) => ({
-  id: 'posts/hello',
-  slug: 'hello',
-  subPath: 'hello',
+const createEntry = (status, slug = 'hello') => ({
+  id: `posts/${slug}`,
+  slug,
+  subPath: slug,
   locales: {},
-  workflow: { status, collectionName: 'posts', pullRequest: { number: 1 } },
+  workflow: {
+    status,
+    collectionName: 'posts',
+    pullRequest: { number: 1, branch: `cms/posts/${slug}` },
+  },
 });
+
+/**
+ * Build a draft editing the given unpublished entry.
+ * @param {any} entry Entry.
+ * @returns {any} Draft.
+ */
+const createEntryDraft = (entry) =>
+  createMockDraft({ draft: { isNew: false, originalEntry: entry } });
 
 describe('PublishEntryButton', () => {
   beforeAll(async () => {
@@ -44,6 +57,7 @@ describe('PublishEntryButton', () => {
 
   beforeEach(() => {
     forkedRepository.current = undefined;
+    publishingBranches.current = [];
     vi.mocked(validateWorkflowEntry).mockReturnValue(true);
     window.location.hash = '#/collections/posts/entries/hello';
   });
@@ -63,7 +77,7 @@ describe('PublishEntryButton', () => {
     const entry = createEntry('pending_publish');
 
     const { entryDraft } = await renderWithDraft(PublishEntryButton, {
-      draft: createMockDraft(),
+      draft: createEntryDraft(entry),
       props: { entry },
     });
 
@@ -81,6 +95,63 @@ describe('PublishEntryButton', () => {
     await vi.waitFor(() => expect(publishWorkflowEntry).toHaveBeenCalledWith(entry));
     await expect.poll(() => entryDraft.current).toBe(null);
     await expect.poll(() => window.location.hash).toBe('#/collections/posts');
+  });
+
+  test('leaves another entry’s draft alone when the merge lands late', async () => {
+    const { promise: merging, resolve: merge } = /** @type {PromiseWithResolvers<void>} */ (
+      Promise.withResolvers()
+    );
+
+    vi.mocked(publishWorkflowEntry).mockReturnValue(merging);
+
+    const entry = createEntry('pending_publish');
+    const otherEntry = createEntry('draft', 'world');
+
+    const { entryDraft } = await renderWithDraft(PublishEntryButton, {
+      draft: createEntryDraft(entry),
+      props: { entry },
+    });
+
+    await page.getByRole('button', { name: 'Publish Entry' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Publish' }).click();
+    await vi.waitFor(() => expect(publishWorkflowEntry).toHaveBeenCalledWith(entry));
+
+    // The merge waits for a pipeline, and the author opens another entry meanwhile
+    const otherDraft = createEntryDraft(otherEntry);
+
+    entryDraft.current = otherDraft;
+    window.location.hash = '#/collections/posts/entries/world';
+    merge();
+    // Let the merge settle. A change would happen right after, so the checks would otherwise pass
+    // too early
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+
+    expect(entryDraft.current).toBe(otherDraft);
+    expect(window.location.hash).toBe('#/collections/posts/entries/world');
+  });
+
+  test('is disabled while a merge started elsewhere is in flight', async () => {
+    const entry = createEntry('pending_publish');
+
+    // A merge can take minutes and outlive the editor, which the service keeps track of
+    publishingBranches.current = ['cms/posts/hello'];
+
+    await renderWithDraft(PublishEntryButton, {
+      draft: createEntryDraft(entry),
+      props: { entry },
+    });
+
+    const button = page.getByRole('button', { name: 'Publish Entry' });
+
+    await expect.element(button).toHaveTextContent('Publishing…');
+    await expect.element(button).toHaveAttribute('aria-disabled', 'true');
+
+    publishingBranches.current = [];
+
+    await expect.element(button).toHaveTextContent('Publish');
+    await expect.element(button).toHaveAttribute('aria-disabled', 'false');
   });
 
   test('reports a failure to publish', async () => {

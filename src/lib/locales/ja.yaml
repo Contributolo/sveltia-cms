@@ -1548,6 +1548,8 @@ config:
     duplicate_view_group_name: ビューグループ名は一意である必要がありますが、`{$name}` が複数回使用されています。
     # {$count} is the 1-based view filter index in the configuration array; Don’t localize `name`
     missing_view_filter_name: ビューフィルター {$count} には `name` オプションを空でない文字列として定義する必要があります。
+    # {$count} is the 1-based view filter index in the configuration array; Don’t localize `pattern`, `eq` and `gte`
+    invalid_view_filter_no_condition: ビューフィルター {$count} には、エントリーを照合するための `pattern` オプション、または `eq` や `gte` などの比較オプションを定義する必要があります。
     # {$name} is the invalid or duplicate view filter name
     invalid_view_filter_name: ビューフィルター名 `{$name}` は無効です。特殊文字を含めることはできません。
     duplicate_view_filter_name: ビューフィルター名は一意である必要がありますが、`{$name}` が複数回使用されています。
@@ -1706,6 +1708,10 @@ status:
   # A pending removal, which is a status of its own rather than a stage: it has no review to go
   # through, only the deletion itself to carry out or call off
   pending_deletion: 削除待ち
+  # Merged changes the site hasn’t caught up with yet: it’s being rebuilt and deployed from the
+  # merge, so a published entry isn’t live and a deleted one is still up. Heading of the tray below
+  # the board that lists them until the site has caught up
+  deploying: デプロイ中
 
 workflow:
   # Buttons on a pending deletion card, and their confirmation dialogs. The two actions are the
@@ -1803,6 +1809,9 @@ workflow:
   no_entries: エントリーはありません。
   # Workflow page: aria-label for a draggable entry card
   drag_entry: ドラッグするとステータスを変更できます
+  # Workflow page: note on a card in the Deploying tray, marking an entry that’s being removed from
+  # the site rather than published to it
+  deploying_deletion: 削除
 
 # Open Authoring: a contributor without write access to the configured repository works in a fork
 # of it, and their changes reach the site through a pull request a maintainer merges

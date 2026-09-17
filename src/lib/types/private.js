@@ -27,6 +27,7 @@
  * S3MediaLibrary,
  * SelectField,
  * SelectFieldValue,
+ * ViewComparisonOptions,
  * } from './public';
  */
 
@@ -217,7 +218,8 @@
 
 /**
  * State of a deployment created by a CI/CD provider connected to the Git backend.
- * - `checking`: a request to the backend is in flight.
+ * - `checking`: a request to the backend is in flight, or nothing has been reported yet for a
+ * commit made moments ago and the provider is being given time to post its first status.
  * - `pending`: the build is queued or running, or the page is not live yet.
  * - `ready`: the build succeeded and the page is live.
  * - `error`: the build failed.
@@ -347,6 +349,16 @@
  */
 
 /**
+ * An entry whose pull request has been merged, and whose change is on its way to the site.
+ * @typedef {object} DeployingEntry
+ * @property {UnpublishedEntry} entry Entry as it was published, with the workflow properties it
+ * had: the status says whether the merge removed the entry from the site rather than putting it
+ * there, and the pull request’s `updatedDate` is when the merge landed.
+ * @property {string} sha Head commit of the configured branch once the merge had landed, which the
+ * site is being built from.
+ */
+
+/**
  * A file included in an Editorial Workflow pull request.
  * @typedef {object} WorkflowFile
  * @property {string} path File path relative to the project’s root directory.
@@ -427,7 +439,8 @@
  * draft state.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} publish Function to merge the
  * pull request and delete the workflow branch. The service may leave the merge to the Git service
- * when a required check is still running, in which case it resolves once the merge is scheduled.
+ * when a required check is still running, in which case it resolves once the merge has landed, and
+ * rejects if it won’t — the check has failed, say — so the entry isn’t taken for published.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} discard Function to close the
  * pull request and delete the workflow branch.
  */
@@ -1193,22 +1206,35 @@
  */
 
 /**
- * Entry/Asset filtering conditions.
- * @typedef {object} FilteringConditions
+ * Entry/Asset filtering conditions: what an entry collection’s view filter defines, minus its name
+ * and label. An asset filter only has a field and pattern.
+ * @typedef {object} FilteringConditionsProps
  * @property {FieldKeyPath} field Target field name.
- * @property {string | RegExp | boolean} pattern Regular expression matching pattern or exact value.
+ * @property {string | RegExp | boolean} [pattern] Regular expression matching pattern or exact
+ * value. Required unless a comparison operator is defined.
  * @see https://decapcms.org/docs/configuration-options/#view_filters
  * @see https://sveltiacms.app/en/docs/collections/entries#filtering
  */
 
 /**
- * Entry/Asset grouping conditions.
- * @typedef {object} GroupingConditions
+ * Entry/Asset filtering conditions.
+ * @typedef {FilteringConditionsProps & ViewComparisonOptions} FilteringConditions
+ */
+
+/**
+ * Entry/Asset grouping conditions: what an entry collection’s view group defines, minus its name
+ * and label. An asset group only has a field and pattern.
+ * @typedef {object} GroupingConditionsProps
  * @property {FieldKeyPath} field Target field name.
  * @property {string | RegExp | boolean} [pattern] Regular expression matching pattern or exact
  * value.
  * @see https://decapcms.org/docs/configuration-options/#view_groups
  * @see https://sveltiacms.app/en/docs/collections/entries#grouping
+ */
+
+/**
+ * Entry/Asset grouping conditions.
+ * @typedef {GroupingConditionsProps & ViewComparisonOptions} GroupingConditions
  */
 
 /**
@@ -1477,6 +1503,14 @@
  * mislabeled, such as a HEIC image saved with a `.jpg` extension.
  * @property {WeakMap<File, File>} transformedFileMap Mapping of transformed files and the
  * originals.
+ */
+
+/**
+ * The file an image/file field value points to.
+ * @typedef {object} MediaFieldSource
+ * @property {string} [url] Complete URL of a file on an external location, including a Cloudinary
+ * asset referenced by its relative path.
+ * @property {Asset} [asset] Asset in the repository. Exclusive with {@link MediaFieldSource.url}.
  */
 
 /**
