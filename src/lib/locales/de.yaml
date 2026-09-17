@@ -1637,6 +1637,8 @@ config:
     duplicate_view_group_name: Namen von Ansichts-Gruppen müssen eindeutig sein, aber `{$name}` wird mehrfach verwendet.
     # {$count} is the 1-based view filter index in the configuration array; Don’t localize `name`
     missing_view_filter_name: Für den Ansichts-Filter {$count} muss die Option `name` als nicht leere Zeichenkette definiert sein.
+    # {$count} is the 1-based view filter index in the configuration array; Don’t localize `pattern`, `eq` and `gte`
+    invalid_view_filter_no_condition: Der Ansichts-Filter {$count} braucht die Option `pattern` oder eine Vergleichsoption wie `eq` oder `gte`, um Einträge abzugleichen.
     # {$name} is the invalid or duplicate view filter name
     invalid_view_filter_name: Der Ansichts-Filter-Name `{$name}` ist ungültig. Er darf keine Sonderzeichen enthalten.
     duplicate_view_filter_name: Namen von Ansichts-Filtern müssen eindeutig sein, aber `{$name}` wird mehrfach verwendet.
@@ -1796,6 +1798,10 @@ status:
   # A pending removal, which is a status of its own rather than a stage: it has no review to go
   # through, only the deletion itself to carry out or call off
   pending_deletion: Löschung ausstehend
+  # Merged changes the site hasn’t caught up with yet: it’s being rebuilt and deployed from the
+  # merge, so a published entry isn’t live and a deleted one is still up. Heading of the tray below
+  # the board that lists them until the site has caught up
+  deploying: In Bereitstellung
 
 workflow:
   # Buttons on a pending deletion card, and their confirmation dialogs. The two actions are the
@@ -1897,6 +1903,9 @@ workflow:
   no_entries: Keine Einträge.
   # Workflow page: aria-label for a draggable entry card
   drag_entry: Ziehen, um den Status zu ändern
+  # Workflow page: note on a card in the Deploying tray, marking an entry that’s being removed from
+  # the site rather than published to it
+  deploying_deletion: Löschung
 
 # Open Authoring: a contributor without write access to the configured repository works in a fork
 # of it, and their changes reach the site through a pull request a maintainer merges
