@@ -17,6 +17,7 @@
     TruncatedText,
   } from '@sveltia/ui';
 
+  import CascadeDeleteNote from '$lib/components/common/cascade-delete-note.svelte';
   import BackButton from '$lib/components/common/page-toolbar/back-button.svelte';
   import EditSlugDialog from '$lib/components/contents/details/edit-slug-dialog.svelte';
   import PreviewLinkButton from '$lib/components/contents/details/preview-link-button.svelte';
@@ -48,6 +49,7 @@
   import { activeInlineEditors, copyFromLocaleToast } from '$lib/services/contents/editor';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
   import { getAssociatedAssets } from '$lib/services/contents/entry/assets';
+  import { planCascadeDelete } from '$lib/services/contents/entry/relations/cascade/delete';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
   import { getLocaleLabel } from '$lib/services/contents/i18n';
   import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
@@ -59,6 +61,7 @@
     getUnpublishedEntryByDraft,
     hasPublishedVersion,
     isPendingDeletion,
+    isWorkflowEnabled,
     workflowEnabled,
   } from '$lib/services/workflow';
   import { openAuthoring } from '$lib/services/workflow/open-authoring';
@@ -69,8 +72,11 @@
   } from '$lib/services/workflow/save';
 
   /**
-   * @import { UnpublishedEntry, UpdateToastState } from '$lib/types/private';
+   * @import { CascadeDeletePlan, UnpublishedEntry, UpdateToastState } from '$lib/types/private';
    */
+
+  /** @type {CascadeDeletePlan} */
+  const EMPTY_PLAN = { targets: [], blockers: [] };
 
   /**
    * @typedef {object} Props
@@ -194,6 +200,9 @@
       ? getUnpublishedEntryByDraft({ collectionName, fileName, originalEntry })
       : undefined,
   );
+  // A collection can opt in or out of Editorial Workflow with its own `publish_mode` option, but an
+  // entry that already has a pull request stays in it until it’s published or discarded
+  const useWorkflow = $derived(!!unpublishedEntry || isWorkflowEnabled(collection));
   // The `delete` option only blocks taking an entry off the site. Discarding a pull request leaves
   // the published version untouched, so it stays available even when deletion is disabled
   const canDelete = $derived(entryCollection?.delete !== false);
@@ -210,6 +219,14 @@
   // An entry awaiting deletion is read-only: there’s nothing to save or move through the stages,
   // only the deletion itself to carry out or call off
   const pendingDeletion = $derived(isPendingDeletion(unpublishedEntry));
+  // What the deletion means for the entries referencing this one through Relation fields. Nothing
+  // on the configured branch can reference a draft that has never been published, and the scan is
+  // only worth doing while the dialog is open
+  const cascadePlan = $derived(
+    showDeleteDialog && collection && originalEntry && !discardsDraft
+      ? planCascadeDelete({ collection, collectionFile, entries: [originalEntry] })
+      : EMPTY_PLAN,
+  );
 
   // Keep the deploy state fresh while the editor is open, so a build that finishes in the
   // background turns the preview link live without the user reloading. The release function is
@@ -286,7 +303,7 @@
         return { deleted: true };
       }
 
-      if (originalEntry && workflowEnabled.current && collection) {
+      if (originalEntry && useWorkflow && collection) {
         await deleteWorkflowEntry(originalEntry, collection, collectionFile, associatedAssets);
 
         return { deleted: true, deletionPending: true };
@@ -365,7 +382,7 @@
       // it hasn’t been handed to anyone yet, and the status menu that would do it is easy to miss.
       // Offer it as the next step instead, once, while the entry is still in the drafting stage
       if (
-        workflowEnabled.current &&
+        useWorkflow &&
         savedDraft.workflow?.status === 'draft' &&
         // An incomplete entry isn’t ready to be handed over; the status menu is still there once
         // the remaining fields have been filled in
@@ -477,7 +494,7 @@
   {/if}
   {#if pendingDeletion}
     <!-- Nothing to save: the entry is shown for reference until the deletion is carried out -->
-  {:else if skipCIConfigured.current && !workflowEnabled.current}
+  {:else if skipCIConfigured.current && !useWorkflow}
     <SplitButton
       variant="primary"
       label={_(
@@ -709,6 +726,7 @@
   bind:open={showDeleteDialog}
   title={_('delete_entries', { values: { count: 1 } })}
   okLabel={_('delete')}
+  okDisabled={!!cascadePlan.blockers.length}
   onOk={async () => {
     await deleteEntry();
   }}
@@ -716,17 +734,23 @@
     menuButton?.focus();
   }}
 >
-  {#if unpublishedEntry && !publishedVersionExists}
-    {_('workflow.confirm_deleting_unpublished_entry')}
-  {:else if workflowEnabled.current}
-    <!-- The removal is committed to a pull request rather than to the configured branch -->
-    {_('workflow.confirm_deleting_published_entry')}
+  <!-- There’s nothing to confirm when the deletion is refused; the note explains why -->
+  {#if cascadePlan.blockers.length}
+    <CascadeDeleteNote plan={cascadePlan} count={1} />
   {:else}
-    {_(
-      associatedAssets.length
-        ? 'confirm_deleting_this_entry_with_assets'
-        : 'confirm_deleting_this_entry',
-    )}
+    {#if unpublishedEntry && !publishedVersionExists}
+      {_('workflow.confirm_deleting_unpublished_entry')}
+    {:else if useWorkflow}
+      <!-- The removal is committed to a pull request rather than to the configured branch -->
+      {_('workflow.confirm_deleting_published_entry')}
+    {:else}
+      {_(
+        associatedAssets.length
+          ? 'confirm_deleting_this_entry_with_assets'
+          : 'confirm_deleting_this_entry',
+      )}
+    {/if}
+    <CascadeDeleteNote plan={cascadePlan} count={1} />
   {/if}
 </ConfirmationDialog>
 

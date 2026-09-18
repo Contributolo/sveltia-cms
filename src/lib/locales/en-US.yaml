@@ -693,6 +693,22 @@ confirm_deleting_selected_assets: |
     one {{ Are you sure you want to delete the selected asset? }}
     *   {{ Are you sure you want to delete the selected {$count} assets? }}
 confirm_deleting_all_assets: Are you sure you want to delete all the assets?
+# Note added to the confirmation when entries use the assets being deleted; the references are
+# removed in the same commit. {$count} is the number of entries using them
+deleting_referenced_assets_note: |
+  .input {$count :integer}
+  .match $count
+    one {{ The reference to it in an entry will be removed as well. }}
+    *   {{ The references to it in {$count} entries will be removed as well. }}
+# Shown in place of the confirmation when removing the references would leave a field in an entry
+# invalid, e.g. a required Image field with nothing left, so the deletion is refused. The fields are
+# listed below the message, each with the validation error it would have. {$count} is the number of
+# assets being deleted
+cannot_delete_referenced_assets: |
+  .input {$count :integer}
+  .match $count
+    one {{ This asset can’t be deleted, because the following fields in the entries using it would no longer be valid without it. Update those entries first. }}
+    *   {{ These assets can’t be deleted, because the following fields in the entries using them would no longer be valid without them. Update those entries first. }}
 
 # Delete entries: dialog titles and confirmation messages
 # {$count} is the number of entries targeted by the action
@@ -725,6 +741,23 @@ confirm_deleting_selected_entries_with_assets: |
     *   {{ Are you sure you want to delete the selected {$count} entries and associated assets? }}
 confirm_deleting_all_entries: Are you sure you want to delete all the entries?
 confirm_deleting_all_entries_with_assets: Are you sure you want to delete all the entries and associated assets?
+# Note added to the confirmation when other entries reference the entries being deleted through
+# Relation fields; the references are removed in the same commit. {$count} is the number of
+# referencing entries
+deleting_referenced_entries_note: |
+  .input {$count :integer}
+  .match $count
+    one {{ The reference to it in another entry will be removed as well. }}
+    *   {{ The references to it in {$count} other entries will be removed as well. }}
+# Shown in place of the confirmation when removing the references would leave a Relation field in
+# another entry invalid, e.g. a required field with nothing selected, so the deletion is refused.
+# The fields are listed below the message, each with the validation error it would have. {$count}
+# is the number of entries being deleted
+cannot_delete_referenced_entries: |
+  .input {$count :integer}
+  .match $count
+    one {{ This entry can’t be deleted, because the following fields in other entries would no longer be valid without it. Update those entries first. }}
+    *   {{ These entries can’t be deleted, because the following fields in other entries would no longer be valid without them. Update those entries first. }}
 
 # ==============================================================================
 # Entry Reordering
@@ -1325,7 +1358,8 @@ reorder_item: Reorder Item
 # take a label from
 list_item_value: Item Value
 
-# Add item button label
+# Add item button label, also used by the Relation field to create a new entry in the referenced
+# collection, with the collection’s singular label
 # Example: “Add Image”, “Add Author”
 # {$name} is the label of the item type that can be added
 add_x: Add {$name}
@@ -1352,6 +1386,13 @@ opacity: Opacity
 
 # Select field: empty option placeholder
 unselected_option: (None)
+
+# Relation field: creating a referenced entry without leaving the editor
+relation_field:
+  # Note shown in the dialog. {$name} is the singular label of the referenced collection
+  save_together_hint: The new {$name} will be saved along with the entry you’re editing.
+  # Error shown when the entry couldn’t be prepared. {$name} is the singular label of the collection
+  add_failed: The {$name} couldn’t be added. Check the browser console for details.
 
 # Select Assets dialog
 assets_dialog:
