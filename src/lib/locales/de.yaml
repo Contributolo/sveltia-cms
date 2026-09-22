@@ -71,6 +71,10 @@ primary: Primär
 secondary: Sekundär
 collection: Sammlung
 folder: Ordner
+# Label of the subfolder list in the asset picker
+folders: Ordner
+# Menu in a breadcrumb holding the folders that don’t fit
+more_folders: Weitere Ordner
 
 # ==============================================================================
 # Miscellaneous Labels
@@ -127,6 +131,8 @@ sign_in_with_x: Mit {$service} anmelden
 # Access token dialog: alternative authentication method
 sign_in_using_access_token: Mit Zugriffstoken anmelden
 sign_in_using_access_token_description: Geben Sie unten Ihr Token ein. Es benötigt Lese- und Schreibzugriff auf die Inhalte des Repositorys.
+# Shown after the description above when Editorial Workflow is enabled, which opens and merges pull requests
+sign_in_using_access_token_workflow_note: Da der Redaktions-Workflow aktiv ist, braucht es außerdem Lese- und Schreibzugriff auf Pull Requests.
 # Inline link text with embedded HTML anchor tag
 # {$service} is the provider name whose user settings page contains the token generator, e.g., GitHub or GitLab
 sign_in_using_access_token_link: Ein Token können Sie auf der <a>Einstellungsseite Ihres {$service}-Kontos</a> erzeugen.
@@ -498,6 +504,8 @@ collection_list: Liste der Sammlungen
 back_to_collection_list: Zurück zur Liste der Sammlungen
 asset_folder_list: Liste der Medienordner
 back_to_asset_folder_list: Zurück zur Liste der Medienordner
+# Back button shown in place of the one above while browsing a subfolder of an asset folder
+back_to_parent_folder: Zurück zum übergeordneten Ordner
 
 # ==============================================================================
 # Search
@@ -555,6 +563,54 @@ no_entries_found: Keine Einträge gefunden.
 
 # Upload dialog: title and button label
 upload_assets: Neue Medien hochladen
+# New Folder button and dialog in the Asset Library
+new_folder: Neuer Ordner
+new_folder_name: Ordnername
+new_folder_create: Anlegen
+# {$folder} is the path of the folder the new one will be created in, starting with a slash
+new_folder_description: Der neue Ordner wird in „{$folder}“ angelegt.
+# Validation errors for the new folder name
+new_folder_error:
+  empty: Der Ordnername darf nicht leer sein.
+  invalid: Der Ordnername darf keine Schrägstriche enthalten und nicht mit einem Punkt beginnen.
+  duplicate: Ein Ordner oder eine Datei mit diesem Namen existiert hier bereits.
+# Progress and error messages while the folder is being created
+creating_folder: Ordner wird angelegt …
+creating_folder_failed: Der Ordner konnte nicht angelegt werden.
+# Menu on a folder in the Asset Library, and the Rename Folder and Delete Folder dialogs
+folder_options: Ordneroptionen
+show_folder_options: Ordneroptionen anzeigen
+rename_folder: Ordner umbenennen
+delete_folder: Ordner löschen
+# Rename Folder dialog body text
+# {$count} is the number of assets in the folder, which are moved along with it
+enter_new_name_for_folder: |
+  .input {$count :integer}
+  .match $count
+    0   {{ Unten einen neuen Namen eingeben. }}
+    one {{ Unten einen neuen Namen eingeben. Das Medium im Ordner wird mit verschoben, und jeder Eintrag, der es verwendet, wird aktualisiert. }}
+    *   {{ Unten einen neuen Namen eingeben. Die {$count} Medien im Ordner werden mit verschoben, und alle Einträge, die sie verwenden, werden aktualisiert. }}
+# Rename Folder dialog body text for a cloud storage service, whose files are hotlinked from the
+# entries, so a move changes the URLs and the entries aren’t updated
+enter_new_name_for_external_folder: |
+  .input {$count :integer}
+  .match $count
+    0   {{ Unten einen neuen Namen eingeben. }}
+    one {{ Unten einen neuen Namen eingeben. Die Datei im Ordner wird mit verschoben und ihre URL ändert sich; Einträge, die sie verwenden, müssen angepasst werden. }}
+    *   {{ Unten einen neuen Namen eingeben. Die {$count} Dateien im Ordner werden mit verschoben und ihre URLs ändern sich; Einträge, die sie verwenden, müssen angepasst werden. }}
+# Delete Folder confirmation
+# {$name} is the folder name and {$count} is the number of assets in the folder
+confirm_deleting_folder: |
+  .input {$count :integer}
+  .match $count
+    0   {{ Soll der leere Ordner „{$name}“ wirklich gelöscht werden? }}
+    one {{ Soll der Ordner „{$name}“ mit dem darin enthaltenen Medium wirklich gelöscht werden? }}
+    *   {{ Soll der Ordner „{$name}“ mit den {$count} darin enthaltenen Medien wirklich gelöscht werden? }}
+# Progress and error messages while the folder is being renamed or deleted
+renaming_folder: Ordner wird umbenannt …
+renaming_folder_failed: Der Ordner konnte nicht umbenannt werden.
+deleting_folder: Ordner wird gelöscht …
+deleting_folder_failed: Der Ordner konnte nicht gelöscht werden.
 
 # Edit options menu: button and item labels
 edit_options: Bearbeitungsoptionen
@@ -968,6 +1024,19 @@ assets_deleted: |
   .match $count
     one {{ Medium gelöscht. }}
     *   {{ {$count} Medien gelöscht. }}
+folder_created: Ordner angelegt.
+# Folder info panel in the Asset Library sidebar
+folder_path: Ordnerpfad
+folder_contents: Inhalt
+# {$count} is the number of subfolders in the folder
+x_folders: |
+  .input {$count :integer}
+  .match $count
+    0   {{ Keine Ordner }}
+    one {{ {$count} Ordner }}
+    *   {{ {$count} Ordner }}
+folder_renamed: Ordner umbenannt.
+folder_deleted: Ordner gelöscht.
 
 # ==============================================================================
 # Content Editor
@@ -1278,6 +1347,30 @@ saving_entry:
   error:
     title: Fehler
     description: Beim Speichern des Eintrags ist ein Fehler aufgetreten. Bitte später erneut versuchen.
+# Dialog shown when saving the entry would overwrite a change someone else has made in the
+# repository since the entry was opened in the editor
+save_conflict:
+  title: Eintrag von jemand anderem geändert
+  # `{$name}` is the other person’s name, `{$date}` when they made the change
+  modified_by: '{$name} hat diesen Eintrag am {$date} geändert, nachdem er hier geöffnet wurde.'
+  # Shown instead of `modified_by` when the other person isn’t known
+  modified: Dieser Eintrag wurde im Repository geändert, nachdem er hier geöffnet wurde.
+  deleted: Dieser Eintrag wurde im Repository gelöscht, nachdem er hier geöffnet wurde.
+  # Follows `modified_by` or `modified`
+  overwrite_warning: Wird jetzt gespeichert, gehen diese Änderungen verloren.
+  # Follows `deleted`
+  recreate_warning: Wird jetzt gespeichert, wird der Eintrag neu angelegt.
+  # OK button label
+  save_anyway: Trotzdem speichern
+  # Error shown when the repository was updated between the check above and the commit itself
+  branch_moved: Das Repository wurde während des Speicherns von jemand anderem aktualisiert. Bitte erneut versuchen.
+# Notice shown in the entry editor when someone else has changed or deleted the entry in the
+# repository while the user has it open. The change itself is described with the `save_conflict`
+# strings above
+remote_change:
+  reload_entry: Eintrag neu laden
+  # Confirmation shown before reloading when the user has unsaved changes
+  confirm_reloading_entry: Soll der Eintrag wirklich neu geladen werden? Nicht gespeicherte Änderungen gehen verloren.
 
 # ==============================================================================
 # Asset Editor
@@ -1659,6 +1752,8 @@ config:
     invalid_filter_no_condition: Die Option `filter` braucht entweder die Option `value` oder die Option `pattern`, um Einträge abzugleichen.
     # {$option} is an option name such as `slug` or `summary` and {$name} is the field name or template tag from the configuration
     option_field_not_found: Die Option `{$option}` verweist auf `{$name}`, es ist aber kein solches Feld definiert.
+    # {$name} is the field name from the configuration and {$widget} is its field type; Don’t localize `thumbnail`
+    thumbnail_field_not_media: Die Option `thumbnail` verweist auf `{$name}`, das muss aber ein Bild- oder Datei-Feld sein, kein `{$widget}`-Feld.
     # {$option} is an option name such as `pattern` or `filter` and {$pattern} is the configured pattern
     invalid_regex: Die Option `{$option}` enthält den ungültigen regulären Ausdruck `{$pattern}`, der ignoriert wird.
     # {$name} is the group name from the configuration; Don’t localize `reorder`, `group` and `view_groups`
@@ -1681,6 +1776,10 @@ config:
     # {$name} is the invalid or duplicate view filter name
     invalid_view_filter_name: Der Ansichts-Filter-Name `{$name}` ist ungültig. Er darf keine Sonderzeichen enthalten.
     duplicate_view_filter_name: Namen von Ansichts-Filtern müssen eindeutig sein, aber `{$name}` wird mehrfach verwendet.
+    # {$name} is the default view group name from the configuration; Don’t localize `default` and `view_groups`
+    invalid_view_group_default: Die Option `default` von `view_groups` ist auf `{$name}` gesetzt, es gibt aber keine Ansichts-Gruppe mit diesem Namen.
+    # {$name} is the default view filter name from the configuration; Don’t localize `default` and `view_filters`
+    invalid_view_filter_default: Die Option `default` von `view_filters` ist auf `{$name}` gesetzt, es gibt aber keinen Ansichts-Filter mit diesem Namen.
     # {$count} is the 1-based collection index in the configuration array; Don’t localize `name`
     missing_collection_name: Für die Sammlung {$count} muss die Option `name` als nicht leere Zeichenkette definiert sein.
     # {$name} is the invalid or duplicate collection name
@@ -1695,6 +1794,11 @@ config:
     collection_no_fields: Für die Sammlung muss die Option `fields` mit mindestens einem Feld definiert sein.
     # Don’t localize `fields`
     collection_file_no_fields: Für die Sammlungsdatei muss die Option `fields` mit mindestens einem Feld definiert sein.
+    # Don’t localize `i18n`, `locale` and `folder`
+    collection_folder_i18n_required: Die Sammlung muss die Option `i18n` definieren, wenn der Platzhalter `locale` im Pfad `folder` verwendet wird.
+    # {$folder} is the invalid folder path; Don’t localize `locale`, `folder` and the example path. The
+    # curly brackets in the example are escaped with backslashes for MessageFormat 2
+    invalid_collection_folder_locale: Der Pfad `folder` `{$folder}` ist ungültig. Der Platzhalter `locale` darf nur einmal und nur als ganzer Ordnername vorkommen, etwa `content/\{\{locale\}\}/posts`.
     # Don’t localize `i18n`, `locale` and `file`
     collection_file_i18n_required: Für die Sammlungsdatei muss die Option `i18n` definiert sein, wenn im Pfad `file` der Platzhalter `locale` verwendet wird.
     # {$count} is the 1-based field index in the current fields array; Don’t localize `name`
@@ -1732,6 +1836,32 @@ config:
     select_field_invalid_default: Die Option `default` des Auswahl-Feldes ist auf `{$value}` gesetzt, in `options` ist dieser Wert aber nicht enthalten.
     # Don’t localize `fields` and `types`
     list_field_no_subfields: Die Option `fields` oder `types` des Listen-Feldes muss mindestens ein Element enthalten. Für eine Liste einfacher Werte die Option weglassen.
+    # Don’t localize `default`, `fields` and `types`
+    list_field_invalid_default_object: Die Option `default` des Listen-Feldes enthält ein Objekt, jedes Element muss aber ein einfacher Wert sein, weil das Feld weder `fields` noch `types` hat.
+    # {$value} is the default item from the configuration; Don’t localize `default`, `fields` and `types`
+    list_field_invalid_default_item: Die Option `default` des Listen-Feldes enthält `{$value}`, jedes Element muss aber ein Objekt sein, weil das Feld `fields` oder `types` hat.
+    # {$key} is a property name of the default item from the configuration; Don’t localize `default`
+    list_field_invalid_default_key: Die Option `default` des Listen-Feldes enthält ein Element mit der Eigenschaft `{$key}`, aber kein Unterfeld trägt diesen Namen.
+    # {$typeKey} is the configured type key, `type` by default; Don’t localize `default` and `types`
+    list_field_default_missing_type: Die Option `default` des Listen-Feldes enthält ein Element ohne die Eigenschaft `{$typeKey}`, die einen der `types` bezeichnet.
+    # {$typeKey} is the configured type key, `type` by default, and {$value} is its value in the default item; Don’t localize `default` and `types`
+    list_field_invalid_default_type: Die Option `default` des Listen-Feldes enthält ein Element, dessen Eigenschaft `{$typeKey}` auf `{$value}` steht, das aber nicht zu den `types` gehört.
+    # Don’t localize `default` and `multiple`
+    invalid_default_multiple: Die Option `default` muss ein Array sein, weil die Option `multiple` auf `true` steht.
+    invalid_default_single: Die Option `default` muss ein einzelner Wert sein und kein Array, weil die Option `multiple` nicht auf `true` steht.
+    # {$key} is a property name of the default object from the configuration; Don’t localize `default`
+    object_field_invalid_default_key: Die Option `default` des Objekt-Feldes hat die Eigenschaft `{$key}`, aber kein Unterfeld trägt diesen Namen.
+    # {$typeKey} is the configured type key, `type` by default; Don’t localize `default` and `types`
+    object_field_default_missing_type: Die Option `default` des Objekt-Feldes hat keine Eigenschaft `{$typeKey}`, die einen der `types` bezeichnet.
+    # {$typeKey} is the configured type key, `type` by default, and {$value} is its value in the default object; Don’t localize `default` and `types`
+    object_field_invalid_default_type: Die Eigenschaft `{$typeKey}` der Option `default` des Objekt-Feldes steht auf `{$value}`, das aber nicht zu den `types` gehört.
+    # Don’t localize `default` and `output_code_only`
+    code_field_invalid_default_object: Die Option `default` des Code-Feldes muss eine Zeichenkette sein, weil die Option `output_code_only` auf `true` steht.
+    # {$key} is a property name of the default object, {$code} and {$lang} are the configured property names; Don’t localize `default` and `keys`
+    code_field_invalid_default_key: Die Option `default` des Code-Feldes hat die Eigenschaft `{$key}`, die Option `keys` erlaubt aber nur `{$code}` und `{$lang}`.
+    # {$value} is the default value and {$valueType} is the configured value type; Don’t localize `default` and `value_type`
+    number_field_default_not_integer: Die Option `default` des Zahlen-Feldes ist auf `{$value}` gesetzt, muss aber eine Ganzzahl sein, weil die Option `value_type` auf `{$valueType}` steht.
+    number_field_default_not_number: Die Option `default` des Zahlen-Feldes ist auf `{$value}` gesetzt, muss aber eine Zahl sein, weil die Option `value_type` auf `{$valueType}` steht.
     # Don’t localize `fields` and `types`
     object_field_no_subfields: Die Option `fields` oder `types` des Objekt-Feldes muss mindestens ein Element enthalten.
     # {$collection}, {$file}, and {$field} are referenced names that could not be resolved
