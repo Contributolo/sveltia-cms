@@ -4,6 +4,7 @@
 
 import { unique } from '@sveltia/utils/array';
 import { getPathInfo, readAsText } from '@sveltia/utils/file';
+import { sleep } from '@sveltia/utils/misc';
 import { escapeRegExp, stripSlashes } from '@sveltia/utils/string';
 
 import { allAssets } from '$lib/services/assets';
@@ -58,18 +59,34 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
  * @see https://github.com/sveltia/sveltia-cms/issues/224
  */
 const FILE_PROCESS_BATCH_SIZE = 10;
+/**
+ * How many times renaming a temporary file to its final name is attempted, and how long to wait
+ * between attempts, in milliseconds. A rename can fail for a moment while another program has the
+ * file open, e.g. an antivirus scanner or a dev server’s file watcher reading the new file.
+ */
+const RENAME_ATTEMPTS = 3;
+const RENAME_RETRY_DELAY = 150;
 
 /**
  * Get a file or directory handle at the given path.
  * @param {FileSystemDirectoryHandle} rootDirHandle Root directory handle.
  * @param {string | undefined} path Path to the file/directory.
  * @param {'file' | 'directory'} [type] Type of the handle to retrieve.
+ * @param {object} [options] Options.
+ * @param {boolean} [options.create] Whether to create the file/directory, along with any missing
+ * parent directory, if it doesn’t exist. Default: `true`.
  * @returns {Promise<FileSystemFileHandle | FileSystemDirectoryHandle>} Handle.
- * @throws {Error} If the path is empty and the type is `file`.
+ * @throws {Error} If the path is empty and the type is `file`, or if the file/directory doesn’t
+ * exist and `create` is `false`.
  * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemDirectoryHandle/getFileHandle
  * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemDirectoryHandle/getDirectoryHandle
  */
-export const getHandleByPath = async (rootDirHandle, path, type = 'file') => {
+export const getHandleByPath = async (
+  rootDirHandle,
+  path,
+  type = 'file',
+  { create = true } = {},
+) => {
   const normalizedPath = stripSlashes(path ?? '');
   /** @type {FileSystemFileHandle | FileSystemDirectoryHandle} */
   let handle = rootDirHandle;
@@ -84,7 +101,6 @@ export const getHandleByPath = async (rootDirHandle, path, type = 'file') => {
 
   const pathParts = normalizedPath.split('/');
   const lastIndex = pathParts.length - 1;
-  const create = true;
 
   for await (const [index, name] of pathParts.entries()) {
     // If the part is the last one and the type is `file`, we need to ensure that we get a file
@@ -120,6 +136,21 @@ export const getDirectoryHandle = (rootDirHandle, path) =>
   /** @type {Promise<FileSystemDirectoryHandle>} */ (
     getHandleByPath(rootDirHandle, path, 'directory')
   );
+
+/**
+ * Read a file at the given path.
+ * @param {FileSystemDirectoryHandle} rootDirHandle Root directory handle.
+ * @param {string} path Path to the file.
+ * @returns {Promise<File>} File.
+ * @throws {Error} If the file doesn’t exist.
+ */
+export const readFile = async (rootDirHandle, path) => {
+  const handle = /** @type {FileSystemFileHandle} */ (
+    await getHandleByPath(rootDirHandle, path, 'file', { create: false })
+  );
+
+  return handle.getFile();
+};
 
 /**
  * Create a regular expression that matches the given path, taking template tags into account.
@@ -503,6 +534,30 @@ export const moveFile = async ({ rootDirHandle, previousPath, path }) => {
 };
 
 /**
+ * Rename a file, trying again a few times if the file system won’t let it go right away.
+ * @param {FileSystemFileHandle} fileHandle File handle.
+ * @param {FileSystemDirectoryHandle} dirHandle Directory to move the file to.
+ * @param {string} name New file name.
+ * @throws {Error} The last error, if every attempt fails.
+ */
+const renameFile = async (fileHandle, dirHandle, name) => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // @ts-ignore
+      await fileHandle.move(dirHandle, name);
+
+      return;
+    } catch (ex) {
+      if (attempt === RENAME_ATTEMPTS) {
+        throw ex;
+      }
+
+      await sleep(RENAME_RETRY_DELAY * attempt);
+    }
+  }
+};
+
+/**
  * Save data to a file at the specified path.
  * @param {object} args Arguments.
  * @param {FileSystemDirectoryHandle} args.rootDirHandle Root directory handle.
@@ -539,13 +594,31 @@ export const saveFile = async ({ rootDirHandle, fileHandle, path, data }) => {
 
   if (pendingRename) {
     const { dirname, basename } = pendingRename;
+    const dirHandle = await getDirectoryHandle(rootDirHandle, dirname);
 
-    // @ts-ignore
-    await fileHandle.move(await getDirectoryHandle(rootDirHandle, dirname), basename);
+    try {
+      await renameFile(fileHandle, dirHandle, basename);
+    } catch (ex) {
+      // Don’t leave the temporary file behind; the error is reported to the user, who can retry
+      try {
+        await dirHandle.removeEntry(fileHandle.name);
+      } catch {
+        //
+      }
+
+      throw ex;
+    }
   }
 
   return fileHandle.getFile();
 };
+
+/**
+ * Check if the given error says a file or directory doesn’t exist.
+ * @param {unknown} ex Error.
+ * @returns {boolean} `true` for a `NotFoundError`.
+ */
+const isNotFoundError = (ex) => /** @type {DOMException} */ (ex)?.name === 'NotFoundError';
 
 /**
  * Recursively delete empty parent directories.
@@ -557,23 +630,38 @@ export const deleteEmptyParentDirs = async (rootDirHandle, pathSegments) => {
   for (let i = pathSegments.length; i > 0; i -= 1) {
     const dirName = pathSegments[i - 1];
     const parentPath = pathSegments.slice(0, i - 1).join('/');
-    const parentHandle = await getDirectoryHandle(rootDirHandle, parentPath);
-    const dirHandle = await parentHandle.getDirectoryHandle(dirName);
 
-    // Use for...of to check if directory is empty with early exit on first entry found
-    // eslint-disable-next-line no-unreachable-loop
-    for await (const _entry of dirHandle.entries()) {
-      // Directory is not empty, stop cleanup
-      return;
+    try {
+      // Don’t bring back a parent directory that has been removed already
+      const parentHandle = /** @type {FileSystemDirectoryHandle} */ (
+        await getHandleByPath(rootDirHandle, parentPath, 'directory', { create: false })
+      );
+
+      const dirHandle = await parentHandle.getDirectoryHandle(dirName);
+
+      // Use for...of to check if directory is empty with early exit on first entry found
+      // eslint-disable-next-line no-unreachable-loop
+      for await (const _entry of dirHandle.entries()) {
+        // Directory is not empty, stop cleanup
+        return;
+      }
+
+      // Directory is empty, remove it
+      await parentHandle.removeEntry(dirName);
+    } catch (ex) {
+      // A directory that is already gone, e.g. removed outside the CMS, is as good as removed
+      if (!isNotFoundError(ex)) {
+        throw ex;
+      }
     }
-
-    // Directory is empty, remove it
-    await parentHandle.removeEntry(dirName);
   }
 };
 
 /**
- * Delete a file at the specified path within the file system.
+ * Delete a file at the specified path within the file system. The directory the file was in is left
+ * alone even if it’s now empty; {@link deleteEmptyDirs} cleans up once a whole batch of changes has
+ * been saved, because the files in a batch are removed all at once, and a directory can’t be
+ * removed while another file is being removed from it.
  * @param {object} args Arguments.
  * @param {FileSystemDirectoryHandle} args.rootDirHandle Root directory handle.
  * @param {string} args.path The path to the file to be deleted.
@@ -582,10 +670,29 @@ export const deleteFile = async ({ rootDirHandle, path }) => {
   const { dirname: dirPath = '', basename: fileName } = getPathInfo(stripSlashes(path));
   const dirHandle = await getDirectoryHandle(rootDirHandle, dirPath);
 
-  await dirHandle.removeEntry(fileName);
+  try {
+    await dirHandle.removeEntry(fileName);
+  } catch (ex) {
+    // The file may have been removed outside the CMS, e.g. in a file manager or by a Git branch
+    // switch; the point is that it’s gone, so that’s not a failure
+    if (!isNotFoundError(ex)) {
+      throw ex;
+    }
+  }
+};
 
-  if (dirPath) {
-    await deleteEmptyParentDirs(rootDirHandle, dirPath.split('/'));
+/**
+ * Delete the given directories, and their parents, if they’re empty. The directories are handled
+ * one at a time, because the file system won’t let a directory be removed while it’s being
+ * modified.
+ * @param {FileSystemDirectoryHandle} rootDirHandle Root directory handle.
+ * @param {Iterable<string>} dirPaths Paths to the directories.
+ */
+export const deleteEmptyDirs = async (rootDirHandle, dirPaths) => {
+  for (const dirPath of new Set(dirPaths)) {
+    if (dirPath) {
+      await deleteEmptyParentDirs(rootDirHandle, dirPath.split('/'));
+    }
   }
 };
 
@@ -619,32 +726,28 @@ export const saveChange = async (rootDirHandle, { action, path, previousPath, da
 };
 
 /**
- * Save entries or assets in the file system.
- * @param {FileSystemDirectoryHandle | undefined} rootDirHandle Root directory handle. This can be
- * `undefined` if the directory handle could not be acquired earlier for security reasons. If the
- * handle is not available, the changes will not be saved, but the user can still continue using the
- * app without an error thanks to the in-memory cache.
- * @param {FileChange[]} changes File changes to be saved.
- * @returns {Promise<CommitResults>} Commit results, including a pseudo commit SHA, saved files, and
- * their blob SHAs.
- * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemWritableFileStream/write
- * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemDirectoryHandle/removeEntry
+ * Check if a change is to an entry file rather than an asset.
+ * @param {FileChange} change File change.
+ * @returns {boolean} `true` for an entry file.
  */
-export const saveChanges = async (rootDirHandle, changes) => {
-  const entries = await Promise.all(
+const isEntryChange = ({ slug, data }) => slug !== undefined || typeof data === 'string';
+
+/**
+ * Save a batch of changes in the file system at the same time.
+ * @param {FileSystemDirectoryHandle | undefined} rootDirHandle Root directory handle. If it’s not
+ * available, nothing is written, and the in-memory data stands in for the files.
+ * @param {FileChange[]} changes File changes to be saved.
+ * @returns {Promise<([string, { file: Blob, sha: string }] | null)[]>} Saved files, each with its
+ * path and blob SHA, or `null` for a deleted file.
+ * @throws {Error} If a file could not be written. The other files in the batch are still written,
+ * because they’re already on their way.
+ */
+const saveChangeBatch = async (rootDirHandle, changes) =>
+  Promise.all(
     changes.map(async (change) => {
       const { path, data } = change;
       /** @type {Blob | null} */
-      let file = null;
-
-      if (rootDirHandle) {
-        try {
-          file = await saveChange(rootDirHandle, change);
-        } catch (ex) {
-          // eslint-disable-next-line no-console
-          console.error(ex);
-        }
-      }
+      let file = rootDirHandle ? await saveChange(rootDirHandle, change) : null;
 
       if (!file) {
         if (data === undefined) {
@@ -657,6 +760,58 @@ export const saveChanges = async (rootDirHandle, changes) => {
       return [path, { file, sha: await getGitHash(file) }];
     }),
   );
+
+/**
+ * Save entries or assets in the file system.
+ *
+ * The assets are written first, and the entry files last. The site’s dev server typically watches
+ * the content files, and one that reloads the page on a content change — Astro does for content
+ * collections — would reload the CMS while the assets are still being written if the entry file
+ * went first. That left the images as `.sveltia-tmp-*` files and the draft backup in place.
+ *
+ * A file that can’t be written fails the whole save, so the user is told rather than left with an
+ * entry that refers to files that don’t exist; the CMS keeps the draft, so the save can be retried.
+ * @param {FileSystemDirectoryHandle | undefined} rootDirHandle Root directory handle. This can be
+ * `undefined` if the directory handle could not be acquired earlier for security reasons. If the
+ * handle is not available, the changes will not be saved, but the user can still continue using the
+ * app without an error thanks to the in-memory cache.
+ * @param {FileChange[]} changes File changes to be saved.
+ * @returns {Promise<CommitResults>} Commit results, including a pseudo commit SHA, saved files, and
+ * their blob SHAs.
+ * @throws {Error} If a file could not be written.
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemWritableFileStream/write
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/FileSystemDirectoryHandle/removeEntry
+ */
+export const saveChanges = async (rootDirHandle, changes) => {
+  const assetChanges = changes.filter((change) => !isEntryChange(change));
+  const entryChanges = changes.filter(isEntryChange);
+
+  const entries = [
+    ...(await saveChangeBatch(rootDirHandle, assetChanges)),
+    ...(await saveChangeBatch(rootDirHandle, entryChanges)),
+  ];
+
+  if (rootDirHandle) {
+    // A directory left empty by the deleted and moved files is removed, as Git doesn’t track empty
+    // directories, so the local checkout matches what a Git backend would end up with
+    await deleteEmptyDirs(
+      rootDirHandle,
+      changes
+        .map(({ action, path, previousPath }) => {
+          if (action === 'delete') {
+            return path;
+          }
+
+          if (action === 'move' && previousPath) {
+            return previousPath;
+          }
+
+          return undefined;
+        })
+        .filter((path) => path !== undefined)
+        .map((path) => getPathInfo(stripSlashes(path)).dirname ?? ''),
+    );
+  }
 
   return {
     // Use a hash of the current date as a pseudo SHA

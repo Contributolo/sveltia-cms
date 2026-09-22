@@ -1,5 +1,5 @@
 // @ts-nocheck
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 import { isProxy } from 'node:util/types';
 
@@ -556,9 +556,25 @@ describe('draft/backup', () => {
 
     /** @type {any} */
     let updatedDraft;
+    /** @type {import('vitest').MockInstance} */
+    let createObjectURL;
 
     beforeEach(() => {
       updatedDraft = createMockDraft();
+
+      // Restoring a backup regenerates a blob URL for every file. happy-dom’s `createObjectURL()`
+      // returns a random URL, so it’s stubbed with predictable ones that are unique per call
+      let count = 0;
+
+      createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+        count += 1;
+
+        return `blob:http://localhost/restored-${count}`;
+      });
+    });
+
+    afterEach(() => {
+      createObjectURL.mockRestore();
     });
 
     it('should restore backup to entry draft without errors', () => {
@@ -641,9 +657,15 @@ describe('draft/backup', () => {
         files: { 'blob:http://localhost/abc123': { file: testFile, folder: undefined } },
       };
 
-      expect(() => {
-        restoreBackup({ backup, draft: updatedDraft });
-      }).not.toThrow();
+      restoreBackup({ backup, draft: updatedDraft });
+
+      // The old blob URL is dead once the page has been reloaded, so the file gets a new one, and
+      // the value and the draft’s file map are updated to match
+      expect(createObjectURL).toHaveBeenCalledWith(testFile);
+      expect(updatedDraft.currentValues.en.content).toBe('blob:http://localhost/restored-1');
+      expect(updatedDraft.files).toEqual({
+        'blob:http://localhost/restored-1': { file: testFile, folder: undefined },
+      });
     });
 
     it('should handle blob URL where value is already in fileURLs cache', () => {
@@ -668,9 +690,15 @@ describe('draft/backup', () => {
         },
       };
 
-      expect(() => {
-        restoreBackup({ backup, draft: updatedDraft });
-      }).not.toThrow();
+      restoreBackup({ backup, draft: updatedDraft });
+
+      // One file, one new URL, however many values refer to it
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      expect(updatedDraft.currentValues.en).toEqual({
+        image1: 'blob:http://localhost/restored-1',
+        image2: 'blob:http://localhost/restored-1',
+      });
+      expect(Object.keys(updatedDraft.files)).toEqual(['blob:http://localhost/restored-1']);
     });
 
     it('should skip blob URLs whose cache entry has no file property (legacy format)', () => {
@@ -736,9 +764,15 @@ describe('draft/backup', () => {
         },
       };
 
-      expect(() => {
-        restoreBackup({ backup, draft: updatedDraft });
-      }).not.toThrow();
+      restoreBackup({ backup, draft: updatedDraft });
+
+      expect(updatedDraft.currentValues.en.content).toBe(
+        'Image1: blob:http://localhost/restored-1 Image2: blob:http://localhost/restored-2',
+      );
+      expect(updatedDraft.files).toEqual({
+        'blob:http://localhost/restored-1': { file: file1, folder: undefined },
+        'blob:http://localhost/restored-2': { file: file2, folder: undefined },
+      });
     });
 
     it('should replace existing locale values when locale already has content', () => {
