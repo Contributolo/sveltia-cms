@@ -49,6 +49,7 @@
   import { validateDraft } from '$lib/services/contents/draft/validate';
   import { activeInlineEditors, copyFromLocaleToast } from '$lib/services/contents/editor';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
+  import { getSidebarPanels, showSidebarPanel } from '$lib/services/contents/editor/sidebar';
   import { getAssociatedAssets } from '$lib/services/contents/entry/assets';
   import { planCascadeDelete } from '$lib/services/contents/entry/relations/cascade/delete';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
@@ -65,6 +66,7 @@
     isWorkflowEnabled,
     workflowEnabled,
   } from '$lib/services/workflow';
+  import { getDiscardDialogStrings } from '$lib/services/workflow/dialogs';
   import { openAuthoring } from '$lib/services/workflow/open-authoring';
   import {
     deleteWorkflowEntry,
@@ -228,6 +230,16 @@
   // An entry awaiting deletion is read-only: there’s nothing to save or move through the stages,
   // only the deletion itself to carry out or call off
   const pendingDeletion = $derived(isPendingDeletion(unpublishedEntry));
+  // The menu item either throws the pull request away or deletes the entry outright, depending on
+  // whether it has been published
+  const discardItemStrings = $derived(
+    getDiscardDialogStrings({ pendingDeletion, publishedVersionExists }),
+  );
+  // The discard dialog is only opened for an entry with a published version. Its text is kept as it
+  // is when the discarded entry goes away, so it doesn’t change while the dialog is closing
+  const discardDialogStrings = $derived(
+    getDiscardDialogStrings({ pendingDeletion, publishedVersionExists: true }),
+  );
   // What the deletion means for the entries referencing this one through Relation fields. Nothing
   // on the configured branch can reference a draft that has never been published, and the scan is
   // only worth doing while the dialog is open
@@ -559,6 +571,20 @@
       <Menu ariaLabel={_('editor_options')}>
         {#if env.isSmallScreen}
           {@render overflowButtons()}
+          <!-- The sidebar doesn’t fit on a small screen, so its panels open in a bottom sheet. The
+            menu can’t be opened while the toolbar is disabled -->
+          {#if !notFound}
+            {#each getSidebarPanels(entryDraft.current) as { key, disabled: panelDisabled } (key)}
+              <MenuItem
+                label={_(`entry_sidebar.${key}.title`)}
+                disabled={panelDisabled}
+                onclick={() => {
+                  showSidebarPanel(key);
+                }}
+              />
+            {/each}
+            <Divider />
+          {/if}
         {/if}
         {#if !disabled && !isNew}
           {@const canDuplicate =
@@ -597,18 +623,8 @@
             <MenuItem
               variant="ghost"
               disabled={controlsDisabled}
-              label={_(
-                pendingDeletion
-                  ? 'workflow.cancel_deletion'
-                  : publishedVersionExists
-                    ? 'discard'
-                    : 'delete',
-              )}
-              aria-label={pendingDeletion
-                ? _('workflow.cancel_deletion')
-                : publishedVersionExists
-                  ? _('workflow.discard_changes')
-                  : _('delete_entries', { values: { count: 1 } })}
+              label={discardItemStrings.label}
+              aria-label={discardItemStrings.title}
               onclick={() => {
                 if (publishedVersionExists) {
                   showDiscardDialog = true;
@@ -703,6 +719,15 @@
 <Toast bind:show={showValidationToast}>
   <Alert status="error">
     {_('entry_validation_errors', { values: { count: errorCount } })}
+    <Button
+      variant="secondary"
+      size="small"
+      label={_('show_errors')}
+      onclick={() => {
+        showValidationToast = false;
+        showSidebarPanel('validation');
+      }}
+    />
   </Alert>
 </Toast>
 
@@ -771,8 +796,8 @@
 
 <ConfirmationDialog
   bind:open={showDiscardDialog}
-  title={_(pendingDeletion ? 'workflow.cancel_deletion' : 'workflow.discard_changes')}
-  okLabel={_(pendingDeletion ? 'workflow.cancel_deletion' : 'discard')}
+  title={discardDialogStrings.title}
+  okLabel={discardDialogStrings.label}
   onOk={async () => {
     await discardChanges();
   }}
@@ -780,11 +805,7 @@
     menuButton?.focus();
   }}
 >
-  {_(
-    pendingDeletion
-      ? 'workflow.confirm_cancelling_deletion'
-      : 'workflow.confirm_discarding_entry_changes',
-  )}
+  {discardDialogStrings.message}
 </ConfirmationDialog>
 
 <ConfirmationDialog
