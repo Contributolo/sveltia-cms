@@ -211,6 +211,10 @@ sign_in: Anmelden
 sign_in_with_mobile: Mit Mobilgerät anmelden
 # Instructions shown in the mobile sign-in dialog for passwordless authentication
 sign_in_with_mobile_instruction: Scannen Sie den QR-Code unten mit Ihrem Smartphone oder Tablet, um sich ohne Passwort anzumelden. Ihre Einstellungen werden automatisch übernommen.
+# Confirmation dialog shown when the CMS is opened with a sign-in link from the mobile sign-in
+# QR code. {$account} is the account name, {$service} is the Git service name, e.g. GitHub
+sign_in_with_link: Mit Link anmelden
+sign_in_with_link_confirmation: Dieser Link meldet Sie als {$account} bei {$service} an und übernimmt die Einstellungen des Geräts, auf dem er erstellt wurde. Fahren Sie nur fort, wenn Sie den Link selbst erstellt haben.
 
 # Account menu: user status and repository mode indicators
 # Shown at the top of the account dropdown menu
@@ -948,6 +952,8 @@ entry_validation_errors: |
   .match $count
     one {{ Ein Feld enthält einen Fehler. Bitte korrigieren Sie ihn, um den Eintrag zu speichern. }}
     *   {{ {$count} Felder enthalten Fehler. Bitte korrigieren Sie sie, um den Eintrag zu speichern. }}
+# Button on the validation error toast that opens the Validation panel listing the errors
+show_errors: Fehler anzeigen
 
 # ==============================================================================
 # Success Notifications
@@ -1492,6 +1498,7 @@ assets_dialog:
   title:
     file: Datei auswählen
     image: Bild auswählen
+    folder: Ordner auswählen
 
   # Search input labels
   search_for_file: Nach Dateien suchen
@@ -1499,6 +1506,16 @@ assets_dialog:
 
   # Locations panel aria-label
   locations: Quellen
+
+  # Folder selection mode for a File field with the `select_folder` option. {$path} is the public
+  # path of the folder to be selected, and {$count} is the number of folders selected
+  selected_folder: 'Ausgewählter Ordner: {$path}'
+  selected_folders: |
+    .input {$count :integer}
+    .match $count
+      one {{ {$count} Ordner ausgewählt }}
+      *   {{ {$count} Ordner ausgewählt }}
+  no_subfolders: Dieser Ordner enthält keine Unterordner.
 
   # Asset folder options
   folder:
