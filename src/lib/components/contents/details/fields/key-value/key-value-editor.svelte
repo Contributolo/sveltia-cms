@@ -1,6 +1,9 @@
 <!--
   @component
   Implement the editor for a KeyValue field compatible with Static CMS.
+
+  Like a simple List field, the editor always offers a row to type into: a field without pairs shows
+  one blank row, which isn’t stored until its key is filled in.
   @see https://staticjscms.netlify.app/docs/widget-keyvalue
   @see https://sveltiacms.app/en/docs/fields/keyvalue
 -->
@@ -8,11 +11,13 @@
   import { _ } from '@sveltia/i18n';
   import { Button, Icon, TextInput } from '@sveltia/ui';
   import equal from 'fast-deep-equal';
-  import { getContext } from 'svelte';
+  import { getContext, tick } from 'svelte';
+  import { flip } from 'svelte/animate';
 
+  import ReorderControls from '$lib/components/common/reorder-controls.svelte';
   import ValidationError from '$lib/components/contents/details/editor/validation-error.svelte';
+  import AddItemButton from '$lib/components/contents/details/fields/object/add-item-button.svelte';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
-  import { forEachTargetLocale } from '$lib/services/contents/draft/update/locale';
   import { getValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
   import {
     getPairs,
@@ -20,6 +25,8 @@
     validatePairs,
   } from '$lib/services/contents/fields/key-value/helpers';
   import { getDirection } from '$lib/services/contents/i18n';
+  import { focusReorderControl, moveListItem } from '$lib/services/utils/drag-sorting';
+  import { createDragSorter } from '$lib/services/utils/drag-sorting.svelte';
   import { watch } from '$lib/services/utils/state.svelte';
 
   /**
@@ -72,10 +79,28 @@
   let nextPairId = 0;
   /** @type {HTMLTableRowElement[]} */
   const rowElements = $state([]);
+  /** @type {HTMLTableSectionElement | undefined} */
+  let tableBody = $state();
   /** @type {boolean[]} */
   let edited = $state([]);
   /** @type {('empty' | 'duplicate' | undefined)[]} */
   let validations = $state([]);
+
+  // Removing the blank row offered for an empty field would just bring it back
+  const isOnlyBlankRow = $derived(pairs.length === 1 && !pairs[0][0] && !pairs[0][1]);
+
+  /**
+   * Add a blank row if there are no pairs, so there’s always somewhere to type, unless the keys
+   * can’t be edited, in which case there’s nothing to type into.
+   */
+  const ensureBlankRow = () => {
+    if (!pairs.length && !keysReadonly) {
+      pairs.push(['', '']);
+      pairIds.push(nextPairId);
+      nextPairId += 1;
+      edited.push(false);
+    }
+  };
 
   /**
    * Update the {@link pairs} whenever the current values are changed.
@@ -108,9 +133,18 @@
       edited = updatedPairs.map(() => false);
     }
 
-    if (!pairs.length && draft[valueStoreKey][locale][keyPath] !== null) {
-      // Enable validation
-      draft[valueStoreKey][locale][keyPath] = null;
+    ensureBlankRow();
+
+    // A blank row isn’t stored, so the field holds nothing until a key is filled in
+    if (!updatedPairs.length && draft[valueStoreKey][locale][keyPath] !== null) {
+      const valueStore = draft[valueStoreKey][locale];
+      const _keyPath = keyPath;
+
+      // Enable validation. This runs from an effect, so the write is deferred like the one in
+      // `updateStore()`
+      queueMicrotask(() => {
+        valueStore[_keyPath] = null;
+      });
     }
   };
 
@@ -118,18 +152,6 @@
    * Add an empty pair to the {@link pairs} array.
    */
   const addPair = () => {
-    const draft = entryDraft.current;
-
-    /* v8 ignore next 3 -- the editor is only rendered while the draft is there */
-    if (!draft) {
-      return;
-    }
-
-    forEachTargetLocale({ valueStore: draft[valueStoreKey], locale, i18n }, (content) => {
-      // Remove `null` added for validation
-      delete content[keyPath];
-    });
-
     pairs.push(['', '']);
     pairIds.push(nextPairId);
     nextPairId += 1;
@@ -150,7 +172,38 @@
     pairs.splice(index, 1);
     pairIds.splice(index, 1);
     edited.splice(index, 1);
+    ensureBlankRow();
   };
+
+  /**
+   * Move a pair to another position in {@link pairs}. The pairs are saved in the new order.
+   * @param {number} from Source index.
+   * @param {number} to Destination index.
+   * @param {string} [action] `data-action` of the reorder control that triggered the move, so the
+   * focus can be restored to the matching control on the row once it has moved.
+   */
+  const movePair = async (from, to, action = 'reorder') => {
+    pairs = moveListItem(pairs, from, to);
+    pairIds = moveListItem(pairIds, from, to);
+    edited = moveListItem(edited, from, to);
+
+    await tick();
+    focusReorderControl({ listElement: tableBody, index: to, action });
+  };
+
+  const sorter = createDragSorter({
+    /**
+     * Get the number of pairs.
+     * @returns {number} Pair count.
+     */
+    getItemCount: () => pairs.length,
+    /**
+     * Get the table body, whose rows are the pairs.
+     * @returns {HTMLTableSectionElement | undefined} Element.
+     */
+    getListElement: () => tableBody,
+    onMove: movePair,
+  });
 
   /**
    * Update the draft store whenever the {@link pairs} is updated.
@@ -160,11 +213,41 @@
 
     validations = validatePairs({ pairs, edited });
 
-    if (!draft || validations.some(Boolean) || pairs.some(([key]) => !key.trim())) {
+    const keyedPairs = pairs.filter(([key]) => key.trim());
+
+    if (!draft || validations.some(Boolean)) {
       return;
     }
 
-    savePairs({ draft, valueStoreKey, fieldConfig, keyPath, locale, pairs });
+    if (keyedPairs.length) {
+      // Wait until every row has a key before saving
+      if (keyedPairs.length !== pairs.length) {
+        return;
+      }
+    } else if (
+      // With no key in any row, the field holds no pairs, which only has to be saved when the last
+      // pair has just been removed, leaving a blank row that isn’t stored. A blank pair stored as
+      // the default value of a required field is left alone, so opening an entry changes nothing
+      !getPairs({ draft, valueStoreKey, keyPath, locale }).some(([key]) => key.trim())
+    ) {
+      return;
+    }
+
+    const args = {
+      draft,
+      valueStoreKey,
+      fieldConfig,
+      keyPath,
+      locale,
+      pairs: $state.snapshot(keyedPairs),
+    };
+
+    // This runs from an effect, so defer the write to the draft like `<FieldEditor>` does: a write
+    // made while an effect is running makes Svelte walk the derived graph below the value map
+    // without memoizing, which takes exponentially longer with each level of nesting
+    queueMicrotask(() => {
+      savePairs(args);
+    });
   };
 
   watch(
@@ -186,6 +269,9 @@
   <table>
     <thead>
       <tr>
+        {#if !keysReadonly}
+          <th scope="col" class="reorder" aria-label={_('reorder')}></th>
+        {/if}
         <th scope="col" class="key">{keyLabel}</th>
         <th scope="col" class="value">{valueLabel}</th>
         {#if !keysReadonly}
@@ -193,15 +279,40 @@
         {/if}
       </tr>
     </thead>
-    <tbody>
-      {#each pairs as pair, index (pairIds[index])}
-        <tr bind:this={rowElements[index]}>
+    <tbody
+      bind:this={tableBody}
+      ondragovercapture={sorter.onDragOver}
+      ondropcapture={sorter.onDrop}
+    >
+      {#each sorter.displayOrder as index (pairIds[index])}
+        <tr
+          bind:this={rowElements[index]}
+          class:dragging={sorter.dragIndex === index}
+          draggable={sorter.grabbedIndex === index}
+          ondragstart={(event) => sorter.onDragStart(index, event, pairs[index][0])}
+          ondragend={sorter.onDragEnd}
+          animate:flip={{ duration: 200 }}
+        >
+          {#if !keysReadonly}
+            <td class="reorder">
+              <div role="none">
+                <ReorderControls
+                  {index}
+                  itemCount={pairs.length}
+                  disabled={pairs.length < 2}
+                  onGrab={() => sorter.grab(index)}
+                  onRelease={sorter.release}
+                  onMove={(to, action) => movePair(index, to, action)}
+                />
+              </div>
+            </td>
+          {/if}
           <td class="key">
             <TextInput
               dir="ltr"
               readonly={keysReadonly}
               flex
-              bind:value={pair[0]}
+              bind:value={pairs[index][0]}
               invalid={!!validations[index]}
               ariaLabel={keyLabel}
               aria-errormessage={validations[index] ? `${fieldId}-kv-error` : undefined}
@@ -223,7 +334,7 @@
               dir={getDirection(locale)}
               {readonly}
               flex
-              bind:value={pair[1]}
+              bind:value={pairs[index][1]}
               ariaLabel={valueLabel}
               onkeydown={(event) => {
                 // Move focus or add a new pair with Enter key
@@ -246,6 +357,7 @@
                 size="small"
                 iconic
                 aria-label={_('remove')}
+                disabled={isOnlyBlankRow}
                 onclick={() => {
                   removePair(index);
                 }}
@@ -273,19 +385,36 @@
   </ValidationError>
 {/if}
 
-<div role="none">
-  <Button
-    label={_('add')}
-    variant="tertiary"
-    disabled={keysReadonly || pairs.length >= max}
-    onclick={() => {
-      addPair();
-    }}
-  />
-</div>
+{#if pairs.length < max}
+  <div role="none" class="toolbar">
+    <AddItemButton
+      disabled={keysReadonly}
+      {fieldConfig}
+      items={pairs}
+      addItem={() => {
+        addPair();
+      }}
+    />
+  </div>
+{/if}
 
 <style>
+  .toolbar {
+    display: flex;
+    align-items: center;
+    margin-block-start: 8px;
+
+    &:first-child {
+      margin-block-start: 0;
+    }
+  }
+
   table {
+    /* Space the cells like the items of a List field. The outer spacing is cancelled out by the
+      negative margins, which the stretched width makes up for */
+    margin: -4px;
+    border-collapse: separate;
+    border-spacing: 4px;
     width: -moz-available;
     width: -webkit-fill-available;
     width: stretch;
@@ -312,5 +441,19 @@
   td {
     padding: 0;
     vertical-align: middle;
+
+    &.reorder div {
+      display: flex;
+      align-items: center;
+    }
+  }
+
+  tr {
+    /* The dragged row is left as a faint placeholder marking the gap it would drop into, like the
+      items of a List field */
+
+    &.dragging {
+      opacity: 0.25;
+    }
   }
 </style>

@@ -1,13 +1,13 @@
-import { escapeRegExp } from '@sveltia/utils/string';
 import { flatten } from 'flat';
 
 import { suspendAutoDuplication } from '$lib/services/contents/draft';
+import { forEachTargetLocale } from '$lib/services/contents/draft/update/locale';
+import { isKeyPathWithin } from '$lib/services/contents/entry/key-paths';
 import { getSubtree } from '$lib/services/contents/entry/subtree';
-import { getOrCreate } from '$lib/services/utils/cache';
 
 /**
  * @import { DraftValueStoreKey, EntryDraft, InternalLocaleCode } from '$lib/types/private';
- * @import { FieldKeyPath } from '$lib/types/public';
+ * @import { Field, FieldKeyPath } from '$lib/types/public';
  */
 
 /**
@@ -30,12 +30,6 @@ export const updateObject = (obj, newProps) => {
 };
 
 /**
- * Cache of pre-compiled regexes keyed by field key path.
- * @type {Map<FieldKeyPath, RegExp>}
- */
-const itemListRegexCache = new Map();
-
-/**
  * Traverse the given object by decoding dot-notated key path.
  *
  * The object is a draft’s live content, not a snapshot of it, and the caller writes the manipulated
@@ -44,18 +38,12 @@ const itemListRegexCache = new Map();
  * @param {FieldKeyPath} keyPath Dot-notated field name.
  * @returns {[values: any, remainder: any]} Unflatten values and flatten remainder.
  */
-export const getItemList = (obj, keyPath) => {
-  const regex = getOrCreate(
-    itemListRegexCache,
-    keyPath,
-    () => new RegExp(`^${escapeRegExp(keyPath)}\\b(?!#)`),
-  );
-
-  return [
-    getSubtree(obj, keyPath, { live: true }) ?? [],
-    Object.fromEntries(Object.entries(obj).filter(([k]) => !regex.test(k))),
-  ];
-};
+export const getItemList = (obj, keyPath) => [
+  getSubtree(obj, keyPath, { live: true }) ?? [],
+  // Only the list itself and the key paths below it belong to the list, not a sibling whose name
+  // merely begins with the list’s, such as `tags-extra` for `tags`
+  Object.fromEntries(Object.entries(obj).filter(([k]) => !isKeyPathWithin(k, keyPath))),
+];
 
 /**
  * Update the value in a list field.
@@ -98,6 +86,35 @@ export const updateListField = ({
       });
     }
   });
+};
+
+/**
+ * Update the value in a list field for every locale the update has to be written to: the given
+ * locale, or every locale if the field has the `duplicate` i18n strategy. See
+ * {@link forEachTargetLocale} and {@link updateListField}.
+ * @param {object} args Arguments.
+ * @param {EntryDraft} args.draft Entry draft.
+ * @param {InternalLocaleCode} args.locale Locale being edited.
+ * @param {Field['i18n']} args.i18n Field-level `i18n` option.
+ * @param {DraftValueStoreKey} [args.valueStoreKey] Key to store the values in {@link EntryDraft}.
+ * @param {FieldKeyPath} args.keyPath Dot-notated field name.
+ * @param {(arg: { valueList: any[], expanderStateList: boolean[] }) => void } args.manipulate A
+ * function to manipulate the list. See {@link updateListField}.
+ */
+export const updateListFieldForLocales = ({
+  draft,
+  locale,
+  i18n,
+  valueStoreKey = 'currentValues',
+  keyPath,
+  manipulate,
+}) => {
+  forEachTargetLocale(
+    { valueStore: draft[valueStoreKey], locale, i18n, draft, keyPath },
+    (_valueMap, _locale) => {
+      updateListField({ draft, locale: _locale, valueStoreKey, keyPath, manipulate });
+    },
+  );
 };
 
 /**

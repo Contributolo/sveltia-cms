@@ -1,4 +1,3 @@
-import { sleep } from '@sveltia/utils/misc';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
@@ -60,6 +59,16 @@ describe('AssetsPanel', () => {
     ).toHaveTextContent('Unsaved');
   });
 
+  test('names the list after the kind of assets being picked', async () => {
+    const props = $state({ assets, kind: /** @type {'image' | undefined} */ ('image') });
+
+    await render(AssetsPanel, props);
+    await expect.element(page.getByRole('listbox', { name: 'Available Images' })).toBeVisible();
+
+    props.kind = undefined;
+    await expect.element(page.getByRole('listbox', { name: 'Available Files' })).toBeVisible();
+  });
+
   test('lists the subfolders ahead of the assets, opening one on a click', async () => {
     const onOpenSubfolder = vi.fn();
 
@@ -90,7 +99,7 @@ describe('AssetsPanel', () => {
     // Nothing to select in the folders, so the selection of assets is left alone
     expect(
       page
-        .getByRole('listbox', { name: 'Available Images' })
+        .getByRole('listbox', { name: 'Available Files' })
         .getByRole('option', { selected: true })
         .elements(),
     ).toHaveLength(0);
@@ -134,7 +143,6 @@ describe('AssetsPanel', () => {
 
     await render(AssetsPanel, props);
     await expect.poll(() => page.getByRole('option').elements().length).toBe(3);
-    await sleep(150);
 
     // The listed asset carries its relative path and key
     /**
@@ -163,7 +171,6 @@ describe('AssetsPanel', () => {
 
     await render(AssetsPanel, props);
     await expect.poll(() => page.getByRole('option').elements().length).toBe(3);
-    await sleep(150);
 
     /**
      * Get the URLs or paths of the selected resources.

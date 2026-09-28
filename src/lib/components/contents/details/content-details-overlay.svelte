@@ -22,7 +22,7 @@
   import SidebarSheet from '$lib/components/contents/details/sidebar/sidebar-sheet.svelte';
   import Sidebar from '$lib/components/contents/details/sidebar/sidebar.svelte';
   import Toolbar from '$lib/components/contents/details/toolbar.svelte';
-  import { rememberFocus } from '$lib/services/app/focus';
+  import { focusOverlay, rememberFocus } from '$lib/services/app/focus';
   import { goto } from '$lib/services/app/navigation';
   import { selectedCollection } from '$lib/services/contents/collection';
   import { collectionState } from '$lib/services/contents/collection/view';
@@ -46,14 +46,18 @@
   import { getExpanderKeys, syncExpanderStates } from '$lib/services/contents/editor/fields';
   import {
     getDefaultPanes,
+    getLocaleContentLabel,
     getPanesEditingLocale,
     getPaneSizes,
     getPaneStateKey,
     getRestoredPanes,
     savePaneState,
   } from '$lib/services/contents/editor/panes';
+  import {
+    afterPendingFieldUpdates,
+    awaitPendingFieldUpdates,
+  } from '$lib/services/contents/editor/pending';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
-  import { getLocaleLabel } from '$lib/services/contents/i18n';
   import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
   import { env } from '$lib/services/user/env.svelte';
   import { prefs } from '$lib/services/user/prefs.svelte';
@@ -210,10 +214,12 @@
    * Swap the panes.
    */
   const swapPanes = () => {
-    [editorFirstPane.current, editorSecondPane.current] = [
-      editorSecondPane.current,
-      editorFirstPane.current,
-    ];
+    afterPendingFieldUpdates(() => {
+      [editorFirstPane.current, editorSecondPane.current] = [
+        editorSecondPane.current,
+        editorFirstPane.current,
+      ];
+    });
   };
 
   /**
@@ -227,24 +233,13 @@
   };
 
   /**
-   * Move focus to the wrapper once the overlay is loaded.
-   */
-  const moveFocus = async () => {
-    // Wait until `inert` is updated
-    await tick();
-
-    /* v8 ignore next 4 -- the wrapper is bound as long as the overlay is mounted */
-    if (wrapper) {
-      wrapper.tabIndex = 0;
-      wrapper.focus();
-    }
-  };
-
-  /**
    * Ensure the given locale’s edit pane is visible, switching panes if needed.
    * @param {InternalLocaleCode} locale Locale code.
    */
   const ensureEditPaneVisible = async (locale) => {
+    // The panes are about to change, so let what was just typed reach the draft first
+    await awaitPendingFieldUpdates();
+
     const panes = getPanesEditingLocale({
       firstPane: editorFirstPane.current,
       secondPane: editorSecondPane.current,
@@ -297,9 +292,12 @@
     });
 
     window.requestAnimationFrame(() => {
+      const key = CSS.escape(keyPath);
+
+      // The path editor isn’t a field, so it’s marked with a validation key instead of a key path
       const targetField = document.querySelector(
         `.content-editor .pane[data-mode="edit"][data-locale="${CSS.escape(locale)}"] ` +
-          `.field[data-key-path="${CSS.escape(keyPath)}"]`,
+          `.field:is([data-key-path="${key}"], [data-validation-key="${key}"])`,
       );
 
       if (targetField) {
@@ -460,7 +458,7 @@
         } else if (hidden) {
           hidden = false;
           await switchPanes();
-          await moveFocus();
+          await focusOverlay(() => wrapper);
           await highlightEditorFieldIfNeeded();
           resetBackupToastState();
         }
@@ -478,9 +476,10 @@
   <div class="pane-wrapper">
     <Group
       class="pane"
-      ariaLabel={_(mode === 'edit' ? 'edit_x_locale' : 'preview_x_locale', {
-        values: { locale: getLocaleLabel(locale) ?? locale },
-      })}
+      ariaLabel={getLocaleContentLabel(
+        mode === 'edit' ? 'edit_x_locale' : 'preview_x_locale',
+        locale,
+      )}
       data-locale={locale}
       data-mode={mode}
     >

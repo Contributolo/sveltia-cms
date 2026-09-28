@@ -86,6 +86,20 @@ export const parseLocation = (href = window.location.href) => {
  */
 let activeTransition = null;
 
+// Finish the running view transition as soon as a key is pressed. Until the animation is over, the
+// transition overlay catches every hit test, and Sveltia UI only activates a button with its
+// keyboard shortcut if a hit test finds the button, so a shortcut pressed right after the page
+// changed would be ignored, e.g. Accel+S or Escape right after the entry editor opened, and the
+// browser would handle Accel+S itself. The listener is added as the module is loaded, so it runs
+// before the one Sveltia UI adds once a component with a shortcut is mounted
+globalThis.addEventListener?.(
+  'keydown',
+  () => {
+    activeTransition?.skipTransition();
+  },
+  { capture: true },
+);
+
 /**
  * Start page transition, if possible, after updating the content.
  * @param {ViewTransitionType} transitionType View transition type.
@@ -307,18 +321,26 @@ export const redirectLegacyEntryLink = () => {
 
 /**
  * Go back to the previous page if possible, or navigate to the given fallback URL.
- * @param {string} path Fallback URL path.
- * @param {GoToMethodOptions} [options] Options to be passed to {@link goto}.
+ * @param {string} path Fallback URL path. With the Navigation API, the previous page is only
+ * returned to when it’s at this path, or when `returnTo` accepts its path.
+ * @param {GoToMethodOptions & { returnTo?: (path: string) => boolean }} [options] Options to be
+ * passed to {@link goto}, and `returnTo` to tell which other previous pages to return to, e.g. the
+ * search results an entry was opened from.
  */
-export const goBack = (path, options = {}) => {
+export const goBack = (path, { returnTo, ...options } = {}) => {
   const transitionType = 'backwards';
 
   // Use the Navigation API if available, which is more reliable than `window.history`
   if (window.navigation?.currentEntry) {
     const { index } = window.navigation.currentEntry;
     const { sameDocument, url } = window.navigation.entries()[index - 1] ?? {};
+    const previousPath = url ? parseLocation(url).path : undefined;
 
-    if (sameDocument && url && parseLocation(url).path === path) {
+    if (
+      sameDocument &&
+      previousPath !== undefined &&
+      (previousPath === path || returnTo?.(previousPath))
+    ) {
       startViewTransition(transitionType, () => {
         window.navigation.back();
       });

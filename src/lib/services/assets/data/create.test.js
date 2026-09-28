@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createFileList, saveAssets, updatedStores } from './create.js';
+import { createFileList, saveAssets, updateStores } from './create.js';
 
 // Mock dependencies
 vi.mock('$lib/services/assets', () => ({
@@ -38,6 +38,7 @@ vi.mock('$lib/services/integrations/media-libraries/default', () => ({
 }));
 
 vi.mock('$lib/services/utils/file', () => ({
+  createPath: vi.fn((/** @type {string[]} */ segments) => segments.filter(Boolean).join('/')),
   formatFileName: vi.fn((fileName) => fileName),
 }));
 
@@ -89,6 +90,7 @@ vi.mock('$lib/services/config', () => ({
 }));
 
 vi.mock('$lib/services/utils/file', () => ({
+  createPath: vi.fn((/** @type {string[]} */ segments) => segments.filter(Boolean).join('/')),
   formatFileName: vi.fn((fileName) => fileName),
 }));
 
@@ -164,6 +166,25 @@ describe('assets/data/create', () => {
 
       expect(getAssetsByDirName).toHaveBeenCalledWith('images/2024/summer');
       expect(result[0].path).toBe('images/2024/summer/test.jpg');
+    });
+
+    it('should save the files to a root media folder without a leading slash', async () => {
+      const { getAssetsByDirName } = await import('$lib/services/assets');
+      const mockFile = new File(['content'], 'test.jpg', { type: 'image/jpeg' });
+
+      const result = createFileList({
+        files: [mockFile],
+        folder: {
+          internalPath: '',
+          collectionName: undefined,
+          publicPath: '/',
+          entryRelative: false,
+          hasTemplateTags: false,
+        },
+      });
+
+      expect(getAssetsByDirName).toHaveBeenCalledWith('');
+      expect(result[0].path).toBe('test.jpg');
     });
 
     it('should call getAssetsByDirName when folder has internalPath', async () => {
@@ -589,7 +610,7 @@ describe('assets/data/create', () => {
       const result = createFileList(uploadingAssets);
 
       expect(result).toHaveLength(1);
-      // When internalPath is undefined, join creates a path starting with /
+      // When internalPath is undefined, there’s no directory to save the file to
       expect(result[0].action).toBe('create');
       expect(result[0].name).toBe('test.jpg');
       expect(result[0].file).toBe(mockFile);
@@ -613,14 +634,14 @@ describe('assets/data/create', () => {
     });
   });
 
-  describe('updatedStores', () => {
+  describe('updateStores', () => {
     it('should update toast with save count', async () => {
       const { assetUpdatesToast } = await import('$lib/services/assets/data');
       const { skipCIConfigured } = await import('$lib/services/backends/git/shared/integration');
 
       /** @type {any} */ (skipCIConfigured).current = false;
 
-      updatedStores({ count: 3 });
+      updateStores({ count: 3 });
 
       expect(assetUpdatesToast.current).toEqual({
         saved: true,
@@ -639,7 +660,7 @@ describe('assets/data/create', () => {
       /** @type {any} */ (skipCIConfigured).current = true;
       /** @type {any} */ (skipCIEnabled).current = false;
 
-      updatedStores({ count: 1 });
+      updateStores({ count: 1 });
 
       expect(assetUpdatesToast.current).toEqual(
         expect.objectContaining({ saved: true, published: true, count: 1 }),
@@ -655,7 +676,7 @@ describe('assets/data/create', () => {
       /** @type {any} */ (skipCIConfigured).current = true;
       /** @type {any} */ (skipCIEnabled).current = true;
 
-      updatedStores({ count: 1 });
+      updateStores({ count: 1 });
 
       expect(assetUpdatesToast.current).toEqual(
         expect.objectContaining({ saved: true, published: false, count: 1 }),
@@ -682,7 +703,7 @@ describe('assets/data/create', () => {
       focusedAsset.current = /** @type {any} */ (oldAsset);
       vi.mocked(getAssetByInternalPath).mockReturnValue(/** @type {any} */ (newAsset));
 
-      updatedStores({ count: 1 });
+      updateStores({ count: 1 });
 
       expect(getAssetByInternalPath).toHaveBeenCalledWith('/images/old.jpg');
       expect(focusedAsset.current).toEqual(newAsset);
@@ -708,7 +729,7 @@ describe('assets/data/create', () => {
       overlaidAsset.current = /** @type {any} */ (oldAsset);
       vi.mocked(getAssetByInternalPath).mockReturnValue(/** @type {any} */ (newAsset));
 
-      updatedStores({ count: 1 });
+      updateStores({ count: 1 });
 
       expect(getAssetByInternalPath).toHaveBeenCalledWith('/images/old.jpg');
       expect(overlaidAsset.current).toEqual(newAsset);
@@ -746,7 +767,7 @@ describe('assets/data/create', () => {
         (path) => /** @type {any} */ (path === '/images/focused.jpg' ? newFocused : newOverlaid),
       );
 
-      updatedStores({ count: 2 });
+      updateStores({ count: 2 });
 
       expect(getAssetByInternalPath).toHaveBeenCalledWith('/images/focused.jpg');
       expect(getAssetByInternalPath).toHaveBeenCalledWith('/images/overlaid.jpg');

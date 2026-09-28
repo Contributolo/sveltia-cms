@@ -33,6 +33,14 @@ vi.mock('$lib/services/assets', () => ({
   allAssets: { current: [] },
 }));
 
+vi.mock('$lib/services/assets/info', () => ({
+  cacheAssetBlob: vi.fn(async (asset, blob) => {
+    asset.blobURL ??= 'blob:http://localhost/display-url';
+
+    return blob;
+  }),
+}));
+
 vi.mock('$lib/services/backends', () => ({
   backend: { current: undefined },
 }));
@@ -792,16 +800,15 @@ describe('save', () => {
         commitType: /** @type {CommitType} */ ('create'),
       };
 
-      // Mock URL.createObjectURL
-      const mockBlobURL = 'blob:http://localhost/test-blob-url';
-
-      vi.spyOn(URL, 'createObjectURL').mockReturnValue(mockBlobURL);
+      const { cacheAssetBlob } = await import('$lib/services/assets/info');
+      const createObjectURL = vi.spyOn(URL, 'createObjectURL');
 
       // @ts-ignore - Type issues in test
       const result = await saveChanges({
         changes,
         savingEntries: [],
-        savingAssets,
+        // A moved asset comes with the URL of its previous file, which is replaced
+        savingAssets: savingAssets.map((asset) => ({ ...asset, blobURL: 'blob:old' })),
         options,
       });
 
@@ -810,9 +817,38 @@ describe('save', () => {
         path: 'images/photo.jpg',
         name: 'photo.jpg',
         sha: 'file123',
-        blobURL: mockBlobURL,
+        blobURL: 'blob:http://localhost/display-url',
       });
-      expect(URL.createObjectURL).toHaveBeenCalled();
+      // The URL is made for display, so a file like an SVG image can’t run script on the CMS
+      // origin, and the saved file is remembered for the asset
+      expect(cacheAssetBlob).toHaveBeenCalledExactlyOnceWith(
+        result.savedAssets[0],
+        expect.any(File),
+      );
+      expect(createObjectURL).not.toHaveBeenCalled();
+    });
+
+    test('should hand a saved SVG image to the display URL helper as it is', async () => {
+      const { cacheAssetBlob } = await import('$lib/services/assets/info');
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+      const file = new File([svg], 'diagram.svg', { type: 'image/svg+xml' });
+
+      mockCommitChanges.mockResolvedValue({
+        sha: 'commit456',
+        date: new Date('2023-01-01T12:00:00Z'),
+        files: { 'images/diagram.svg': { sha: 'file123', file } },
+      });
+
+      const result = await saveChanges({
+        changes: [{ action: 'create', path: 'images/diagram.svg', data: file }],
+        // @ts-ignore - Minimal test object
+        savingAssets: [{ path: 'images/diagram.svg', name: 'diagram.svg' }],
+        options: { commitType: 'create' },
+      });
+
+      // The helper gives the asset the URL of a wrapper that can’t run script, and remembers the
+      // file itself, so reading the asset gives the file rather than the wrapper
+      expect(cacheAssetBlob).toHaveBeenCalledExactlyOnceWith(result.savedAssets[0], file);
     });
 
     test('should handle asset changes with missing file in commit results', async () => {

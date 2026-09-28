@@ -21,6 +21,7 @@
   import AddItemButton from '$lib/components/contents/details/fields/object/add-item-button.svelte';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { updateNonPrimitiveValue } from '$lib/services/contents/draft/update';
+  import { isSingleItemList } from '$lib/services/contents/fields/list/helpers';
   import { getDirection } from '$lib/services/contents/i18n';
   import { focusReorderControl, moveListItem } from '$lib/services/utils/drag-sorting';
   import { createDragSorter } from '$lib/services/utils/drag-sorting.svelte';
@@ -77,6 +78,9 @@
   const canEdit = $derived(!readonly);
   // Removing or reordering the only row would leave nothing to type into, and has nothing to do
   const hasMultipleItems = $derived(items.length > 1);
+  // A list limited to one item is shown like a single input, without the controls to reorder or
+  // remove the item, which can’t do anything with one row anyway
+  const singleItem = $derived(isSingleItemList({ fieldConfig, itemCount: items.length }));
 
   /**
    * Get the rows as they should be stored: trimmed, with the blank ones dropped.
@@ -116,21 +120,21 @@
   };
 
   /**
-   * Write the rows to the draft.
+   * Write the rows to the draft, unless they already hold the stored value. Rewriting an unchanged
+   * value isn’t harmless: it adds the placeholder of a non-empty list, which the loaded content
+   * doesn’t have, so merely opening an entry would count as a change.
    */
   const updateValue = () => {
     const draft = entryDraft.current;
+    const value = getStoredValue();
 
-    /* v8 ignore next 10 -- the editor is only rendered while the draft is there */
-    if (draft) {
-      updateNonPrimitiveValue({
-        draft,
-        valueStoreKey,
-        locale,
-        keyPath,
-        i18n,
-        value: getStoredValue(),
-      });
+    /* v8 ignore next 3 -- the editor is only rendered while the draft is there */
+    if (!draft) {
+      return;
+    }
+
+    if (!equal(value, currentValue ?? [])) {
+      updateNonPrimitiveValue({ draft, valueStoreKey, locale, keyPath, i18n, value });
     }
   };
 
@@ -227,7 +231,7 @@
       ondragend={sorter.onDragEnd}
       animate:flip={{ duration: 200 }}
     >
-      {#if canEdit}
+      {#if canEdit && !singleItem}
         <ReorderControls
           {index}
           itemCount={items.length}
@@ -256,7 +260,7 @@
           addItem(index + 1);
         }}
       />
-      {#if canEdit}
+      {#if canEdit && !singleItem}
         <Button
           variant="ghost"
           size="small"
@@ -275,7 +279,7 @@
     </div>
   {/each}
 </div>
-{#if canEdit}
+{#if canEdit && items.length < max}
   <div role="none" class="toolbar">
     <AddItemButton {fieldConfig} {items} addItem={() => addItem(items.length)} />
   </div>

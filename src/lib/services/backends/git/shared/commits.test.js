@@ -1,7 +1,13 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createCommitMessage, dedupeFileCommits, hasSkipCIMarker } from './commits';
+import {
+  createCommitMessage,
+  dedupeFileCommits,
+  fetchPerPathCommits,
+  hasSkipCIMarker,
+} from './commits';
+import { MAX_CONCURRENT_REQUESTS } from './concurrency';
 
 const mockCmsConfig = vi.hoisted(() => ({
   backend: {
@@ -77,6 +83,57 @@ describe('git/shared/commits', () => {
       const message = createCommitMessage(changes, options);
 
       expect(message).toBe('Create Blog Post “my-post”');
+    });
+
+    it('should insert values containing replacement patterns as they are', () => {
+      // `String.prototype.replaceAll()` would read `$&` as the matched text, `$'` as what follows
+      // it, and `$$` as a single `$`
+      const message = createCommitMessage([{ slug: "$&-$'-$$", path: 'content/posts/$&.md' }], {
+        commitType: 'create',
+        collection: mockCollection,
+      });
+
+      expect(message).toBe("Create Blog Post “$&-$'-$$”");
+
+      mockCmsConfig.backend.commit_messages = { uploadMedia: 'Upload {{path}}' };
+
+      expect(createCommitMessage([{ path: 'static/$`.jpg' }], { commitType: 'uploadMedia' })).toBe(
+        'Upload static/$`.jpg',
+      );
+    });
+
+    it('should not expand a placeholder found in an inserted value', () => {
+      mockCmsConfig.backend.commit_messages = { create: 'Create {{slug}} by {{author-login}}' };
+
+      const message = createCommitMessage(
+        [{ slug: '{{author-email}}', path: 'content/posts/a.md' }],
+        { commitType: 'create', collection: mockCollection },
+      );
+
+      expect(message).toBe('Create {{author-email}} by test-user');
+    });
+
+    it('should leave a placeholder without a value as it is', () => {
+      mockCmsConfig.backend.commit_messages = { uploadMedia: 'Upload {{path}} for {{slug}}' };
+
+      expect(createCommitMessage([{ path: 'static/a.jpg' }], { commitType: 'uploadMedia' })).toBe(
+        'Upload static/a.jpg for {{slug}}',
+      );
+    });
+
+    it('should insert values containing replacement patterns in the openAuthoring template', () => {
+      mockState.openAuthoring = true;
+      mockUser.login = '$&';
+      mockCmsConfig.backend.commit_messages = {
+        openAuthoring: '{{message}} (by {{author-login}})',
+      };
+
+      const message = createCommitMessage([{ slug: '$`', path: 'content/posts/a.md' }], {
+        commitType: 'create',
+        collection: mockCollection,
+      });
+
+      expect(message).toBe('Create Blog Post “$`” (by $&)');
     });
 
     it('should create default update message', () => {
@@ -738,5 +795,79 @@ describe('dedupeFileCommits()', () => {
     const duplicate = { ...older, authorName: 'Duplicate' };
 
     expect(dedupeFileCommits([older, newer, duplicate])).toEqual([newer, older]);
+  });
+});
+
+describe('fetchPerPathCommits()', () => {
+  /**
+   * Convert a raw commit to a file commit.
+   * @param {{ id: string, date: string }} commit Raw commit.
+   * @returns {import('$lib/types/private').FileCommit} File commit.
+   */
+  const parseCommit = (commit) => ({
+    sha: commit.id,
+    authorName: 'Alice',
+    date: new Date(commit.date),
+  });
+
+  it('merges the histories of all paths, keeping the first occurrence of each commit', async () => {
+    /** @type {Record<string, { id: string, date: string, from: string }[]>} */
+    const histories = {
+      'a.md': [
+        { id: 'shared', date: '2024-01-02T00:00:00Z', from: 'a.md' },
+        { id: 'a1', date: '2024-01-01T00:00:00Z', from: 'a.md' },
+      ],
+      'b.md': [
+        { id: 'b1', date: '2024-01-03T00:00:00Z', from: 'b.md' },
+        { id: 'shared', date: '2024-01-02T00:00:00Z', from: 'b.md' },
+      ],
+    };
+
+    // Resolve the first path last to make sure results are still ordered by path
+    const fetchHistory = vi.fn(
+      (path) =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(histories[path]), path === 'a.md' ? 10 : 0);
+        }),
+    );
+
+    const result = await fetchPerPathCommits(['a.md', 'b.md'], fetchHistory, (commit) => ({
+      ...parseCommit(commit),
+      authorLogin: commit.from,
+    }));
+
+    expect(fetchHistory).toHaveBeenCalledTimes(2);
+    expect(result.map(({ sha }) => sha)).toEqual(['b1', 'shared', 'a1']);
+    expect(result.find(({ sha }) => sha === 'shared')?.authorLogin).toBe('a.md');
+  });
+
+  it('returns an empty list when there are no paths', async () => {
+    const fetchHistory = vi.fn();
+
+    expect(await fetchPerPathCommits([], fetchHistory, parseCommit)).toEqual([]);
+    expect(fetchHistory).not.toHaveBeenCalled();
+  });
+
+  it('limits the number of requests in flight', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const paths = Array.from({ length: MAX_CONCURRENT_REQUESTS * 2 }, (_, i) => `${i}.md`);
+
+    const fetchHistory = vi.fn(async (path) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      inFlight -= 1;
+
+      return [{ id: path, date: '2024-01-01T00:00:00Z' }];
+    });
+
+    const result = await fetchPerPathCommits(paths, fetchHistory, parseCommit);
+
+    expect(fetchHistory).toHaveBeenCalledTimes(paths.length);
+    expect(maxInFlight).toBe(MAX_CONCURRENT_REQUESTS);
+    expect(result).toHaveLength(paths.length);
   });
 });

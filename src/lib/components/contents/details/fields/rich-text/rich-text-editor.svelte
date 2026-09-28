@@ -41,7 +41,7 @@
   } from '$lib/services/contents/fields/rich-text/images';
   import { getCanonicalLocale, getDirection } from '$lib/services/contents/i18n';
   import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
-  import { watch } from '$lib/services/utils/state.svelte';
+  import { syncValues, watch } from '$lib/services/utils/state.svelte';
 
   /**
    * @import { ImageEntry } from '$lib/services/contents/fields/rich-text/images';
@@ -91,11 +91,9 @@
 
   let cleanupTimeout = 0;
   /**
-   * Function to settle the update registered with {@link trackPendingFieldUpdate}, while the user
-   * has changed the content but the editor hasn’t written the new value back yet.
-   * @type {(() => void) | undefined}
+   * Whether the editor has yet to write a change made by the user back to {@link inputValue}.
    */
-  let settlePendingUpdate;
+  let pending = $state(false);
 
   const {
     // Field type-specific options
@@ -151,18 +149,23 @@
       return [];
     }
 
-    return _editorComponents
-      .filter((name) =>
-        allowNestedComponents === 'exclude_self' ? !parentComponentNames.includes(name) : true,
-      )
-      .map((name) =>
-        getComponentDef(name === 'image' && linkedImagesEnabled ? 'linked-image' : name),
-      )
-      .filter((def) => !!def)
-      .map(
-        (def) =>
-          /** @type {import('@sveltia/ui').TextEditorComponent} */ (new EditorComponent(def)),
-      );
+    return (
+      _editorComponents
+        .map((name) =>
+          getComponentDef(name === 'image' && linkedImagesEnabled ? 'linked-image' : name),
+        )
+        .filter((def) => !!def)
+        // Compare the definition IDs, because the parent component names are the IDs, which are
+        // prefixed for custom components, e.g. `x-youtube`
+        .filter(
+          (def) =>
+            allowNestedComponents !== 'exclude_self' || !parentComponentNames.includes(def.id),
+        )
+        .map(
+          (def) =>
+            /** @type {import('@sveltia/ui').TextEditorComponent} */ (new EditorComponent(def)),
+        )
+    );
   });
   const imageComponent = $derived(
     components.find(({ id }) => id === 'image' || id === 'linked-image'),
@@ -260,15 +263,10 @@
   };
 
   /**
-   * Update {@link inputValue} based on {@link currentValue} while avoiding a cycle dependency.
+   * Remove the extra values of the components that are no longer present in the editor, shortly
+   * after {@link currentValue} has changed.
    */
-  const setInputValue = () => {
-    const newValue = typeof currentValue === 'string' ? currentValue : '';
-
-    if (inputValue !== newValue) {
-      inputValue = newValue;
-    }
-
+  const scheduleExtraValueCleanup = () => {
     // Skip cleanup when used as a nested component editor
     const draft = entryDraft.current;
 
@@ -294,28 +292,24 @@
     }, 500);
   };
 
-  /**
-   * Update {@link currentValue} based on {@link inputValue} while avoiding a cycle dependency.
-   */
-  const setCurrentValue = () => {
-    const newValue = inputValue;
+  // Sync `inputValue` with `currentValue` in both directions
+  syncValues(
+    () => currentValue,
+    (value) => {
+      currentValue = value;
+    },
+    () => inputValue,
+    (input) => {
+      inputValue = input;
+    },
+    (value) => (typeof value === 'string' ? value : ''),
+  );
 
-    if (currentValue !== newValue) {
-      currentValue = newValue;
-    }
-  };
-
+  // Registered after the sync above, so it runs right after the input value has been updated
   watch(
     () => currentValue,
     () => {
-      setInputValue();
-    },
-  );
-
-  watch(
-    () => inputValue,
-    () => {
-      setCurrentValue();
+      scheduleExtraValueCleanup();
     },
   );
 
@@ -326,62 +320,24 @@
     window.clearTimeout(cleanupTimeout);
   });
 
-  /**
-   * Register a pending update when the user is about to change the content. The editor converts
-   * the content to Markdown with a short delay, so a save right after typing would otherwise
-   * validate the previous value.
-   */
-  const onBeforeInput = () => {
-    if (settlePendingUpdate) {
-      return;
-    }
-
-    trackPendingFieldUpdate(
-      new Promise((resolve) => {
-        // The editor doesn’t write the value back when the Markdown is unchanged, e.g. when a
-        // trailing space is typed, so give up after a while rather than blocking a save forever
-        const timeout = window.setTimeout(() => settlePendingUpdate?.(), 1000);
-
-        /**
-         * Settle the update and forget it, so the next change registers a new one.
-         */
-        settlePendingUpdate = () => {
-          window.clearTimeout(timeout);
-          settlePendingUpdate = undefined;
-          resolve();
-        };
-      }),
-    );
-  };
-
-  /**
-   * Settle the pending update once the editor has written the new value back. The value reaches
-   * {@link currentValue} through a few bindings and effects, so wait for them to be flushed first.
-   */
-  const onUpdate = async () => {
-    await tick();
-    settlePendingUpdate?.();
-  };
-
+  // While the editor holds a change made by the user, register it as a pending update: the editor
+  // converts the content to Markdown with a short delay, so a save right after a change would
+  // otherwise validate and write the previous value
   $effect(() => {
-    // The wrapper is bound before the effects run, so it’s always there
-    /* v8 ignore next 3 */
-    if (!wrapper) {
+    if (!pending) {
       return undefined;
     }
 
-    const target = wrapper;
+    /** @type {PromiseWithResolvers<void>} */
+    const { promise, resolve } = Promise.withResolvers();
 
-    // The `Update` event is dispatched on the editor’s root element without bubbling, so it can
-    // only be caught in the capture phase
-    target.addEventListener('beforeinput', onBeforeInput, true);
-    target.addEventListener('Update', onUpdate, true);
+    trackPendingFieldUpdate(promise);
 
-    return () => {
-      target.removeEventListener('beforeinput', onBeforeInput, true);
-      target.removeEventListener('Update', onUpdate, true);
-      // Don’t hold up a save when the editor goes away
-      settlePendingUpdate?.();
+    // Settle once the value has reached `currentValue` through the bindings and effects, or when
+    // the editor goes away
+    return async () => {
+      await tick();
+      resolve();
     };
   });
 </script>
@@ -402,6 +358,7 @@
         {useEmojiAutocomplete}
         {useMarkdownShortcuts}
         bind:value={inputValue}
+        bind:pending
         flex
         {readonly}
         {required}

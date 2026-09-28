@@ -1109,6 +1109,9 @@ swap_panes: Swap Panes
 # {$locale} is the localized language name for the current content pane, e.g., English
 edit_x_locale: Edit {$locale} Content
 preview_x_locale: Preview {$locale} Content
+# The content of a monolingual entry, which has no locale to name
+edit_content: Edit Content
+preview_content: Preview Content
 
 # Preview iframe labels
 content_preview: Content Preview
@@ -1117,6 +1120,8 @@ content_preview: Content Preview
 # {$locale} is the localized language name for the content options menu, e.g., English
 show_content_options_x_locale: Show {$locale} Content Options
 content_options_x_locale: '{$locale} Content Options'
+show_content_options: Show Content Options
+content_options: Content Options
 
 # Field container labels
 # {$field} is the field’s display label
@@ -1190,9 +1195,20 @@ translate_from: Translate from…
 # {$locale} is the localized language name of the source content being translated, e.g., English
 translate_from_x: Translate from {$locale}
 
-# Revert changes
+# Revert changes, restore the default values or clear the fields. The field options menu offers
+# them for a field, the content options menu of an editor pane for the locale it shows, and the
+# editor options menu for the whole entry, the latter two asking for confirmation first
 revert_changes: Revert Changes
 revert_all_changes: Revert All Changes
+restore_default: Restore Default
+clear_all: Clear All
+confirm_reverting_changes: Are you sure you want to revert all the changes made to this entry?
+# {$locale} is a locale name, e.g. French
+confirm_reverting_changes_x_locale: Are you sure you want to revert all the changes made to the {$locale} content?
+confirm_restoring_defaults: Are you sure you want to restore the default values of all the fields in this entry? Your changes will be lost.
+confirm_restoring_defaults_x_locale: Are you sure you want to restore the default values of all the fields in the {$locale} content? Your changes will be lost.
+confirm_clearing_fields: Are you sure you want to clear all the fields in this entry? Your changes will be lost.
+confirm_clearing_fields_x_locale: Are you sure you want to clear all the fields in the {$locale} content? Your changes will be lost.
 
 # Slug editing
 edit_slug: Edit Slug
@@ -1333,6 +1349,12 @@ entry_sidebar:
     no_errors_found: No errors found.
     # Button in the panel header that validates the entry on demand
     validate: Validate
+
+  # Slug panel: shows the entry slug and lets the user edit it
+  slug:
+    title: Slug
+    generated_on_save: The slug is generated from the entry’s content when it’s saved. Any date and time in it will be those of the save.
+    unavailable: This entry doesn’t have a slug.
 
   # History panel: shows entry commit history
   history:
@@ -1531,6 +1553,7 @@ assets_dialog:
 
   # Stock photo panels
   available_images: Available Images
+  available_files: Available Files
 
   # URL entry option
   enter_url: Enter URL
@@ -1935,6 +1958,8 @@ config:
     preview_path_field_not_found: The `preview_path` option refers to `{$name}`, but no such field is defined in the collection, so the preview link won’t be shown.
     # {$name} is the default identifier field name; Don’t localize `identifier_field` and `slug`
     missing_identifier_field: The collection has no `{$name}` field to name new entries with, so each new entry gets a random slug. Add a `{$name}` field, or set the `identifier_field` or `slug` option.
+    # Don’t localize `slug`, `i18n`, `multiple_files`, `multiple_folders` and `multiple_root_folders`
+    slug_i18n_ineffective: The `i18n` option of `slug` has no effect, because the collection doesn’t use the `multiple_files`, `multiple_folders` or `multiple_root_folders` i18n structure, where each locale has a file of its own.
     # Don’t localize `i18n`
     i18n_not_configured: The `i18n` option is enabled, but i18n is not configured at the top level of the configuration or in the collection, so the option has no effect.
     # {$option} is an option path from the configuration, such as `filter.Regulation`

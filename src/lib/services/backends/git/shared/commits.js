@@ -1,3 +1,4 @@
+import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { cmsConfig } from '$lib/services/config';
 import { getCollectionLabel } from '$lib/services/contents/collection';
 import { user } from '$lib/services/user/account.svelte';
@@ -45,6 +46,20 @@ const SKIP_CI_REGEX =
 export const hasSkipCIMarker = (message) => SKIP_CI_REGEX.test(message);
 
 /**
+ * Replace the `{{name}}` placeholders in the given commit message template with the given values,
+ * in a single pass. The values are inserted as they are: `$&` and the like aren’t read as
+ * replacement patterns, and a placeholder that happens to appear in a value, e.g. in a slug, isn’t
+ * expanded. A placeholder without a value is left as it is.
+ * @param {string} template Template.
+ * @param {Record<string, string>} values Values keyed by placeholder name.
+ * @returns {string} Filled message.
+ */
+const fillTemplate = (template, values) =>
+  template.replace(/\{\{([\w-]+)\}\}/g, (placeholder, key) =>
+    Object.hasOwn(values, key) ? values[key] : placeholder,
+  );
+
+/**
  * Create a Git commit message.
  * @param {FileChange[]} changes File changes to be saved.
  * @param {CommitOptions} options Commit options.
@@ -66,23 +81,19 @@ export const createCommitMessage = (
   const collectionLabel = collection ? getCollectionLabel(collection, { useSingular: true }) : '';
   // @ts-ignore
   let message = customCommitMessages[commitType] || DEFAULT_COMMIT_MESSAGES[commitType] || '';
+  const authorValues = { 'author-email': email, 'author-login': login, 'author-name': name };
 
   if (['create', 'update', 'delete'].includes(commitType)) {
-    message = message
-      .replaceAll('{{slug}}', firstSlug)
-      .replaceAll('{{collection}}', collectionLabel)
-      .replaceAll('{{path}}', firstPath)
-      .replaceAll('{{author-email}}', email)
-      .replaceAll('{{author-login}}', login)
-      .replaceAll('{{author-name}}', name);
+    message = fillTemplate(message, {
+      slug: firstSlug,
+      collection: collectionLabel,
+      path: firstPath,
+      ...authorValues,
+    });
   }
 
   if (['uploadMedia', 'deleteMedia'].includes(commitType)) {
-    message = message
-      .replaceAll('{{path}}', firstPath)
-      .replaceAll('{{author-email}}', email)
-      .replaceAll('{{author-login}}', login)
-      .replaceAll('{{author-name}}', name);
+    message = fillTemplate(message, { path: firstPath, ...authorValues });
   }
 
   if (remainingPaths.length) {
@@ -92,11 +103,10 @@ export const createCommitMessage = (
   // With Open Authoring the commit is made by an outside contributor, so the message can be wrapped
   // to record who wrote it. The default template is the message on its own, which changes nothing
   if (openAuthoring.current) {
-    message = (customCommitMessages.openAuthoring || DEFAULT_COMMIT_MESSAGES.openAuthoring)
-      .replaceAll('{{message}}', message)
-      .replaceAll('{{author-email}}', email)
-      .replaceAll('{{author-login}}', login)
-      .replaceAll('{{author-name}}', name);
+    message = fillTemplate(
+      customCommitMessages.openAuthoring || DEFAULT_COMMIT_MESSAGES.openAuthoring,
+      { message, ...authorValues },
+    );
   }
 
   // If requested, disable automatic deployments by using the standard `[skip ci]` prefix supported
@@ -133,4 +143,27 @@ export const dedupeFileCommits = (commits) => {
   });
 
   return [...commitMap.values()].sort((a, b) => b.date.getTime() - a.date.getTime());
+};
+
+/**
+ * Fetch the commit history of each of the given files with a separate request, keeping only a few
+ * requests in flight at a time so a long list doesn’t trigger a Too Many Requests error, then merge
+ * the histories into one list.
+ * @param {string[]} paths File paths to fetch commit history for.
+ * @param {(path: string) => Promise<any[]>} fetchHistory Function to fetch the raw commit list of a
+ * file from the backend’s API.
+ * @param {(commit: any) => FileCommit} parseCommit Function to convert a raw commit to a
+ * {@link FileCommit}.
+ * @returns {Promise<FileCommit[]>} Unique commits, newest first.
+ */
+export const fetchPerPathCommits = async (paths, fetchHistory, parseCommit) => {
+  /** @type {any[][]} */
+  const results = [];
+
+  // Store the results by index so they come out in the same order as the paths
+  await runConcurrently([...paths.entries()], async ([index, path]) => {
+    results[index] = await fetchHistory(path);
+  });
+
+  return dedupeFileCommits(results.flat().map(parseCommit));
 };

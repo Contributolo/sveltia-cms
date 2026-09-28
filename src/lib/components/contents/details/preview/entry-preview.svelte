@@ -42,7 +42,14 @@
     entryDraft.current && reactComponent && immutableLoaded.current
       ? preparePreviewTemplateProps({
           entryDraft,
-          draft: $state.snapshot(entryDraft.current),
+          // Only the values have to be detached from the draft. Snapshotting the whole draft on
+          // every keystroke would also copy the collection configuration, the original entry and
+          // values and the validation state, and re-render the template whenever any of them
+          // changed, e.g. when a list item is expanded
+          draft: {
+            ...entryDraft.current,
+            currentValues: $state.snapshot(entryDraft.current.currentValues),
+          },
           locale,
         })
       : undefined,
@@ -91,5 +98,7 @@
     --entry-preview-padding-inline: 16px;
     padding-block: var(--entry-preview-padding-block);
     padding-inline: var(--entry-preview-padding-inline);
+    /* Keep the content written by other users within the preview, even if it’s positioned */
+    contain: paint;
   }
 </style>

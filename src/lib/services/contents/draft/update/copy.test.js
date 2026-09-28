@@ -70,11 +70,11 @@ describe('draft/update/copy', () => {
 
     vi.mocked(getField).mockImplementation(({ keyPath }) => {
       if (keyPath === 'title') {
-        return { name: 'title', widget: 'string' };
+        return { name: 'title', i18n: true, widget: 'string' };
       }
 
       if (keyPath === 'body') {
-        return { name: 'body', widget: 'markdown' };
+        return { name: 'body', i18n: true, widget: 'markdown' };
       }
 
       return undefined;
@@ -124,7 +124,7 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'count') {
-          return { name: 'count', widget: 'number' };
+          return { name: 'count', i18n: true, widget: 'number' };
         }
 
         return undefined;
@@ -289,7 +289,11 @@ describe('draft/update/copy', () => {
       mockEntryDraft.currentValues.en.title_suffix = 'English Suffix';
       mockEntryDraft.currentValues.ja.title_suffix = '';
 
-      vi.mocked(getField).mockImplementation(() => ({ name: 'title', widget: 'string' }));
+      vi.mocked(getField).mockImplementation(() => ({
+        name: 'title',
+        i18n: true,
+        widget: 'string',
+      }));
 
       const result = getCopyingFieldMap({
         draft: mockEntryDraft,
@@ -311,11 +315,11 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'count') {
-          return { name: 'count', widget: 'number' };
+          return { name: 'count', i18n: true, widget: 'number' };
         }
 
         if (keyPath === 'title') {
-          return { name: 'title', widget: 'string' };
+          return { name: 'title', i18n: true, widget: 'string' };
         }
 
         return undefined;
@@ -339,7 +343,7 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'empty') {
-          return { name: 'empty', widget: 'string' };
+          return { name: 'empty', i18n: true, widget: 'string' };
         }
 
         return undefined;
@@ -377,11 +381,11 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'title') {
-          return { name: 'title', widget: 'string' };
+          return { name: 'title', i18n: true, widget: 'string' };
         }
 
         if (keyPath === 'body') {
-          return { name: 'body', widget: 'richtext' };
+          return { name: 'body', i18n: true, widget: 'richtext' };
         }
 
         return undefined;
@@ -406,11 +410,16 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'tags') {
-          return { name: 'tags', widget: 'list', fields: [{ name: 'tag', widget: 'string' }] };
+          return {
+            name: 'tags',
+            i18n: true,
+            widget: 'list',
+            fields: [{ name: 'tag', widget: 'string' }],
+          };
         }
 
         if (keyPath === 'title') {
-          return { name: 'title', widget: 'string' };
+          return { name: 'title', i18n: true, widget: 'string' };
         }
 
         return undefined;
@@ -431,7 +440,7 @@ describe('draft/update/copy', () => {
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => {
         if (keyPath === 'tags') {
-          return { name: 'tags', widget: 'list' }; // no fields/types/field
+          return { name: 'tags', i18n: true, widget: 'list' }; // no fields/types/field
         }
 
         return undefined;
@@ -445,6 +454,47 @@ describe('draft/update/copy', () => {
       // List field without sub-fields should be included, isMarkdown = false
       expect(result).toHaveProperty('tags');
       expect(result.tags).toEqual({ value: 'tag1 tag2', isMarkdown: false });
+    });
+
+    it('should skip the fields that are not translatable', () => {
+      mockEntryDraft.currentValues.en = {
+        title: 'English Title',
+        author: 'Jane',
+        date: 'Monday',
+        note: 'Hello',
+        'links.0.label': 'Home',
+        'links.0.url': 'https://example.com',
+        'tags.0': 'food',
+        extra: 'Unknown',
+      };
+      mockEntryDraft.currentValues.ja = {};
+
+      /** @type {Record<string, any>} */
+      const fields = {
+        title: { name: 'title', i18n: true, widget: 'string' },
+        // Only saved in the default locale
+        author: { name: 'author', i18n: false, widget: 'string' },
+        // Copied from the default locale, and read-only in the other locales
+        date: { name: 'date', i18n: 'duplicate', widget: 'string' },
+        // No option means no i18n
+        note: { name: 'note', widget: 'string' },
+        links: { name: 'links', i18n: 'translate', widget: 'list' },
+        // A subfield inherits the option of its parent, unless it has its own
+        'links.0.label': { name: 'label', widget: 'string' },
+        'links.0.url': { name: 'url', i18n: 'duplicate', widget: 'string' },
+        // An item of a List field without subfields has no configuration of its own
+        tags: { name: 'tags', i18n: true, widget: 'list' },
+      };
+
+      vi.mocked(getField).mockImplementation(({ keyPath }) => fields[keyPath]);
+
+      const result = getCopyingFieldMap({
+        draft: mockEntryDraft,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja', translate: false },
+      });
+
+      // A key without a field isn’t copied either
+      expect(Object.keys(result)).toEqual(['title', 'links.0.label', 'tags.0']);
     });
   });
 
@@ -698,6 +748,70 @@ describe('draft/update/copy', () => {
       // turndown converts HTML back to markdown
       expect(mockTurndown).toHaveBeenCalledWith('<h1>Japanese Title</h1>');
       expect(currentValues.ja.body).toBe('# Japanese Title');
+    });
+
+    it('should send plain text as HTML and decode the result when the translator takes HTML', async () => {
+      const { translator } = await import('$lib/services/integrations/translators');
+      const { prefs } = await import('$lib/services/user/prefs.svelte');
+
+      // What an HTML-format translator such as Google or DeepL hands back: special characters as
+      // entities, including those it has added itself
+      const mockTranslate = vi
+        .fn()
+        .mockResolvedValue([
+          'Q&amp;A &lt;b&gt; &quot;x&quot; &#39;y&#39; &apos;z&apos; &#x263A; &#9731; &amp;amp; &copy; &#x110000;',
+        ]);
+
+      prefs.apiKeys = { google: 'test-api-key' };
+
+      translator.current = {
+        serviceId: 'google',
+        markdownSupported: false,
+        translate: mockTranslate,
+      };
+
+      const currentValues = { en: { title: '' }, ja: { title: '' } };
+
+      await translateFields({
+        currentValues,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja' },
+        copingFieldMap: { title: { value: 'Q&A <b> &amp; "x"', isMarkdown: false } },
+      });
+
+      // The plain text is escaped, so its `<b>` and `&amp;` are sent as text rather than markup
+      expect(mockTranslate).toHaveBeenCalledWith(
+        ['Q&amp;A &lt;b&gt; &amp;amp; "x"'],
+        expect.any(Object),
+      );
+      // Each entity is decoded exactly once; an unknown or invalid one is left as is
+      expect(currentValues.ja.title).toBe(
+        "Q&A <b> \"x\" 'y' 'z' \u263A \u2603 &amp; &copy; &#x110000;",
+      );
+    });
+
+    it('should leave plain text alone when the translator supports Markdown', async () => {
+      const { translator } = await import('$lib/services/integrations/translators');
+      const { prefs } = await import('$lib/services/user/prefs.svelte');
+      const mockTranslate = vi.fn().mockResolvedValue(['Q&amp;A']);
+
+      prefs.apiKeys = { openai: 'test-api-key' };
+
+      translator.current = {
+        serviceId: 'openai',
+        markdownSupported: true,
+        translate: mockTranslate,
+      };
+
+      const currentValues = { en: { title: '' }, ja: { title: '' } };
+
+      await translateFields({
+        currentValues,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja' },
+        copingFieldMap: { title: { value: 'Q&amp;A', isMarkdown: false } },
+      });
+
+      expect(mockTranslate).toHaveBeenCalledWith(['Q&amp;A'], expect.any(Object));
+      expect(currentValues.ja.title).toBe('Q&amp;A');
     });
   });
 });

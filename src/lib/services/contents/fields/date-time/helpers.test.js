@@ -1128,6 +1128,63 @@ describe('getInputValue', () => {
 });
 
 describe('getDateTimeFieldDisplayValue', () => {
+  test('should format the same way as the `Date` locale methods', () => {
+    /** @type {Intl.DateTimeFormatOptions} */
+    const dateOptions = { year: 'numeric', month: '2-digit', day: '2-digit' };
+    /** @type {Intl.DateTimeFormatOptions} */
+    const timeOptions = { hour: '2-digit', minute: '2-digit' };
+
+    expect(
+      getDateTimeFieldDisplayValue({
+        locale: 'en',
+        fieldConfig: baseFieldConfig,
+        currentValue: '2023-12-25T14:30:00',
+      }),
+    ).toBe(
+      new Date('2023-12-25T14:30:00').toLocaleString('en', { ...dateOptions, ...timeOptions }),
+    );
+    expect(
+      getDateTimeFieldDisplayValue({
+        locale: 'ja',
+        fieldConfig: { ...baseFieldConfig, time_format: false },
+        currentValue: '2023-12-25',
+      }),
+    ).toBe(new Date('2023-12-25').toLocaleDateString('ja', { ...dateOptions, timeZone: 'UTC' }));
+    expect(
+      getDateTimeFieldDisplayValue({
+        locale: 'en',
+        fieldConfig: { ...baseFieldConfig, date_format: false, picker_utc: true },
+        currentValue: '14:30',
+      }),
+    ).toBe(
+      new Date(`${new Date().toJSON().split('T')[0]}T14:30`).toLocaleTimeString('en', {
+        ...timeOptions,
+        timeZone: 'UTC',
+      }),
+    );
+  });
+
+  test('should reuse the formatter for the same locale and options', () => {
+    const spy = vi.spyOn(Intl, 'DateTimeFormat');
+    const args = { locale: 'fr', fieldConfig: { ...baseFieldConfig, picker_utc: true } };
+    const first = getDateTimeFieldDisplayValue({ ...args, currentValue: '2023-12-25T14:30:00Z' });
+    const second = getDateTimeFieldDisplayValue({ ...args, currentValue: '2024-01-02T03:04:00Z' });
+
+    expect(first).not.toBe(second);
+    expect(second).toBe(
+      new Date('2024-01-02T03:04:00Z').toLocaleString('fr', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'UTC',
+      }),
+    );
+    // Created once for the first value, then reused
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   test('should return empty string for empty value', () => {
     const result = getDateTimeFieldDisplayValue({
       locale: 'en',
@@ -1612,13 +1669,32 @@ describe('Day.js format tokens', () => {
       };
 
       const result = getCurrentValue({
-        inputValue: '2023-12-25T14:30:07',
+        inputValue: '2023-12-25T14:30',
         currentValue: '',
         fieldConfig,
       });
 
       // Seconds are not included in the input, so default to `00`
       expect(result).toBe('00');
+    });
+
+    test('should keep the seconds the input has, as it does with a `step` under 60', () => {
+      /** @type {DateTimeField} */
+      const fieldConfig = {
+        ...baseFieldConfig,
+        format: 'YYYY-MM-DD HH:mm:ss',
+      };
+
+      expect(
+        getCurrentValue({ inputValue: '2023-12-25T14:30:07', currentValue: '', fieldConfig }),
+      ).toBe('2023-12-25 14:30:07');
+      expect(
+        getCurrentValue({
+          inputValue: '14:30:07',
+          currentValue: '',
+          fieldConfig: { ...fieldConfig, type: 'time', format: 'HH:mm:ss' },
+        }),
+      ).toBe('14:30:07');
     });
 
     test('should handle s (1-digit seconds)', () => {
@@ -1629,7 +1705,7 @@ describe('Day.js format tokens', () => {
       };
 
       const result = getCurrentValue({
-        inputValue: '2023-12-25T14:30:07',
+        inputValue: '2023-12-25T14:30',
         currentValue: '',
         fieldConfig,
       });
@@ -1794,7 +1870,7 @@ describe('Day.js format tokens', () => {
       };
 
       const result = getCurrentValue({
-        inputValue: '2023-12-25T14:30:45',
+        inputValue: '2023-12-25T14:30',
         currentValue: '',
         fieldConfig,
       });
@@ -1840,7 +1916,7 @@ describe('Day.js format tokens', () => {
       };
 
       const result = getCurrentValue({
-        inputValue: '2023-12-25T14:30:45',
+        inputValue: '2023-12-25T14:30',
         currentValue: '',
         fieldConfig,
       });
@@ -2948,5 +3024,26 @@ describe('shouldUpdateValue', () => {
     expect(shouldUpdateValue({ newValue: 'invalid', currentValue: undefined, fieldConfig })).toBe(
       false,
     );
+  });
+});
+
+describe('Test getInputValue() with a 12-hour time-only format', () => {
+  /** @type {DateTimeField} */
+  const fieldConfig = { ...baseFieldConfig, date_format: false, time_format: 'hh:mm A' };
+
+  test('should parse a PM time with the format rather than reading its digits as is', () => {
+    expect(getInputValue({ currentValue: '02:30 PM', fieldConfig })).toBe('14:30');
+  });
+
+  test('should keep a stored PM time when the input value is written back', () => {
+    const currentValue = '02:30 PM';
+    const inputValue = getInputValue({ currentValue, fieldConfig });
+    const newValue = getCurrentValue({ inputValue, currentValue, fieldConfig });
+
+    expect(shouldUpdateValue({ newValue, currentValue, fieldConfig })).toBe(false);
+  });
+
+  test('should still read the time of a value in the standard format', () => {
+    expect(getInputValue({ currentValue: '14:30', fieldConfig })).toBe('14:30');
   });
 });

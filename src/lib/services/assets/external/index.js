@@ -156,10 +156,29 @@ export const externalAssetsError = createRawState();
 export const selectedExternalAssets = createRawState([]);
 
 /**
+ * Set of selected asset IDs, for O(1) membership checks in list items.
+ */
+export const selectedExternalAssetIdSet = createDerivedState(
+  () => new Set(selectedExternalAssets.current.map(({ id }) => id)),
+);
+
+/**
  * Asset that has focus in the list, whose details are shown in the Info pane.
  * @type {{ current: ExternalAsset | undefined }}
  */
 export const focusedExternalAsset = createRawState();
+
+/**
+ * Assets the toolbar actions operate on: the selected assets, or else the focused asset, if any.
+ * @type {{ readonly current: ExternalAsset[] }}
+ */
+export const selectedOrFocusedExternalAssets = createDerivedState(() => {
+  if (selectedExternalAssets.current.length) {
+    return [...selectedExternalAssets.current];
+  }
+
+  return focusedExternalAsset.current ? [focusedExternalAsset.current] : [];
+});
 
 /**
  * ID of the asset whose details are shown in the overlay, taken from the URL. The asset itself is

@@ -1062,6 +1062,9 @@ swap_panes: ペインを入れ替える
 # {$locale} is the localized language name for the current content pane, e.g., English
 edit_x_locale: '{$locale} コンテンツを編集'
 preview_x_locale: '{$locale} コンテンツをプレビュー'
+# The content of a monolingual entry, which has no locale to name
+edit_content: コンテンツを編集
+preview_content: コンテンツをプレビュー
 
 # Preview iframe labels
 content_preview: コンテンツプレビュー
@@ -1070,6 +1073,8 @@ content_preview: コンテンツプレビュー
 # {$locale} is the localized language name for the content options menu, e.g., English
 show_content_options_x_locale: '{$locale} コンテンツのオプションを表示'
 content_options_x_locale: '{$locale} コンテンツのオプション'
+show_content_options: コンテンツのオプションを表示
+content_options: コンテンツのオプション
 
 # Field container labels
 # {$field} is the field’s display label
@@ -1140,9 +1145,17 @@ translate_from: 他の言語から翻訳…
 # {$locale} is the localized language name of the source content being translated, e.g., English
 translate_from_x: '{$locale} から翻訳'
 
-# Revert changes
+# Revert changes, restore the default values or clear the fields
 revert_changes: 変更を取り消す
 revert_all_changes: すべての変更を取り消す
+restore_default: デフォルトに戻す
+clear_all: すべてクリア
+confirm_reverting_changes: このエントリーに加えたすべての変更を取り消してもよろしいですか？
+confirm_reverting_changes_x_locale: '{$locale}のコンテンツに加えたすべての変更を取り消してもよろしいですか？'
+confirm_restoring_defaults: このエントリーのすべてのフィールドをデフォルト値に戻してもよろしいですか？変更は失われます。
+confirm_restoring_defaults_x_locale: '{$locale}のコンテンツのすべてのフィールドをデフォルト値に戻してもよろしいですか？変更は失われます。'
+confirm_clearing_fields: このエントリーのすべてのフィールドをクリアしてもよろしいですか？変更は失われます。
+confirm_clearing_fields_x_locale: '{$locale}のコンテンツのすべてのフィールドをクリアしてもよろしいですか？変更は失われます。'
 
 # Slug editing
 edit_slug: スラッグを編集
@@ -1265,6 +1278,12 @@ entry_sidebar:
     no_errors_found: エラーは見つかりませんでした。
     # Button in the panel header that validates the entry on demand
     validate: 検証
+
+  # Slug panel: shows the entry slug and lets the user edit it
+  slug:
+    title: スラッグ
+    generated_on_save: スラッグはエントリーの保存時にその内容から生成されます。スラッグに含まれる日時は保存時のものになります。
+    unavailable: このエントリーにはスラッグがありません。
 
   # History panel: shows entry commit history
   history:
@@ -1450,6 +1469,7 @@ assets_dialog:
 
   # Stock photo panels
   available_images: 利用可能な画像
+  available_files: 利用可能なファイル
 
   # URL entry option
   enter_url: URL を入力
@@ -1848,6 +1868,8 @@ config:
     preview_path_field_not_found: '`preview_path` オプションで `{$name}` が参照されていますが、そのフィールドはコレクションに定義されていないため、プレビューリンクは表示されません。'
     # {$name} is the default identifier field name; Don’t localize `identifier_field` and `slug`
     missing_identifier_field: コレクションに新しいエントリーの名前となる `{$name}` フィールドがないため、新しいエントリーにはランダムなスラッグが付けられます。`{$name}` フィールドを追加するか、`identifier_field` または `slug` オプションを設定してください。
+    # Don’t localize `slug`, `i18n`, `multiple_files`, `multiple_folders` and `multiple_root_folders`
+    slug_i18n_ineffective: コレクションが各ロケールのファイルを個別に持つ `multiple_files`、`multiple_folders`、`multiple_root_folders` のいずれの i18n 構造も使用していないため、`slug` の `i18n` オプションは効果がありません。
     # Don’t localize `i18n`
     i18n_not_configured: '`i18n` オプションが有効になっていますが、設定のトップレベルまたはコレクションで i18n が設定されていないため、このオプションは効果がありません。'
     # {$option} is an option path from the configuration, such as `filter.Regulation`

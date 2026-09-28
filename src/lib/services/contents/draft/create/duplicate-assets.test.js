@@ -34,6 +34,8 @@ vi.mock('$lib/services/assets/folders', () => ({
 
 vi.mock('$lib/services/assets/info', () => ({
   getAssetBlob: mockGetAssetBlob,
+  // The real helper wraps an SVG image; the URL is all that matters here
+  createDisplayBlobURL: vi.fn(async (/** @type {Blob} */ blob) => URL.createObjectURL(blob)),
 }));
 
 vi.mock('$lib/services/contents/collection/entries', () => ({
@@ -51,6 +53,7 @@ vi.mock('$lib/services/contents/entry/fields', () => ({
 
 vi.mock('$lib/services/contents/fields', () => ({
   MEDIA_FIELD_TYPES: ['file', 'image'],
+  RICH_TEXT_FIELD_TYPES: ['richtext', 'markdown'],
 }));
 
 vi.mock('$lib/services/contents/fields/file/helpers', () => ({
@@ -179,6 +182,17 @@ beforeEach(() => {
 });
 
 describe('copyEntryRelativeAssets()', () => {
+  test('creates the blob URL for display, keeping the original file for the upload', async () => {
+    const { createDisplayBlobURL } = await import('$lib/services/assets/info');
+    const files = await copyEntryRelativeAssets({ draft, currentValues });
+    const [[blobURL, { file }]] = Object.entries(files);
+
+    // The copy can be an SVG image from the repository, which must not run script on the CMS
+    // origin if its URL is opened in a new tab
+    expect(createDisplayBlobURL).toHaveBeenCalledExactlyOnceWith(file);
+    expect(currentValues.en.image).toBe(blobURL);
+  });
+
   test('copies an image referenced from the entry and replaces the value with a blob URL', async () => {
     const files = await copyEntryRelativeAssets({ draft, currentValues });
     const [blobURL] = getCreatedBlobURLs();
@@ -261,6 +275,46 @@ describe('copyEntryRelativeAssets()', () => {
         `![Second](${blobURLs[1]} "Title")`,
         `![First again](${blobURLs[0]})`,
         '![Remote](https://example.com/three.png)',
+      ].join('\n\n'),
+    );
+  });
+
+  test('replaces only the image source whose name is contained in another', async () => {
+    currentValues = {
+      en: {
+        body: [
+          '![Hero](hero-image.png)',
+          '![Plain](image.png)',
+          'See image.png for details.',
+          '![Plain again](image.png "image.png")',
+        ].join('\n\n'),
+      },
+    };
+
+    // `image.png` is copied before `hero-image.png`, which contains its name
+    mockGetAssetBlob.mockImplementation(async (/** @type {Asset} */ { name }) => {
+      if (name === 'hero-image.png') {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 10);
+        });
+      }
+
+      return new Blob([name], { type: 'image/png' });
+    });
+
+    const files = await copyEntryRelativeAssets({ draft, currentValues });
+    const blobURLs = Object.keys(files);
+    const heroBlobURL = blobURLs.find((url) => files[url].file.name === 'hero-image.png');
+    const plainBlobURL = blobURLs.find((url) => files[url].file.name === 'image.png');
+
+    expect(blobURLs).toHaveLength(2);
+    expect(currentValues.en.body).toBe(
+      [
+        `![Hero](${heroBlobURL})`,
+        `![Plain](${plainBlobURL})`,
+        // Text outside an image is left alone
+        'See image.png for details.',
+        `![Plain again](${plainBlobURL} "image.png")`,
       ].join('\n\n'),
     );
   });
@@ -362,6 +416,29 @@ describe('copyEntryRelativeAssets()', () => {
 
     expect(mockGetAssetByPath).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'about' }));
     expect(currentValues.en.image).toBe('blob:1');
+  });
+
+  test('hands an SVG image to the display URL helper, keeping the original for the upload', async () => {
+    const { createDisplayBlobURL } = await import('$lib/services/assets/info');
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+
+    currentValues = {
+      en: { body: '![Diagram](diagram.svg)\n\n[View full size](diagram.svg)' },
+    };
+
+    mockGetAssetBlob.mockResolvedValue(new Blob([svg], { type: 'image/svg+xml' }));
+
+    const files = await copyEntryRelativeAssets({ draft, currentValues });
+    const { file } = files['blob:1'];
+
+    // Only the image is pointed at the blob URL. The link keeps its relative path, which never
+    // leads to a blob URL that could be opened in a new tab
+    expect(currentValues.en.body).toBe('![Diagram](blob:1)\n\n[View full size](diagram.svg)');
+    // The helper makes the URL point to a wrapper that can’t run script, see `getDisplayBlob()`
+    expect(createDisplayBlobURL).toHaveBeenCalledExactlyOnceWith(file);
+    // The original file is still the one to be saved
+    expect(file.type).toBe('image/svg+xml');
+    expect(await file.text()).toBe(svg);
   });
 
   test('leaves the reference as is if the asset cannot be downloaded', async () => {

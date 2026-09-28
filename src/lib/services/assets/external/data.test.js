@@ -24,6 +24,7 @@ import {
   getExternalSubfolderAssets,
   getSharedMediaLibraryOptions,
   loadExternalAssets,
+  prepareExternalUploads,
   renameExternalAsset,
   renameExternalFolder,
   uploadExternalAssets,
@@ -114,6 +115,18 @@ describe('assets/external/data', () => {
       });
 
       expect(getSharedMediaLibraryOptions()).toEqual({ max_file_size: 1024 });
+    });
+
+    it('should merge the field-level `all` options into the global ones', () => {
+      cmsConfig.current = /** @type {any} */ ({
+        media_libraries: { all: { max_file_size: 1024, transformations: { raster_image: {} } } },
+      });
+
+      expect(
+        getSharedMediaLibraryOptions(
+          /** @type {any} */ ({ media_libraries: { all: { max_file_size: 2048 } } }),
+        ),
+      ).toEqual({ max_file_size: 2048, transformations: { raster_image: {} } });
     });
   });
 
@@ -252,6 +265,31 @@ describe('assets/external/data', () => {
 
       expect(externalAssets.current).toBeUndefined();
       expect(externalAssetsError.current).toBeUndefined();
+    });
+  });
+
+  describe('prepareExternalUploads', () => {
+    it('should process the files with the given options and sort out the rejected ones', async () => {
+      const valid = new File(['x'], 'ok.png', { type: 'image/png' });
+      const oversized = new File(['x'], 'big.png', { type: 'image/png' });
+      const invalid = new File(['x'], 'bad.png', { type: 'image/png' });
+      const options = { max_file_size: 1 };
+
+      vi.mocked(processFile).mockImplementation(async (f) => ({
+        file: f,
+        originalFile: undefined,
+        oversized: f === oversized,
+        invalid: f === invalid,
+      }));
+
+      const result = await prepareExternalUploads([valid, oversized, invalid], options);
+
+      expect(processFile).toHaveBeenCalledWith(valid, options);
+      expect(result).toEqual({
+        validFiles: [valid],
+        oversizedFileNames: ['big.png'],
+        invalidFileNames: ['bad.png'],
+      });
     });
   });
 
@@ -449,6 +487,16 @@ describe('assets/external/data', () => {
 
     it('should rename a folder by moving its assets and placeholders, then reload', async () => {
       focusedExternalSubfolder.current = { name: '2024', path: '2024' };
+      // The service lists the files at their new paths once they’ve been moved, so nothing is left
+      // under the old folder when the list is reloaded
+      vi.mocked(service.browse).mockResolvedValueOnce({
+        assets: [
+          a,
+          { ...spring, id: '2025/spring.png', description: '2025/spring.png' },
+          { ...nested, id: '2025/summer/beach.png', description: '2025/summer/beach.png' },
+        ],
+        folders: ['2025/empty'],
+      });
 
       expect(await renameExternalFolder({ name: '2024', path: '2024' }, '2025')).toBe(true);
 

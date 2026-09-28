@@ -1,4 +1,3 @@
-import { sleep } from '@sveltia/utils/misc';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
@@ -14,6 +13,7 @@ import { nestedFilterPath } from '$lib/services/contents/collection/nested';
 import { duplicateDraft } from '$lib/services/contents/draft/create/duplicate';
 import { saveEntry } from '$lib/services/contents/draft/save';
 import { copyFromLocaleToast } from '$lib/services/contents/editor';
+import { trackPendingFieldUpdate } from '$lib/services/contents/editor/pending';
 import { entryEditorSettings } from '$lib/services/contents/editor/settings';
 import { sidebarSheetPanel } from '$lib/services/contents/editor/sidebar';
 import { deployPollTimedOut } from '$lib/services/deployments';
@@ -35,6 +35,7 @@ import {
   setEntries,
 } from '$lib/test/config';
 import { createMockDraft, renderWithDraft } from '$lib/test/draft';
+import { waitForToastsToHide } from '$lib/test/toast';
 
 import Toolbar from './toolbar.svelte';
 
@@ -106,8 +107,6 @@ const getShownToastText = () =>
  */
 const openMenu = async () => {
   await page.getByRole('button', { name: 'Show Editor Options' }).click();
-  // A Sveltia UI menu starts handling clicks 100 ms after it’s opened
-  await sleep(150);
 
   return page.getByRole('menu', { name: 'Editor Options' });
 };
@@ -178,6 +177,38 @@ describe('Toolbar', () => {
     await expect.element(save).toBeEnabled();
   });
 
+  test('can be saved while a change is on its way to the draft', async () => {
+    const { draft } = await renderExisting();
+    const save = page.getByRole('button', { name: 'Save' });
+    const { promise, resolve } = Promise.withResolvers();
+
+    await expect.element(save).toBeDisabled();
+    // A rich text editor writes a change to the draft a moment after it’s made
+    trackPendingFieldUpdate(promise);
+    await expect.element(save).toBeEnabled();
+    await save.click();
+    draft.currentValues._default.title = 'Hi';
+    resolve(undefined);
+
+    await vi.waitFor(() =>
+      expect(saveEntry).toHaveBeenCalledWith({ draft, skipCI: undefined, overwrite: false }),
+    );
+  });
+
+  test('doesn’t save once a pending change turns out to change nothing', async () => {
+    await renderExisting();
+
+    const save = page.getByRole('button', { name: 'Save' });
+    const { promise, resolve } = Promise.withResolvers();
+
+    trackPendingFieldUpdate(promise);
+    await save.click();
+    resolve(undefined);
+
+    await expect.element(save).toBeDisabled();
+    expect(saveEntry).not.toHaveBeenCalled();
+  });
+
   test('reports the fields that failed validation', async () => {
     vi.mocked(saveEntry).mockRejectedValue(new Error('validation_failed'));
 
@@ -197,6 +228,16 @@ describe('Toolbar', () => {
     expect(entryEditorSettings.current?.sidebarPanel).toBe('validation');
     expect(sidebarSheetPanel.current).toBeNull();
     await expect.poll(getShownToastText).toBeUndefined();
+  });
+
+  test('puts the validation error toast away by itself', async () => {
+    vi.mocked(saveEntry).mockRejectedValue(new Error('validation_failed'));
+
+    await renderToolbar({ validities: { _default: { title: { valid: false } } } });
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect.element(page.getByRole('button', { name: 'Show Errors' })).toBeVisible();
+
+    await waitForToastsToHide();
   });
 
   test('offers no sidebar panels for a missing entry on a small screen', async () => {
@@ -380,7 +421,14 @@ describe('Toolbar', () => {
         .getByRole('menuitem')
         .elements()
         .map((el) => el.textContent?.trim()),
-    ).toEqual(['Duplicate', 'Delete', 'Edit Slug', 'Revert All Changes']);
+    ).toEqual([
+      'Duplicate',
+      'Delete',
+      'Edit Slug',
+      'Revert All Changes',
+      'Restore Default',
+      'Clear All',
+    ]);
     await expect.element(menu.getByRole('menuitem', { name: 'Edit Slug' })).toBeEnabled();
     await expect.element(menu.getByRole('menuitem', { name: 'Revert All Changes' })).toBeDisabled();
     // A checked item has a check icon
@@ -503,13 +551,11 @@ describe('Toolbar', () => {
     });
   });
 
-  test('opens the slug editor', async () => {
+  test('opens the Slug panel', async () => {
     await renderExisting({ currentSlugs: { _default: 'hello' } });
     await (await openMenu()).getByRole('menuitem', { name: 'Edit Slug' }).click();
 
-    await expect.element(page.getByRole('dialog', { name: 'Edit Slug' })).toBeInTheDocument();
-    await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
-    await expect.poll(() => page.getByRole('dialog').elements().length).toBe(0);
+    expect(entryEditorSettings.current?.sidebarPanel).toBe('slug');
   });
 
   test('reverts the changes', async () => {
@@ -520,7 +566,29 @@ describe('Toolbar', () => {
     const menu = await openMenu();
 
     await menu.getByRole('menuitem', { name: 'Revert All Changes' }).click();
+
+    // The changes are only reverted once confirmed
+    const dialog = page.getByRole('alertdialog');
+
+    await expect.element(dialog).toMatchTextContent('revert all the changes made to this entry?');
+    expect(draft.currentValues._default.title).toBe('Hi');
+    await dialog.getByRole('button', { name: 'Revert All Changes' }).click();
     await expect.poll(() => draft.currentValues._default.title).toBe('Hello');
+  });
+
+  test('restores the default values and clears the fields once confirmed', async () => {
+    const { draft } = await renderExisting();
+
+    await (await openMenu()).getByRole('menuitem', { name: 'Clear All' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Clear All' }).click();
+    await expect.poll(() => draft.currentValues._default.title).toBe('');
+
+    // Cancelling leaves the fields alone
+    await expect.poll(() => document.querySelector('dialog.popup')).toBeNull();
+    draft.currentValues._default.title = 'Hi';
+    await (await openMenu()).getByRole('menuitem', { name: 'Restore Default' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel' }).click();
+    expect(draft.currentValues._default.title).toBe('Hi');
   });
 
   test('toggles the panes', async () => {
@@ -552,7 +620,7 @@ describe('Toolbar', () => {
         .getByRole('menuitem')
         .elements()
         .map((el) => el.textContent?.trim()),
-    ).toEqual(['Edit Slug', 'Revert All Changes']);
+    ).toEqual(['Edit Slug', 'Revert All Changes', 'Restore Default', 'Clear All']);
     await expect.element(menu.getByRole('menuitem', { name: 'Edit Slug' })).toBeDisabled();
   });
 
@@ -574,7 +642,6 @@ describe('Toolbar', () => {
     const { draft: anotherDraft } = await renderToolbar();
 
     await page.getByRole('button', { name: 'More Options' }).last().click();
-    await sleep(150);
     await page.getByRole('menuitem', { name: 'Save without Publishing' }).click();
     await vi.waitFor(() =>
       expect(saveEntry).toHaveBeenCalledWith({
@@ -611,6 +678,7 @@ describe('Toolbar', () => {
     await expect
       .element(page.getByRole('alert'))
       .toHaveTextContent('error Error Couldn’t delete the entry. Please try again.');
+    await waitForToastsToHide();
   });
 
   test('reports a failure to save without a cause', async () => {
@@ -687,7 +755,6 @@ describe('Toolbar', () => {
     vi.mocked(saveEntry).mockReturnValue(/** @type {any} */ (new Promise(() => {})));
     await renderToolbar();
     await page.getByRole('button', { name: 'More Options' }).last().click();
-    await sleep(150);
     await expect.element(page.getByRole('menuitem', { name: 'Save and Publish' })).toBeVisible();
     await userEvent.keyboard('{Escape}');
     await page.getByRole('button', { name: 'Save' }).last().click();
@@ -831,6 +898,8 @@ describe('Toolbar', () => {
     await expect
       .poll(getShownToastText)
       .toBe('check_circle Success Field copied from \u2068xx\u2069.');
+    await waitForToastsToHide();
+    expect(copyFromLocaleToast.current.show).toBe(false);
   });
 
   test('reports an unexpected error', async () => {
@@ -910,6 +979,18 @@ describe('Toolbar', () => {
     await expect
       .element((await openMenu()).getByRole('menuitemcheckbox', { name: 'Sync Scrolling' }))
       .toBeDisabled();
+  });
+
+  test('has nothing to sync once the preview of a single locale is hidden', async () => {
+    await renderExisting();
+
+    const syncScrolling = (await openMenu()).getByRole('menuitemcheckbox', {
+      name: 'Sync Scrolling',
+    });
+
+    await expect.element(syncScrolling).toBeEnabled();
+    entryEditorSettings.current = { ...entryEditorSettings.current, showPreview: false };
+    await expect.element(syncScrolling).toBeDisabled();
   });
 
   test('reports the result of copying from another locale', async () => {
@@ -995,7 +1076,15 @@ describe('Toolbar', () => {
           .getByRole('menuitem')
           .elements()
           .map((el) => el.textContent?.trim()),
-      ).toEqual(['Duplicate', 'Discard', 'Delete', 'Edit Slug', 'Revert All Changes']);
+      ).toEqual([
+        'Duplicate',
+        'Discard',
+        'Delete',
+        'Edit Slug',
+        'Revert All Changes',
+        'Restore Default',
+        'Clear All',
+      ]);
     });
 
     test('offers to publish an entry that is ready', async () => {
@@ -1235,14 +1324,17 @@ describe('Toolbar', () => {
           .map((el) => el.textContent?.trim()),
       ).toEqual([
         'View on Live Site',
+        'Slug',
         'Validation',
         'History',
         'Backlinks',
         'Duplicate',
         'Discard',
         'Delete',
-        'Edit Slug',
+        // The Slug panel above takes the place of the Edit Slug shortcut
         'Revert All Changes',
+        'Restore Default',
+        'Clear All',
       ]);
       // The pane options are for large screens
       expect(menu.getByRole('menuitemcheckbox').elements()).toHaveLength(0);

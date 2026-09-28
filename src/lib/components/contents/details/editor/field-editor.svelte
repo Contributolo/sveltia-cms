@@ -1,24 +1,19 @@
 <script>
   import { _ } from '@sveltia/i18n';
-  import { Alert, Menu, MenuButton, MenuItem, Spacer } from '@sveltia/ui';
-  import { escapeRegExp } from '@sveltia/utils/string';
-  import equal from 'fast-deep-equal';
-  import { sanitize } from 'isomorphic-dompurify';
-  import { parseInline } from 'marked';
+  import { Alert, Menu, MenuButton, Spacer } from '@sveltia/ui';
   import { getContext, setContext } from 'svelte';
 
   import CopyMenuItems from '$lib/components/contents/details/editor/copy-menu-items.svelte';
   import FieldEditorGroup from '$lib/components/contents/details/editor/field-editor-group.svelte';
+  import ResetMenuItems from '$lib/components/contents/details/editor/reset-menu-items.svelte';
   import TranslateButton from '$lib/components/contents/details/editor/translate-button.svelte';
   import ValidationError from '$lib/components/contents/details/editor/validation-error.svelte';
   import { CustomEditor, editors } from '$lib/components/contents/details/fields';
   import { customFieldTypeRegistry } from '$lib/services/api/registries';
-  import { INTERNAL_PROP_REGEX } from '$lib/services/contents/draft';
+  import { isDuplicatedField } from '$lib/services/contents/draft/create/proxy.svelte';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
-  import {
-    resolveOriginalKeyPath,
-    revertChanges,
-  } from '$lib/services/contents/draft/update/revert';
+  import { canResetField, resetField } from '$lib/services/contents/draft/update/reset';
+  import { isFieldChanged, revertChanges } from '$lib/services/contents/draft/update/revert';
   import { getValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
   import {
     getCurrentValue,
@@ -26,8 +21,11 @@
     isFieldMultiple,
     isFieldRequired,
   } from '$lib/services/contents/entry/fields';
+  import { isAutoNowField } from '$lib/services/contents/fields/date-time/auto-now';
   import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
+  import { isFieldTranslatable } from '$lib/services/contents/i18n/fields';
   import { createRawState } from '$lib/services/utils/state.svelte';
+  import { sanitizeInlineMarkdown } from '$lib/services/utils/string';
   import { isPendingDeletion } from '$lib/services/workflow';
 
   /**
@@ -67,14 +65,6 @@
 
   const entryDraft = getEntryDraftContext();
 
-  /**
-   * Options for {@link sanitize}.
-   */
-  const SANITIZE_OPTIONS = {
-    ALLOWED_TAGS: ['strong', 'em', 'del', 'code', 'a', 'br'],
-    ALLOWED_ATTR: ['href'],
-  };
-
   /** @type {Props} */
   let {
     /* eslint-disable prefer-const */
@@ -91,12 +81,15 @@
   const fieldId = $props.id();
 
   /**
-   * Parse the given string as Markdown and sanitize the result to only allow certain tags.
+   * Parse the given string as Markdown and sanitize the result to only allow certain tags. A
+   * literal `\n` is turned into a line break.
    * @param {string} str Original string.
    * @returns {string} Sanitized string.
    */
   const _sanitize = (str) =>
-    sanitize(/** @type {string} */ (parseInline(str.replaceAll('\\n', '<br>'))), SANITIZE_OPTIONS);
+    sanitizeInlineMarkdown(str.replaceAll('\\n', '<br>'), {
+      allowedTags: ['strong', 'em', 'del', 'code', 'a', 'br'],
+    });
 
   /**
    * Write a value coming from the widget editor back to the entry draft.
@@ -149,7 +142,7 @@
     label = '',
     comment = '',
     hint = '',
-    readonly: readonlyOption = false,
+    readonly: readonlyOption,
   } = $derived(/** @type {VisibleField} */ (fieldConfig));
   const required = $derived(isFieldRequired({ fieldConfig, locale }));
   const multiple = $derived(isFieldMultiple(fieldConfig));
@@ -182,8 +175,28 @@
   );
   /* v8 ignore stop */
   const otherLocales = $derived(i18nEnabled ? allLocales.filter((l) => l !== locale) : []);
-  const canTranslate = $derived(i18nEnabled && (i18n === true || i18n === 'translate'));
-  const canDuplicate = $derived(i18nEnabled && i18n === 'duplicate');
+  const canTranslate = $derived(i18nEnabled && isFieldTranslatable(i18n));
+  const valueMap = $derived(getValueMapSnapshot(entryDraft.current, locale, valueStoreKey));
+  // A field without an `i18n` option of its own is duplicated along with an ancestor using the
+  // `duplicate` strategy, so it’s shown read-only in the other locales like the ancestor, rather
+  // than leaving an empty List item or Object field there. A rich text editor component’s subfield
+  // isn’t part of the entry’s fields, so it only has its own option
+  const canDuplicate = $derived(
+    i18nEnabled &&
+      (inEditorComponent
+        ? i18n === 'duplicate'
+        : isDuplicatedField({
+            fieldConfig,
+            getFieldArgs: {
+              // The editor is only rendered while the draft is there
+              collectionName: /** @type {string} */ (entryDraft.current?.collectionName),
+              fileName: entryDraft.current?.fileName,
+              isIndexFile: entryDraft.current?.isIndexFile,
+              keyPath,
+              valueMap,
+            },
+          })),
+  );
   // KeyValue field only: the keys are mirrored from the default locale, the values are editable
   const canDuplicateKeys = $derived(i18nEnabled && i18n === 'duplicate_keys');
   const canEdit = $derived(
@@ -195,71 +208,59 @@
   );
   const canCopy = $derived(!inEditorComponent && canTranslate && otherLocales.length);
   const canRevert = $derived(!inEditorComponent && !(canDuplicate && locale !== defaultLocale));
-  const keyPathRegex = $derived(new RegExp(`^${escapeRegExp(keyPath)}\\.\\d+$`));
-  const valueMap = $derived(getValueMapSnapshot(entryDraft.current, locale, valueStoreKey));
   const customFieldType = $derived(customFieldTypeRegistry.get(fieldType));
   const currentValue = $derived(
     getCurrentValue({ valueMap, keyPath, isList, isCustomFieldType: !!customFieldType }),
   );
-  const originalValue = $derived.by(() => {
-    if (isList) {
-      return Object.entries(originalValues?.[locale] ?? {})
-        .filter(([_keyPath]) => keyPathRegex.test(_keyPath))
-        .map(([, val]) => val)
-        .filter((val) => val !== undefined);
-    }
-
-    // For fields inside list items, use the original key path if the item was reordered
-    const originalKeyPath = resolveOriginalKeyPath(valueMap, keyPath)?.originalKeyPath ?? keyPath;
-    const originalMap = originalValues?.[locale] ?? {};
-
-    // A custom field type may hold an object, which is stored under its child key paths, so it has
-    // to be assembled the same way as the current value for the two to compare equal
-    if (customFieldType) {
-      return getCurrentValue({
-        valueMap: originalMap,
-        keyPath: originalKeyPath,
-        isList,
-        isCustomFieldType: true,
-      });
-    }
-
-    return originalMap[originalKeyPath];
-  });
-  const isRevertDisabled = $derived.by(() => {
-    if (fieldType === 'list') {
-      // For list fields, compare all flat entries under the keyPath prefix, because `currentValue`
-      // and `originalValue` may not capture complex (nested) list items correctly
-      const currentMap = valueMap;
-      const originalMap = originalValues?.[locale] ?? {};
-      const keyPathPrefix = `${keyPath}.`;
-
-      const currentEntries = Object.entries(currentMap)
-        .filter(([k]) => k.startsWith(keyPathPrefix) && !INTERNAL_PROP_REGEX.test(k))
-        .sort(([a], [b]) => a.localeCompare(b));
-
-      const originalEntries = Object.entries(originalMap)
-        .filter(([k]) => k.startsWith(keyPathPrefix) && !INTERNAL_PROP_REGEX.test(k))
-        .sort(([a], [b]) => a.localeCompare(b));
-
-      return equal(currentEntries, originalEntries);
-    }
-
-    return equal(currentValue, originalValue);
-  });
+  const isRevertDisabled = $derived(
+    !isFieldChanged({
+      currentValueMap: valueMap,
+      originalValueMap: originalValues?.[locale] ?? {},
+      keyPath,
+    }),
+  );
   const validity = $derived(entryDraft.current?.validities[locale][keyPath]);
   const fieldLabel = $derived(label || fieldName);
   // An entry awaiting deletion is shown for reference only. Unlike `readonly`, which is also set
   // for a duplicated locale, this hides the options that would change the content
   const pendingDeletion = $derived(isPendingDeletion(entryDraft.current?.originalEntry));
+  // A DateTime field with the `auto_now` option is set on save, so it can’t be edited, and it’s
+  // hidden while the entry is being created because it has no meaningful value until then. The
+  // option is ignored in a rich text editor component, whose values aren’t set on save
+  const autoNow = $derived(!inEditorComponent && isAutoNowField(fieldConfig));
+  const hidden = $derived(fieldType === 'compute' || (autoNow && !!entryDraft.current?.isNew));
   const readonly = $derived(
-    readonlyOption ||
+    // The `readonly` option defaults to `true` for the UUID field type, which can be unlocked
+    (readonlyOption ?? fieldType === 'uuid') ||
+      autoNow ||
       pendingDeletion ||
-      (i18n === 'duplicate' && locale !== defaultLocale) ||
-      fieldType === 'compute' ||
-      fieldType === 'uuid',
+      (canDuplicate && locale !== defaultLocale) ||
+      fieldType === 'compute',
   );
+  // A field can be restored to its default value or cleared, unless it can’t be edited or its keys
+  // follow the default locale, as with a KeyValue field using the `duplicate_keys` i18n strategy
+  const canReset = $derived(
+    !inEditorComponent && !readonly && !(canDuplicateKeys && locale !== defaultLocale),
+  );
+  /**
+   * Whether restoring the default value or clearing the field would change anything. It takes
+   * going through the whole field, so it’s only checked as the menu opens rather than on every
+   * change.
+   */
+  let resetAvailability = $state({ restore: false, clear: false });
   const invalid = $derived(validity?.valid === false);
+
+  /**
+   * Check whether restoring the default value or clearing the field would change anything.
+   */
+  const updateResetAvailability = () => {
+    const args = { valueMap, fieldConfig, keyPath, locale, defaultLocale };
+
+    resetAvailability = {
+      restore: canResetField({ ...args, restore: true }),
+      clear: canResetField(args),
+    };
+  };
   const editorProps = $derived({
     locale,
     keyPath,
@@ -297,7 +298,7 @@
     data-field-type={fieldType}
     data-key-path={keyPath}
     data-typed-key-path={typedKeyPath}
-    hidden={fieldType === 'compute'}
+    {hidden}
   >
     <header role="none">
       <h4 role="none" id="{fieldId}-label">{fieldLabel}</h4>
@@ -308,7 +309,7 @@
       {#if canCopy && ['richtext', 'markdown', 'string', 'text', 'list', 'object'].includes(fieldType)}
         <TranslateButton size="small" {locale} {otherLocales} {keyPath} />
       {/if}
-      {#if canCopy || canRevert}
+      {#if canCopy || canRevert || canReset}
         <MenuButton
           variant="ghost"
           size="small"
@@ -316,6 +317,8 @@
           disabled={pendingDeletion}
           popupPosition="bottom-right"
           aria-label={_('show_field_options')}
+          onclick={updateResetAvailability}
+          onkeydown={updateResetAvailability}
         >
           {#snippet popup()}
             <Menu ariaLabel={_('field_options')}>
@@ -324,15 +327,27 @@
               {/if}
               <!-- A field that can be copied from another locale can be reverted as well, so the
               menu always offers it -->
-              <MenuItem
-                label={_('revert_changes')}
-                disabled={isRevertDisabled}
-                onclick={() => {
-                  revertChanges({
-                    draft: /** @type {EntryDraft} */ (entryDraft.current),
-                    locale,
-                    keyPath,
-                  });
+              <ResetMenuItems
+                scope="field"
+                separator={!!canCopy}
+                available={{
+                  revert: !isRevertDisabled,
+                  ...(canReset ? resetAvailability : {}),
+                }}
+                onSelect={(action) => {
+                  const draft = /** @type {EntryDraft} */ (entryDraft.current);
+
+                  if (action === 'revert') {
+                    revertChanges({ draft, locale, keyPath });
+                  } else {
+                    resetField({
+                      draft,
+                      fieldConfig,
+                      keyPath,
+                      locale,
+                      restore: action === 'restore',
+                    });
+                  }
                 }}
               />
             </Menu>

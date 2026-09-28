@@ -12,6 +12,7 @@ import {
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { fetchAndParseFiles } from '$lib/services/backends/git/shared/fetch';
+import { encodePath } from '$lib/services/backends/git/shared/url';
 import { dataLoadedProgress } from '$lib/services/contents';
 
 /**
@@ -65,7 +66,8 @@ const DEFAULT_MAX_BLOB_SIZE = 10485760;
  */
 export const fetchFileList = async (lastHash) => {
   const { owner, repo, branch } = repository;
-  const requestPath = `/repos/${owner}/${repo}/git/trees/${lastHash ?? branch}?recursive=1`;
+  const ref = encodePath(/** @type {string} */ (lastHash ?? branch));
+  const requestPath = `/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`;
   /** @type {PartialGitEntry[]} */
   const gitEntries = [];
   let page = 1;
@@ -101,8 +103,18 @@ export const fetchFileList = async (lastHash) => {
  */
 export const parseFileContents = async (fetchingFiles, results) => {
   const entries = await Promise.all(
-    fetchingFiles.map(async ({ path, sha, size }) => {
-      const { content, encoding } = results[path] ?? {};
+    fetchingFiles.map(async ({ path, sha, size, type }) => {
+      const item = results[path];
+
+      // A text file the API returned nothing for is left without text and metadata, so it’s not
+      // cached as fetched: an empty text would stand in for its content until the file changes,
+      // and the entry would lose its content the next time it’s saved. It’s requested again on the
+      // next load instead. An asset’s content is never requested, so it’s complete as it is
+      if (!item && type !== 'asset') {
+        return [path, { sha, size: size ?? 0, text: undefined, meta: undefined }];
+      }
+
+      const { content, encoding } = item ?? {};
 
       const data = {
         sha,
@@ -132,9 +144,7 @@ const fetchRawFile = async (path) => {
   const { owner, repo, branch = '' } = repository;
 
   return /** @type {Promise<string>} */ (
-    // Use `encodeURI` instead of `encodeURIComponent` because slashes in the path should not be
-    // encoded but spaces and other characters should be.
-    fetchAPI(`/repos/${owner}/${repo}/raw/${encodeURI(path)}?ref=${encodeURIComponent(branch)}`, {
+    fetchAPI(`/repos/${owner}/${repo}/raw/${encodePath(path)}?ref=${encodeURIComponent(branch)}`, {
       responseType: 'text',
     })
   );
@@ -196,7 +206,7 @@ export const fetchFileContents = async (fetchingFiles) => {
 
   const requestPath = isForgejo
     ? `/repos/${owner}/${repo}/git/blobs`
-    : `/repos/${owner}/${repo}/file-contents?ref=${branch}`;
+    : `/repos/${owner}/${repo}/file-contents?ref=${encodeURIComponent(String(branch))}`;
 
   // Forgejo uses `sha` as the identifier for files, while Gitea uses `path`. Each item in the
   // response carries the same field, which is how a result is matched to the file it was requested
@@ -270,7 +280,8 @@ export const fetchFileContents = async (fetchingFiles) => {
 
   // Read whatever the bulk endpoints won’t return from the raw endpoint, which has no size cap
   await runConcurrently(oversizedFiles, async ({ path }) => {
-    fileMap[path].text = await fetchRawFile(path);
+    // The bulk endpoints weren’t asked for the file, so its metadata is filled in with the text
+    Object.assign(fileMap[path], { text: await fetchRawFile(path), meta: {} });
     advanceProgress(1);
   });
 
@@ -315,9 +326,7 @@ export const fetchBlob = async (asset) => {
   const { path } = asset;
 
   return /** @type {Promise<Blob>} */ (
-    // Use `encodeURI` instead of `encodeURIComponent` because slashes in the path should not be
-    // encoded but spaces and other characters should be.
-    fetchAPI(`/repos/${owner}/${repo}/media/${branch}/${encodeURI(path)}`, {
+    fetchAPI(`/repos/${owner}/${repo}/media/${encodePath(String(branch))}/${encodePath(path)}`, {
       responseType: 'blob',
     })
   );

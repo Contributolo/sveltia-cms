@@ -28,8 +28,10 @@ import {
   renamingExternalSubfolder,
   resetExternalAssets,
   selectedCloudService,
+  selectedExternalAssetIdSet,
   selectedExternalAssets,
   selectedExternalDirPath,
+  selectedOrFocusedExternalAssets,
 } from '.';
 
 vi.mock('$lib/services/config', () => ({
@@ -60,6 +62,36 @@ describe('assets/external', () => {
     cmsConfig.current = /** @type {any} */ ({});
     delete prefs.apiKeys;
     delete prefs.logins;
+  });
+
+  describe('selectedExternalAssetIdSet', () => {
+    it('should derive the IDs of the selected assets', () => {
+      selectedExternalAssets.current = [
+        /** @type {any} */ ({ id: 'a' }),
+        /** @type {any} */ ({ id: 'b' }),
+      ];
+      expect(selectedExternalAssetIdSet.current).toEqual(new Set(['a', 'b']));
+      selectedExternalAssets.current = [];
+      expect(selectedExternalAssetIdSet.current).toEqual(new Set());
+    });
+  });
+
+  describe('selectedOrFocusedExternalAssets', () => {
+    it('should derive the selected assets, or else the focused asset', () => {
+      const a = /** @type {any} */ ({ id: 'a' });
+      const b = /** @type {any} */ ({ id: 'b' });
+
+      selectedExternalAssets.current = [];
+      focusedExternalAsset.current = undefined;
+      expect(selectedOrFocusedExternalAssets.current).toEqual([]);
+      focusedExternalAsset.current = a;
+      expect(selectedOrFocusedExternalAssets.current).toEqual([a]);
+      selectedExternalAssets.current = [b];
+      expect(selectedOrFocusedExternalAssets.current).toEqual([b]);
+      expect(selectedOrFocusedExternalAssets.current).not.toBe(selectedExternalAssets.current);
+      selectedExternalAssets.current = [];
+      focusedExternalAsset.current = undefined;
+    });
   });
 
   describe('enabledCloudServices', () => {

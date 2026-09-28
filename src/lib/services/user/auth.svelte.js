@@ -4,6 +4,7 @@ import { LocalStorage } from '@sveltia/utils/storage';
 
 import { goto, parseLocation } from '$lib/services/app/navigation';
 import { backend, backendName, selectBackend } from '$lib/services/backends';
+import { NOT_COLLABORATOR_ERROR_MESSAGE } from '$lib/services/backends/git/shared/errors';
 import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
 import { startRemoteChangePolling, stopRemoteChangePolling } from '$lib/services/backends/poll';
 import { cmsConfig } from '$lib/services/config';
@@ -12,6 +13,7 @@ import { resetDeployments } from '$lib/services/deployments';
 import { resetPageLiveness } from '$lib/services/deployments/ping';
 import { initDeployments } from '$lib/services/deployments/resolve';
 import { user } from '$lib/services/user/account.svelte';
+import { USER_STORAGE_KEY } from '$lib/services/user/constants';
 import { prefs } from '$lib/services/user/prefs.svelte';
 import {
   publishingBranches,
@@ -48,12 +50,26 @@ export const auth = $state({
 });
 
 /**
- * Clear the cached user token so the sign-in form is shown on next load.
+ * Clear the cached user token so the sign-in form is shown on next load. The user caches left by
+ * Netlify/Decap CMS, which may also hold a token, are removed as well.
  */
 const clearUserCache = async () => {
-  await LocalStorage.set('sveltia-cms.user', {});
+  await LocalStorage.set(USER_STORAGE_KEY, {});
+  await LocalStorage.delete('decap-cms-user');
+  await LocalStorage.delete('netlify-cms-user');
   user.account = undefined;
   auth.unauthenticated = true;
+};
+
+/**
+ * Remove the API keys and log-in credentials for integrations, such as translation services and
+ * cloud storage, from the user preferences, so they don’t remain on the device once the user has
+ * signed out. Other preferences, like the theme and language, are kept. This is only done on an
+ * explicit sign-out, not when an expired or revoked token sends the user back to the sign-in form.
+ */
+const clearIntegrationCredentials = () => {
+  prefs.apiKeys = {};
+  delete prefs.logins;
 };
 
 /**
@@ -65,7 +81,7 @@ const clearUserCache = async () => {
 const clearUserCacheIfNeeded = async (error) => {
   const isAuthError =
     typeof (/** @type {any} */ (error?.cause)?.status) === 'number' ||
-    error?.message === 'Not a collaborator of the repository';
+    error?.message === NOT_COLLABORATOR_ERROR_MESSAGE;
 
   if (isAuthError) {
     await clearUserCache();
@@ -148,7 +164,7 @@ export const parseMagicLink = () => {
  */
 export const getUserCache = async () => {
   const userCache =
-    (await LocalStorage.get('sveltia-cms.user')) ||
+    (await LocalStorage.get(USER_STORAGE_KEY)) ||
     (await LocalStorage.get('decap-cms-user')) ||
     (await LocalStorage.get('netlify-cms-user'));
 
@@ -384,6 +400,7 @@ export const signOut = async () => {
   stopRemoteChangePolling();
   await backend.current?.signOut();
   await clearUserCache();
+  clearIntegrationCredentials();
 
   selectBackend(undefined);
   dataLoaded.current = false;

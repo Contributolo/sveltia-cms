@@ -27,7 +27,7 @@ vi.mock('@sveltia/utils/file', () => ({
 }));
 
 vi.mock('$lib/services/backends/git/shared/commits', async (importOriginal) => ({
-  dedupeFileCommits: /** @type {any} */ (await importOriginal()).dedupeFileCommits,
+  fetchPerPathCommits: /** @type {any} */ (await importOriginal()).fetchPerPathCommits,
   createCommitMessage: createCommitMessageMock,
 }));
 
@@ -86,6 +86,22 @@ describe('Gitea Commits Service', () => {
       });
       expect(fetchAPIMock).toHaveBeenCalledWith(
         `/repos/${mockOwner}/${mockRepo}/branches/${mockBranch}`,
+      );
+    });
+
+    test('should encode the branch name', async () => {
+      fetchAPIMock.mockResolvedValue({ commit: { id: 'abc', message: 'Message' } });
+      repository.branch = 'release#1';
+
+      try {
+        await fetchLastCommit();
+      } finally {
+        repository.branch = 'main';
+      }
+
+      // Left as is, `#` would start a fragment and cut the request URL short
+      expect(fetchAPIMock).toHaveBeenCalledWith(
+        `/repos/${mockOwner}/${mockRepo}/branches/release%231`,
       );
     });
 

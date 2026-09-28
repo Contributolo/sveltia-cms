@@ -2,20 +2,18 @@ import { generateUUID } from '@sveltia/utils/crypto';
 import { escapeRegExp } from '@sveltia/utils/string';
 
 import { replaceTemplateTags } from '$lib/services/common/template';
+import { FIELD_TAG_PREFIX_REGEX } from '$lib/services/common/template/constants';
+import { stripFieldTagPrefix } from '$lib/services/common/template/utils';
 import { applyTransformations, parseTransformations } from '$lib/services/common/transformations';
 import { getFieldDisplayValue } from '$lib/services/contents/entry/fields';
 import { getListFormatter } from '$lib/services/contents/i18n';
+import { getOrCreate } from '$lib/services/utils/cache';
 import { isNumeric } from '$lib/services/utils/number';
 
 /**
  * @import { FlattenedEntryContent, InternalLocaleCode } from '$lib/types/private';
  * @import { ComputeField, FieldKeyPath } from '$lib/types/public';
  */
-
-/**
- * Regular expression to match the `fields.` prefix of a template tag, e.g. `{{fields.title}}`.
- */
-const FIELD_TAG_PREFIX_REGEX = /^fields\./;
 
 /**
  * Length argument of {@link generateUUID} for each UUID tag, keyed by tag name.
@@ -181,13 +179,7 @@ const getUuids = ({ valueTemplate, keyPath, valueMap }) => {
     return extractedUuids;
   }
 
-  let cache = generatedUuidMap.get(valueMap);
-
-  if (!cache) {
-    cache = new Map();
-    generatedUuidMap.set(valueMap, cache);
-  }
-
+  const cache = getOrCreate(generatedUuidMap, valueMap, () => new Map());
   let generatedUuids = cache.get(keyPath);
 
   if (generatedUuids?.length !== uuidTags.length) {
@@ -267,7 +259,7 @@ export const getComputedValue = ({
         collectionName,
         fileName,
         valueMap,
-        keyPath: tagName.replace(FIELD_TAG_PREFIX_REGEX, ''),
+        keyPath: stripFieldTagPrefix(tagName),
         locale,
         isIndexFile,
       });

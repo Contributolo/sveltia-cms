@@ -1,4 +1,4 @@
-import { getPathInfo } from '@sveltia/utils/file';
+import { decodeFilePath, getPathInfo } from '@sveltia/utils/file';
 import { escapeRegExp, stripSlashes } from '@sveltia/utils/string';
 import { flatten } from 'flat';
 
@@ -20,7 +20,7 @@ import { isCollectionIndexFile } from '$lib/services/contents/collection/entries
 import { getCollectionFilesByEntry } from '$lib/services/contents/collection/files';
 import { getAssociatedCollections } from '$lib/services/contents/entry';
 import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
-import { createPath, decodeFilePath, resolvePath } from '$lib/services/utils/file';
+import { createPath, resolvePath } from '$lib/services/utils/file';
 import {
   createDerivedState,
   createRawState,
@@ -39,8 +39,6 @@ import {
  * UploadingAssets,
  * } from '$lib/types/private';
  */
-
-const ENTRY_FOLDER_REGEX = /^(?<entryFolder>.+?)(?:\/[^/]+)?$/;
 
 /**
  * List of all assets.
@@ -121,6 +119,18 @@ export const selectedAssetPathSet = createDerivedState(
  * @type {{ current: Asset | undefined }}
  */
 export const focusedAsset = createRawState();
+
+/**
+ * Assets the toolbar actions operate on: the selected assets, or else the focused asset, if any.
+ * @type {{ readonly current: Asset[] }}
+ */
+export const selectedOrFocusedAssets = createDerivedState(() => {
+  if (selectedAssets.current.length) {
+    return [...selectedAssets.current];
+  }
+
+  return focusedAsset.current ? [focusedAsset.current] : [];
+});
 
 /**
  * Asset to be displayed in `<AssetDetailsOverlay>`.
@@ -314,12 +324,8 @@ export const getAssetByRelativePathAndCollection = ({
     });
   }
 
-  // The regex matches any non-empty string (`entryFilePath` is guaranteed non-empty above). Named
-  // capture groups always produce a `groups` object, so no optional chaining needed.
-  const { entryFolder } = /** @type {{ entryFolder: string }} */ (
-    /** @type {RegExpMatchArray} */ (entryFilePath.match(ENTRY_FOLDER_REGEX)).groups
-  );
-
+  // Directory of the entry file, which is an empty string for an entry file at the repository root
+  const entryFolder = entryFilePath.slice(0, Math.max(entryFilePath.lastIndexOf('/'), 0));
   // Strip the `media_folder` prefix from the stored path before joining with `mediaFolder`, to
   // avoid duplication when the stored value already includes the media folder (e.g.
   // `images/photo.jpg`). Also normalize `./` prefix since `./images/photo.jpg` and
@@ -621,11 +627,12 @@ export const getAssetsByFolder = (folder) =>
 
 /**
  * Get a list of assets stored in the given internal directory.
- * @param {string} dirname Directory path.
+ * @param {string} dirname Directory path. An empty string for the repository root.
  * @returns {Asset[]} Assets.
  */
 export const getAssetsByDirName = (dirname) =>
-  allAssets.current.filter((a) => getPathInfo(a.path).dirname === dirname);
+  // `getPathInfo()` has no directory for a file at the root
+  allAssets.current.filter((a) => (getPathInfo(a.path).dirname ?? '') === dirname);
 
 // Reset the asset selection when a different folder or subfolder is selected
 createRootEffect(() => {

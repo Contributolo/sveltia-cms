@@ -6,7 +6,7 @@ import { getAssetFoldersByPath, globalAssetFolder } from '$lib/services/assets/f
 import { getAssetBlob, getAssetPublicURL } from '$lib/services/assets/info';
 import { saveChanges } from '$lib/services/backends/save';
 import { UPDATE_TOAST_DEFAULT_STATE } from '$lib/services/contents/collection/data';
-import { getEntriesByAssetURL } from '$lib/services/contents/collection/entries';
+import { getEntriesByAssets } from '$lib/services/contents/collection/entries';
 import {
   getIndexFile,
   isCollectionIndexFile,
@@ -27,6 +27,7 @@ import { getAssociatedCollections } from '$lib/services/contents/entry';
  * MovingAsset,
  * } from '$lib/types/private';
  * @import { CollectionIndexFile } from '$lib/types/public';
+ * @import { AssetReferenceTarget } from '$lib/services/contents/collection/entries';
  */
 
 /**
@@ -131,36 +132,109 @@ export const collectEntryChanges = async ({ entry, savingEntries, changes }) => 
 };
 
 /**
- * Rewrite the references to the given asset in the entries that use it, so these point at the
- * asset’s new path.
+ * Get the new URL of a moved asset that has no public path, as in an entry-relative folder, by
+ * swapping the folder’s internal path for its public path.
  * @param {object} args Arguments.
  * @param {AssetFolderInfo} args._globalAssetFolder Global asset folder.
  * @param {string} args.newPath New path for the asset.
- * @param {Asset} args.asset Asset to collect changes for.
- * @param {Map<string, Entry>} args.updatingEntryMap Copies of the entries being rewritten, keyed by
- * entry ID, shared between the assets of one move. An entry using several of the moved assets is
- * copied once and has every reference replaced in that copy, so it’s saved once with all of them;
- * a copy per asset would each hold a single replacement and overwrite the others. The caller
- * collects the changes from the copies once every asset has been dealt with.
+ * @param {Asset} args.asset Asset being moved.
+ * @returns {string} URL.
  */
-export const collectEntryChangesFromAsset = async ({
-  _globalAssetFolder,
-  newPath,
-  asset,
-  updatingEntryMap,
-}) => {
-  const assetURL = getAssetPublicURL(asset) ?? asset.blobURL;
-  const usedEntries = assetURL ? await getEntriesByAssetURL(assetURL) : [];
-
-  if (!assetURL || !usedEntries.length) {
-    return;
-  }
-
+const getFallbackURL = ({ _globalAssetFolder, newPath, asset }) => {
   const { publicPath } =
     getAssetFoldersByPath(asset.path).find(({ collectionName }) => collectionName !== undefined) ??
     _globalAssetFolder;
 
-  const entries = usedEntries.map((entry) => {
+  return newPath.replace(asset.folder.internalPath ?? '', publicPath ?? '');
+};
+
+/**
+ * Get a function that rewrites a reference to a renamed asset that has no public path, as in an
+ * entry-relative folder. Such a reference is relative to the entry holding it, so only its file
+ * name is swapped, leaving the rest — `./`, `../` or a subfolder — as the entry has it. A file name
+ * encoded in the reference, as with the `encode_file_path` option, is replaced in the same form.
+ * @param {string} oldName Current file name.
+ * @param {string} newName New file name.
+ * @returns {(src: string) => string | undefined} Function returning the new reference, or
+ * `undefined` if the reference doesn’t end with the file name.
+ */
+const getRenamedReference = (oldName, newName) => (src) => {
+  const [from, to] =
+    [
+      [oldName, newName],
+      [encodeURI(oldName), encodeURI(newName)],
+    ].find(([name]) => src === name || src.endsWith(`/${name}`)) ?? [];
+
+  return from === undefined ? undefined : `${src.slice(0, -from.length)}${to}`;
+};
+
+/**
+ * Rewrite the references to the given assets in the entries that use them, so these point at the
+ * assets’ new paths. The entries are searched once for all the assets, however many there are.
+ * @param {object} args Arguments.
+ * @param {AssetFolderInfo} args._globalAssetFolder Global asset folder.
+ * @param {MovingAsset[]} args.movingAssets Assets being moved, with their new paths.
+ * @param {Map<string, Entry>} args.updatingEntryMap Copies of the entries being rewritten, keyed by
+ * entry ID. An entry using several of the moved assets is copied once and has every reference
+ * replaced in that copy, so it’s saved once with all of them; a copy per asset would each hold a
+ * single replacement and overwrite the others. The caller collects the changes from the copies.
+ */
+export const collectEntryChangesFromAssets = async ({
+  _globalAssetFolder,
+  movingAssets,
+  updatingEntryMap,
+}) => {
+  /** @type {AssetReferenceTarget[]} */
+  const targets = movingAssets.map(({ asset }) => {
+    // An asset without a public URL, as in an entry-relative folder, is matched by the asset its
+    // references resolve to, which works whether or not the asset has been loaded
+    const url = getAssetPublicURL(asset);
+
+    return url ? { url } : { asset };
+  });
+
+  if (!targets.length) {
+    return;
+  }
+
+  // Find the entries first, without replacing anything, so the originals are left alone until the
+  // change is saved
+  const usedEntries = await getEntriesByAssets(targets);
+  /** @type {AssetReferenceTarget[]} */
+  const replacingTargets = [];
+  /** @type {Set<Entry>} */
+  const updatingEntries = new Set();
+
+  movingAssets.forEach(({ asset, path: newPath }, index) => {
+    if (!usedEntries[index].length) {
+      return;
+    }
+
+    // The new URL is worked out the same way as the current one, so that the public folder, the
+    // `encode_file_path` option and template tags are all dealt with alike. A move stays within the
+    // asset’s folder, so the folder still applies
+    const newName = newPath.slice(newPath.lastIndexOf('/') + 1);
+
+    const newURL =
+      getAssetPublicURL(
+        { ...asset, path: newPath, name: newName },
+        { pathOnly: true, allowSpecial: true },
+      ) ??
+      // A rename can be applied to a reference relative to the entry holding it
+      (asset.folder.entryRelative &&
+      newPath.slice(0, -newName.length) === asset.path.slice(0, -asset.name.length)
+        ? getRenamedReference(asset.name, newName)
+        : getFallbackURL({ _globalAssetFolder, newPath, asset }));
+
+    replacingTargets.push({ ...targets[index], newURL });
+    usedEntries[index].forEach((entry) => updatingEntries.add(entry));
+  });
+
+  if (!replacingTargets.length) {
+    return;
+  }
+
+  const entries = [...updatingEntries].map((entry) => {
     let copy = updatingEntryMap.get(entry.id);
 
     if (!copy) {
@@ -171,11 +245,8 @@ export const collectEntryChangesFromAsset = async ({
     return copy;
   });
 
-  // The references are replaced in place
-  await getEntriesByAssetURL(assetURL, {
-    entries,
-    newURL: newPath.replace(asset.folder.internalPath ?? '', publicPath ?? ''),
-  });
+  // The references are replaced in place, in one pass over the copies
+  await getEntriesByAssets(replacingTargets, { entries });
 };
 
 /**
@@ -254,10 +325,10 @@ export const moveAssets = async (
         // there’s nothing at that path anymore
         data: new File([await blob.arrayBuffer()], newName, { type: blob.type }),
       });
-
-      await collectEntryChangesFromAsset({ _globalAssetFolder, newPath, asset, updatingEntryMap });
     }),
   );
+
+  await collectEntryChangesFromAssets({ _globalAssetFolder, movingAssets, updatingEntryMap });
 
   await Promise.all(
     [...updatingEntryMap.values()].map((entry) =>

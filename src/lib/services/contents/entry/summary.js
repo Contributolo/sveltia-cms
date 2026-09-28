@@ -7,6 +7,7 @@ import { parseEntities } from 'parse-entities';
 
 import { replaceTemplateTags } from '$lib/services/common/template';
 import { processNestedTemplates } from '$lib/services/common/template/nested';
+import { stripFieldTagPrefix } from '$lib/services/common/template/utils';
 import { applyTransformations, parseTransformations } from '$lib/services/common/transformations';
 import { allEntries } from '$lib/services/contents';
 import {
@@ -73,7 +74,12 @@ export const sanitizeEntrySummary = (str, { allowMarkdown = false } = {}) => {
     str = parseEntities(str);
   }
 
-  str = sanitize(str, { ALLOWED_TAGS: allowMarkdown ? ['strong', 'em', 'code'] : [] });
+  // Attributes are dropped, so an entry value cannot restyle the app with `style`, e.g. a title
+  // wrapped in `<strong style="position: fixed; inset: 0">` covering the whole page
+  str = sanitize(str, {
+    ALLOWED_TAGS: allowMarkdown ? ['strong', 'em', 'code'] : [],
+    ALLOWED_ATTR: [],
+  });
 
   if (!allowMarkdown) {
     str = parseEntities(str);
@@ -193,7 +199,7 @@ export const replace = (placeholder, context) => {
   } = context;
 
   const { value: tag, transformations: parsedTransformations } = parseTransformations(placeholder);
-  const keyPath = tag.replace(/^fields\./, '');
+  const keyPath = stripFieldTagPrefix(tag);
   const getFieldArgs = { collectionName, valueMap, keyPath };
   let value = replaceSub(tag, replaceSubContext);
 

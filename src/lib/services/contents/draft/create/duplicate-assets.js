@@ -1,10 +1,10 @@
 import { getAssetByPath } from '$lib/services/assets';
 import { getAssetFoldersByPath } from '$lib/services/assets/folders';
-import { getAssetBlob } from '$lib/services/assets/info';
+import { createDisplayBlobURL, getAssetBlob } from '$lib/services/assets/info';
 import { MARKDOWN_IMAGE_REGEX } from '$lib/services/contents/collection/entries';
 import { getOwnedEntryFolderPath } from '$lib/services/contents/draft/save/assets';
 import { getField, getTypedKeyPath } from '$lib/services/contents/entry/fields';
-import { MEDIA_FIELD_TYPES } from '$lib/services/contents/fields';
+import { MEDIA_FIELD_TYPES, RICH_TEXT_FIELD_TYPES } from '$lib/services/contents/fields';
 import {
   getAssetLibraryFolderMap,
   getDefaultAssetFolder,
@@ -26,7 +26,7 @@ import {
  * Field types whose value can reference an asset.
  * @type {string[]}
  */
-const ASSET_FIELD_TYPES = [...MEDIA_FIELD_TYPES, 'markdown', 'richtext'];
+const ASSET_FIELD_TYPES = [...MEDIA_FIELD_TYPES, ...RICH_TEXT_FIELD_TYPES];
 
 /**
  * Copy the original entry’s own assets into a duplicate of the entry. Assets stored at an
@@ -102,7 +102,8 @@ export const copyEntryRelativeAssets = async ({ draft, currentValues }) => {
         }
 
         const file = new File([blob], asset.name, { type: blob.type });
-        const blobURL = URL.createObjectURL(file);
+        // The file comes from the repository, so its URL must not let an SVG image run script
+        const blobURL = await createDisplayBlobURL(file);
 
         files[blobURL] = { file, folder, replace: false };
 
@@ -162,15 +163,33 @@ export const copyEntryRelativeAssets = async ({ draft, currentValues }) => {
     // Images embedded in a Markdown body
     const sources = [...new Set([...value.matchAll(MARKDOWN_IMAGE_REGEX)].map(([, src]) => src))];
 
-    await Promise.all(
-      sources.map(async (src) => {
-        const blobURL = await copyAsset({ value: src, folder, typedKeyPath });
-
-        if (blobURL) {
-          valueMap[keyPath] = /** @type {string} */ (valueMap[keyPath]).replaceAll(src, blobURL);
-        }
-      }),
+    const blobURLs = new Map(
+      await Promise.all(
+        sources.map(
+          async (src) =>
+            /** @type {[string, string | undefined]} */ ([
+              src,
+              await copyAsset({ value: src, folder, typedKeyPath }),
+            ]),
+        ),
+      ),
     );
+
+    // Replace the source within each image only, once every copy is ready. A plain text replacement
+    // would also hit a source whose name contains another’s, e.g. `hero-image.png` for `image.png`,
+    // as well as the file name mentioned anywhere else in the text
+    valueMap[keyPath] = value.replace(MARKDOWN_IMAGE_REGEX, (image, src) => {
+      const blobURL = blobURLs.get(src);
+
+      if (!blobURL) {
+        return image;
+      }
+
+      // The source comes right after the first `](`, as the alt text is matched lazily
+      const start = image.indexOf('](') + 2;
+
+      return `${image.slice(0, start)}${blobURL}${image.slice(start + src.length)}`;
+    });
   };
 
   await Promise.all(

@@ -40,10 +40,13 @@ const URL_REGEX = /^(?:https?|data|blob):/;
 /**
  * Blobs behind the object URLs cached on assets, keyed by blob URL. An object URL already keeps its
  * blob alive in memory until it’s revoked, so remembering the blob here costs nothing extra, and it
- * spares every caller after the first from reading the same URL back over the network.
+ * spares every caller after the first from reading the same URL back over the network. It’s also
+ * the only way to get an SVG image back, as its URL points to a wrapper made for display rather
+ * than the file itself, see {@link getDisplayBlob}.
  *
- * Only blobs that have to be downloaded belong here, and only under a URL that {@link
- * flushRevocations} is responsible for revoking, because that’s where the entry is discarded. A
+ * Only blobs the asset doesn’t hold otherwise — downloaded or just saved — belong here, and only
+ * under a URL that {@link flushRevocations} is responsible for revoking, because that’s where the
+ * entry is discarded. A
  * blob whose URL is revoked elsewhere — an unsaved file’s URL, released by `revokeDraftFileURLs`
  * once the draft is replaced — would otherwise stay in memory for the lifetime of the page.
  * @type {Map<string, Blob>}
@@ -68,16 +71,56 @@ export const _resetAssetBlobCache = () => {
 };
 
 /**
- * Give the asset an object URL for the given blob if it doesn’t have one yet. An SVG image gets the
- * URL of a wrapper that can’t run any script, because the URL has the CMS origin and could be
- * opened in a new tab from a preview; the blob itself is left untouched.
+ * Regular expression matching an XML media type, such as `application/xml`, `text/xml` or
+ * `application/xhtml+xml`. A browser renders such a file as a document, which can run script
+ * through XHTML elements or an XSLT style sheet.
+ */
+const XML_TYPE_REGEX = /[/+]xml$/;
+
+/**
+ * Get a blob that can be displayed in place of the given file without running any script. An
+ * object URL has the CMS origin, so a file from the repository opened in a new tab, e.g. with the
+ * browser’s “Open Image in New Tab” menu item on a preview, would otherwise run any script in it
+ * with access to the user’s token. An SVG image is wrapped in an image that can’t run script, see
+ * {@link createInertSVG}, and an HTML or XML document is turned into plain text, as nothing
+ * displays one as a document. Any other file is returned as is.
+ * @param {Blob} blob Original file.
+ * @returns {Promise<Blob>} Blob to be displayed.
+ */
+export const getDisplayBlob = async (blob) => {
+  const type = blob.type.split(';')[0].trim().toLowerCase();
+
+  if (type === 'image/svg+xml') {
+    return createInertSVG(blob);
+  }
+
+  if (type === 'text/html' || XML_TYPE_REGEX.test(type)) {
+    return new Blob([blob], { type: 'text/plain' });
+  }
+
+  return blob;
+};
+
+/**
+ * Create an object URL to display the given file with, see {@link getDisplayBlob}. Use this for
+ * any URL made from asset or file bytes that is shown in the UI. The URL doesn’t necessarily point
+ * to the given bytes, so a caller that needs the file again has to keep the original rather than
+ * read the URL back.
+ * @param {Blob} blob Original file.
+ * @returns {Promise<string>} Object URL.
+ */
+export const createDisplayBlobURL = async (blob) => URL.createObjectURL(await getDisplayBlob(blob));
+
+/**
+ * Give the asset an object URL for the given blob if it doesn’t have one yet. The URL points to the
+ * blob to be displayed, see {@link getDisplayBlob}; the blob itself is left untouched.
  * @param {Asset} asset Asset.
  * @param {Blob} blob Blob.
  * @returns {Promise<Blob>} The same blob.
  */
 const cacheAssetBlobURL = async (asset, blob) => {
   if (!asset.blobURL) {
-    const displayBlob = blob.type === 'image/svg+xml' ? await createInertSVG(blob) : blob;
+    const displayBlob = await getDisplayBlob(blob);
 
     // Another caller may have created the URL while the wrapper was being made
     asset.blobURL ??= URL.createObjectURL(displayBlob);
@@ -87,13 +130,14 @@ const cacheAssetBlobURL = async (asset, blob) => {
 };
 
 /**
- * Give the asset an object URL for the given downloaded blob, and remember the blob so that later
- * callers can have it without reading the URL back.
+ * Give the asset an object URL for the given blob, and remember the blob so that later callers can
+ * have it without reading the URL back, which may point to a wrapper rather than the file itself.
+ * Use this for a blob that the asset doesn’t hold otherwise, e.g. a downloaded or saved file.
  * @param {Asset} asset Asset.
  * @param {Blob} blob Blob.
  * @returns {Promise<Blob>} The same blob.
  */
-const cacheAssetBlob = async (asset, blob) => {
+export const cacheAssetBlob = async (asset, blob) => {
   await cacheAssetBlobURL(asset, blob);
 
   if (asset.blobURL) {
@@ -113,12 +157,12 @@ const cacheAssetBlob = async (asset, blob) => {
 const downloadOnce = (key, download) => shareInFlight(pendingAssetBlobs, key, download);
 
 /**
- * Download the given asset from the backend.
+ * Download the given asset from the backend, without caching it.
  * @param {Asset} asset Asset.
  * @returns {Promise<Blob>} Blob.
  * @throws {Error} When the blob cannot be retrieved.
  */
-const fetchAssetBlob = async (asset) => {
+const downloadAssetBlob = async (asset) => {
   const { name } = asset;
   const blob = await backend.current?.fetchBlob?.(asset);
 
@@ -127,8 +171,16 @@ const fetchAssetBlob = async (asset) => {
   }
 
   // Override the MIME type as it can be `application/octet-stream`
-  return cacheAssetBlob(asset, new Blob([blob], { type: mime.getType(name) ?? blob.type }));
+  return new Blob([blob], { type: mime.getType(name) ?? blob.type });
 };
+
+/**
+ * Download the given asset from the backend, and cache it on the asset.
+ * @param {Asset} asset Asset.
+ * @returns {Promise<Blob>} Blob.
+ * @throws {Error} When the blob cannot be retrieved.
+ */
+const fetchAssetBlob = async (asset) => cacheAssetBlob(asset, await downloadAssetBlob(asset));
 
 /**
  * Get the blob for the given asset, from wherever it’s available: the file it was created from, the
@@ -164,6 +216,44 @@ export const getAssetBlob = async (asset) => {
   }
 
   return downloadOnce(path, () => fetchAssetBlob(asset));
+};
+
+/**
+ * Get the blob of the given asset to generate a thumbnail from. Unlike {@link getAssetBlob}, this
+ * doesn’t cache the full-size file on the asset: the thumbnail is all that’s kept, so an asset grid
+ * or an entry list showing hundreds of images doesn’t hold every original in memory as well. A blob
+ * that’s already at hand — the unsaved file, the one behind the asset’s object URL, or a download
+ * another caller has started — is used as is.
+ * @param {Asset} asset Asset.
+ * @returns {Promise<Blob>} Blob.
+ * @throws {Error} When the blob cannot be retrieved.
+ */
+const getThumbnailSourceBlob = async (asset) => {
+  const { file, handle, blobURL, path } = asset;
+
+  if (file) {
+    return file;
+  }
+
+  if (blobURL) {
+    return getAssetBlob(asset);
+  }
+
+  const pending = pendingAssetBlobs.get(path);
+
+  if (pending) {
+    return pending;
+  }
+
+  if (handle) {
+    try {
+      return await handle.getFile();
+    } catch {
+      throw new Error('Failed to retrieve blob from file handle');
+    }
+  }
+
+  return downloadAssetBlob(asset);
 };
 
 /**
@@ -221,7 +311,7 @@ const resolveThumbnailBlob = async (asset, isPDF) => {
   let thumbnailBlob = await thumbnailDB?.get(asset.sha);
 
   if (!thumbnailBlob) {
-    const blob = await getAssetBlob(asset);
+    const blob = await getThumbnailSourceBlob(asset);
     const transform = isPDF ? renderPDF : transformImage;
 
     thumbnailBlob = await transform(blob, THUMBNAIL_TRANSFORM_OPTIONS);
@@ -367,6 +457,65 @@ export const revokeAssetBlobURLIfNeeded = ({ blobURL }) => {
 };
 
 /**
+ * Convert the path of an asset stored in a folder with template tags, like
+ * `/assets/images/{{slug}}`, to its public path. Each tag in the internal path captures the text it
+ * stands for, which then fills the same tag in the public path. A tag can share a path segment with
+ * literal text, as in `post-{{slug}}`, and appear more than once.
+ * @param {object} args Arguments.
+ * @param {string} args.path Asset path, e.g. `static/images/post-hello/photo.jpg`.
+ * @param {string} args.internalPath Folder’s internal path, e.g. `static/images/post-{{slug}}`.
+ * @param {string} args.publicPath Folder’s public path, e.g. `/images/post-{{slug}}`.
+ * @returns {string} Public path, e.g. `/images/post-hello/photo.jpg`.
+ */
+const replaceTemplatePath = ({ path, internalPath, publicPath }) => {
+  /**
+   * Capture group names by tag. A tag, like `{{slug | upper}}`, isn’t always a valid group name.
+   * @type {Map<string, string>}
+   */
+  const groupNames = new Map();
+
+  const regex = createPathRegEx(internalPath, (segment) => {
+    const pattern = segment
+      .split(TEMPLATE_TAG_REGEX)
+      .map((part, index) => {
+        // The odd parts are the tag names captured by the split
+        if (index % 2 === 0) {
+          return escapeRegExp(part);
+        }
+
+        const tag = part.trim();
+        const groupName = groupNames.get(tag);
+
+        if (groupName) {
+          // The same text again
+          return `\\k<${groupName}>`;
+        }
+
+        const newGroupName = `tag${groupNames.size}`;
+
+        groupNames.set(tag, newGroupName);
+
+        return `(?<${newGroupName}>[^/]+?)`;
+      })
+      .join('');
+
+    // A tag at the end of the segment takes everything up to the next slash
+    return `${pattern}(?=\\/|$)`;
+  });
+
+  return path.replace(regex, (...args) => {
+    /** @type {Record<string, string>} */
+    const groups = args.at(-1);
+
+    return publicPath.replaceAll(TEMPLATE_TAG_REPLACE_REGEX, (tag, name) => {
+      const groupName = groupNames.get(name.trim());
+
+      return groupName ? groups[groupName] : tag;
+    });
+  });
+};
+
+/**
  * Get the public URL for the given asset.
  * @param {Asset} asset Asset file, such as an image.
  * @param {object} [options] Options.
@@ -430,20 +579,15 @@ export const getAssetPublicURL = (
   const { _baseURL: baseURL = '', output: { encode_file_path: encodingEnabled = false } = {} } =
     /** @type {InternalCmsConfig} */ (cmsConfig.current);
 
-  let path = hasTemplateTags
-    ? asset.path.replace(
-        // Deal with template tags like `/assets/images/{{slug}}`
-        createPathRegEx(asset.folder.internalPath ?? '', (segment) => {
-          const tag = segment.match(TEMPLATE_TAG_REGEX)?.[1];
+  const internalPath = asset.folder.internalPath ?? '';
+  const publicBasePath = publicPath === '/' ? '' : (publicPath ?? '');
 
-          return tag ? `(?<${tag}>[^/]+)` : escapeRegExp(segment);
-        }),
-        publicPath?.replaceAll(TEMPLATE_TAG_REPLACE_REGEX, '$<$1>') ?? '',
-      )
-    : asset.path.replace(
-        asset.folder.internalPath ?? '',
-        publicPath === '/' ? '' : (publicPath ?? ''),
-      );
+  let path = hasTemplateTags
+    ? replaceTemplatePath({ path: asset.path, internalPath, publicPath: publicBasePath })
+    : internalPath
+      ? asset.path.replace(internalPath, publicBasePath)
+      : // An asset in a root media folder has no folder path to swap for the public path
+        `${publicBasePath}/${asset.path}`;
 
   if (encodingEnabled) {
     path = encodeFilePath(path);

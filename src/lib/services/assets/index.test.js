@@ -28,6 +28,7 @@ import {
   renamingAsset,
   selectedAssetPathSet,
   selectedAssets,
+  selectedOrFocusedAssets,
   uploadingAssets,
 } from '.';
 
@@ -113,6 +114,20 @@ describe('assets/index', () => {
       expect(selectedAssetPathSet.current).toEqual(new Set(['a.jpg', 'b.jpg']));
       selectedAssets.current = [];
       expect(selectedAssetPathSet.current).toEqual(new Set());
+    });
+
+    it('should derive selectedOrFocusedAssets from the selection, or else the focused asset', () => {
+      const a = /** @type {any} */ ({ path: 'a.jpg' });
+      const b = /** @type {any} */ ({ path: 'b.jpg' });
+
+      expect(selectedOrFocusedAssets.current).toEqual([]);
+      focusedAsset.current = a;
+      expect(selectedOrFocusedAssets.current).toEqual([a]);
+      selectedAssets.current = [b];
+      expect(selectedOrFocusedAssets.current).toEqual([b]);
+      expect(selectedOrFocusedAssets.current).not.toBe(selectedAssets.current);
+      selectedAssets.current = [];
+      focusedAsset.current = undefined;
     });
 
     it('should initialize focusedAsset as undefined', () => {
@@ -594,13 +609,13 @@ describe('assets/index', () => {
   describe('getAssetByPath', () => {
     /**
      * @type {import('vitest').MockedFunction<typeof
-     * import('$lib/services/utils/file').decodeFilePath
+     * import('@sveltia/utils/file').decodeFilePath
      * >}
      */
     let decodeFilePathMock;
 
     beforeEach(async () => {
-      const { decodeFilePath } = await import('$lib/services/utils/file');
+      const { decodeFilePath } = await import('@sveltia/utils/file');
 
       decodeFilePathMock = vi.mocked(decodeFilePath);
       decodeFilePathMock.mockImplementation((path) => path); // Default passthrough
@@ -1018,6 +1033,20 @@ describe('assets/index', () => {
       const result = getAssetsByDirName('assets/images');
 
       expect(result).toEqual([asset1, asset2]);
+    });
+
+    it('should return the assets at the repository root for an empty directory path', () => {
+      const rootAsset = /** @type {any} */ ({ path: 'photo.jpg', name: 'photo.jpg' });
+      const nestedAsset = /** @type {any} */ ({ path: 'images/icon.png', name: 'icon.png' });
+
+      allAssets.current = [rootAsset, nestedAsset];
+
+      // `getPathInfo()` has no directory for a file at the root
+      getPathInfoMock.mockImplementation((/** @type {string} */ path) =>
+        path === 'photo.jpg' ? { dirname: undefined } : { dirname: 'images' },
+      );
+
+      expect(getAssetsByDirName('')).toEqual([rootAsset]);
     });
 
     it('should return empty array when no assets match directory', () => {
@@ -1554,8 +1583,8 @@ describe('assets/index', () => {
         },
       });
 
-      vi.mocked(createPath).mockReturnValue('my-post.md/images/photo.jpg');
-      vi.mocked(resolvePath).mockReturnValue('my-post.md/images/photo.jpg');
+      vi.mocked(createPath).mockReturnValue('images/photo.jpg');
+      vi.mocked(resolvePath).mockReturnValue('images/photo.jpg');
 
       getAssetByRelativePathAndCollection({
         path: 'photo.jpg',
@@ -1563,7 +1592,8 @@ describe('assets/index', () => {
         collection: mockCollection,
       });
 
-      expect(createPath).toHaveBeenCalledWith(['my-post.md', 'images', 'photo.jpg']);
+      // The entry sits at the root, so there’s no entry folder to prepend
+      expect(createPath).toHaveBeenCalledWith(['', 'images', 'photo.jpg']);
     });
 
     it('should strip media_folder prefix from path when stored value includes it', async () => {

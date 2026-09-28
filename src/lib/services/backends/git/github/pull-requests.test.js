@@ -241,6 +241,19 @@ describe('GitHub pull request helpers', () => {
       vi.mocked(fetchAPI).mockRejectedValue(new Error('Not found'));
       await expect(deleteBranch('cms/posts/hello')).resolves.toBeUndefined();
     });
+
+    test('encodes a branch name that would otherwise be cut short', async () => {
+      await deleteBranch('cms/posts/c#-tips');
+
+      // Left as is, `#` would start a fragment, and the request would delete `cms/posts/c` instead
+      expect(fetchAPI).toHaveBeenCalledWith(
+        '/repos/owner/repo/git/refs/heads/cms/posts/c%23-tips',
+        {
+          method: 'DELETE',
+          responseType: 'raw',
+        },
+      );
+    });
   });
 
   describe('updateLabels', () => {
@@ -251,6 +264,8 @@ describe('GitHub pull request helpers', () => {
 
       await updateLabels(/** @type {any} */ ({ number: 1 }), 'pending_review');
 
+      // The labels are read from the pulls endpoint, which only needs pull request access
+      expect(fetchAPI).toHaveBeenNthCalledWith(1, '/repos/owner/repo/pulls/1');
       expect(fetchAPI).toHaveBeenLastCalledWith('/repos/owner/repo/issues/1', {
         method: 'PATCH',
         body: { labels: ['bug', 'sveltia-cms/pending_review'] },

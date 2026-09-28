@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
+import { customComponentRegistry } from '$lib/services/api/registries';
 import { globalAssetFolder } from '$lib/services/assets/folders';
 import { cmsConfig } from '$lib/services/config';
 import { trackPendingFieldUpdate } from '$lib/services/contents/editor/pending';
@@ -12,6 +13,7 @@ import RichTextEditor from './rich-text-editor.svelte';
 vi.mock('$lib/services/contents/editor/pending', () => ({
   trackPendingFieldUpdate: vi.fn(),
   awaitPendingFieldUpdates: vi.fn(),
+  afterPendingFieldUpdates: vi.fn(async (fn) => fn()),
 }));
 
 /**
@@ -112,37 +114,73 @@ describe('RichTextEditor', () => {
   });
 
   test('tracks a pending update while typing', async () => {
-    await renderEditor('Hello');
-
+    const { props } = await renderEditor('Hello');
     const editor = page.getByRole('textbox');
 
     await expect.poll(() => editor.element().textContent).toBe('Hello');
     await editor.click();
-    await userEvent.keyboard('!');
+    await userEvent.keyboard('{End}!');
 
-    await vi.waitFor(() => expect(trackPendingFieldUpdate).toHaveBeenCalled());
-
-    // The update is settled once the Markdown is written back
-    const promise = vi.mocked(trackPendingFieldUpdate).mock.calls[0][0];
-
-    await expect(promise).resolves.toBeUndefined();
-
-    // A change that doesn’t alter the Markdown is settled after a while
-    await new Promise((resolve) => {
-      setTimeout(resolve, 500);
-    });
-    vi.mocked(trackPendingFieldUpdate).mockClear();
-
-    const start = Date.now();
-
-    // A synthetic event doesn’t change the content, so nothing writes the value back and the
-    // update stays pending: a second change in the meantime isn’t tracked twice
-    editor.element().dispatchEvent(new InputEvent('beforeinput', { bubbles: true }));
-    editor.element().dispatchEvent(new InputEvent('beforeinput', { bubbles: true }));
-    await vi.waitFor(() => expect(trackPendingFieldUpdate).toHaveBeenCalled());
+    // A save waits for the update, which is settled once the Markdown is written back
+    await vi.waitFor(() => expect(trackPendingFieldUpdate).toHaveBeenCalledOnce());
     await expect(vi.mocked(trackPendingFieldUpdate).mock.calls[0][0]).resolves.toBeUndefined();
-    expect(Date.now() - start).toBeGreaterThanOrEqual(900);
-    expect(trackPendingFieldUpdate).toHaveBeenCalledTimes(1);
+    expect(props.currentValue).toBe('Hello!');
+  });
+
+  test('tracks a pending update for a change made with the toolbar', async () => {
+    const { props } = await renderEditor('Hello');
+    const editor = page.getByRole('textbox');
+
+    await expect.poll(() => editor.element().textContent).toBe('Hello');
+
+    // An attribute change on the editor’s root element doesn’t change the content
+    props.invalid = true;
+    await expect.poll(() => editor.element().getAttribute('aria-invalid')).toBe('true');
+
+    // Select the text, and let the editor pick up the selection, then make it bold with the toolbar
+    const range = document.createRange();
+
+    range.selectNodeContents(editor.element());
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await new Promise((resolve) => {
+      requestAnimationFrame(resolve);
+    });
+    expect(trackPendingFieldUpdate).not.toHaveBeenCalled();
+    await page.getByRole('button', { name: 'Bold' }).click();
+
+    await vi.waitFor(() => expect(trackPendingFieldUpdate).toHaveBeenCalledOnce());
+    await expect(vi.mocked(trackPendingFieldUpdate).mock.calls[0][0]).resolves.toBeUndefined();
+    expect(props.currentValue).toBe('**Hello**');
+  });
+
+  test('neither tracks an update nor writes back a value in another style when it’s loaded', async () => {
+    const { props } = await renderEditor('Some *italic* text.');
+    const editor = page.getByRole('textbox');
+
+    await expect.poll(() => editor.element().textContent).toBe('Some italic text.');
+    // Give the editor time to convert the content, which it would write as `_italic_`
+    await new Promise((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    expect(trackPendingFieldUpdate).not.toHaveBeenCalled();
+    expect(props.currentValue).toBe('Some *italic* text.');
+
+    // A change made by the user is written, in the editor’s style
+    await editor.click();
+    await userEvent.keyboard('{End}!');
+    await expect.poll(() => props.currentValue).toBe('Some _italic_ text.!');
+  });
+
+  test('writes a change typed in the Markdown mode', async () => {
+    const { props } = await renderEditor('Hello', { modes: ['raw'] });
+    const source = page.getByRole('textbox');
+
+    await expect.element(source).toHaveValue('Hello');
+    await source.click();
+    await userEvent.keyboard('{End}!');
+    await expect.poll(() => props.currentValue).toBe('Hello!');
   });
 
   test('inserts a dropped image', async () => {
@@ -265,7 +303,12 @@ describe('RichTextEditor', () => {
       {},
       {
         collectionName: 'nested-self',
-        context: { fieldContext: 'rich-text-editor-component', parentComponentNames: ['image'] },
+        // The parent component name is the definition ID, which is `linked-image` for an image
+        // while linked images are enabled
+        context: {
+          fieldContext: 'rich-text-editor-component',
+          parentComponentNames: ['linked-image'],
+        },
         props: { keyPath: 'body:c1:content', typedKeyPath: 'body:c1:content' },
       },
     );
@@ -289,6 +332,53 @@ describe('RichTextEditor', () => {
       .element()
       .dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
     await expect.poll(() => editor.element().textContent).toBe('Hi');
+  });
+
+  test('leaves the current custom component out of the nested ones', async () => {
+    customComponentRegistry.set('youtube', {
+      id: 'youtube',
+      label: 'YouTube',
+      // Show a toolbar button instead of an item in the Insert menu
+      trigger: 'button',
+      fields: [{ name: 'id', label: 'ID' }],
+      pattern: /^youtube (\S+)$/,
+      // eslint-disable-next-line jsdoc/require-jsdoc
+      toBlock: ({ id }) => `youtube ${id}`,
+    });
+
+    try {
+      await initTestConfig({
+        collections: [
+          {
+            name: 'nested-self-custom',
+            label: 'Posts',
+            folder: 'content/posts',
+            fields: [{ name: 'body', widget: 'richtext', allow_nested_components: 'exclude_self' }],
+          },
+        ],
+      });
+
+      await renderEditor(
+        'Hi',
+        {},
+        {
+          collectionName: 'nested-self-custom',
+          // The parent component name is the prefixed definition ID
+          context: {
+            fieldContext: 'rich-text-editor-component',
+            parentComponentNames: ['x-youtube'],
+          },
+          props: { keyPath: 'body:c1:content', typedKeyPath: 'body:c1:content' },
+        },
+      );
+
+      await expect.element(page.getByRole('button', { name: 'Bold' })).toBeVisible();
+      // The image component is still offered
+      await expect.element(page.getByRole('button', { name: /Image/ })).toBeVisible();
+      expect(page.getByRole('button', { name: /YouTube/ }).elements()).toHaveLength(0);
+    } finally {
+      customComponentRegistry.delete('youtube');
+    }
   });
 
   test('cleans up the values of removed components', async () => {

@@ -1,9 +1,10 @@
 import { sortItemsByKey } from '$lib/services/common/view';
-import { getIndexFile } from '$lib/services/contents/collection/entries/index-file';
+import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
 import { getOrderFieldKey } from '$lib/services/contents/collection/entries/reorder/config';
 import { getSortKeyType } from '$lib/services/contents/collection/view/sort-keys';
 import { getField, getPropertyValue } from '$lib/services/contents/entry/fields';
 import { getEntrySummary } from '$lib/services/contents/entry/summary';
+import { RICH_TEXT_FIELD_TYPES } from '$lib/services/contents/fields';
 import { getDate } from '$lib/services/contents/fields/date-time/helpers';
 import { removeMarkdownSyntax } from '$lib/services/utils/markdown';
 
@@ -11,6 +12,11 @@ import { removeMarkdownSyntax } from '$lib/services/utils/markdown';
  * @import { Entry, InternalCollection, SortingConditions } from '$lib/types/private';
  * @import { DateTimeField } from '$lib/types/public';
  */
+
+/**
+ * Maximum length of a Markdown value used as a sort key, before its syntax is removed.
+ */
+const MARKDOWN_SORT_KEY_LENGTH = 1000;
 
 /**
  * List of fields that may contain Markdown syntax and should be stripped before sorting. This
@@ -63,7 +69,9 @@ export const getSortKeyGetter = ({
       const raw = getPropertyValue({ entry, locale, collectionName, key });
       const str = raw ? String(raw) : '';
 
-      return isMarkdownField ? removeMarkdownSyntax(str) : str;
+      // Only the beginning of a long Markdown value tells entries apart, and stripping the syntax
+      // takes time that grows faster than the length on a value crafted to be nested deeply
+      return isMarkdownField ? removeMarkdownSyntax(str.slice(0, MARKDOWN_SORT_KEY_LENGTH)) : str;
     };
   }
 
@@ -111,9 +119,7 @@ export const sortEntries = (entries, collection, { key, order } = {}) => {
   // Check if the field is a Markdown-enabled field: we use both the field config and a hardcoded
   // key list to determine this, as some fields may be text fields that contain Markdown syntax.
   const isMarkdownField =
-    fieldConfig?.widget === 'richtext' ||
-    fieldConfig?.widget === 'markdown' ||
-    MARKDOWN_FIELD_KEYS.includes(key);
+    RICH_TEXT_FIELD_TYPES.includes(fieldConfig?.widget ?? '') || MARKDOWN_FIELD_KEYS.includes(key);
 
   const getSortKey = getSortKeyGetter({
     key: resolvedKey,
@@ -128,15 +134,12 @@ export const sortEntries = (entries, collection, { key, order } = {}) => {
   // `sortItemsByKey()` computes the key once per entry, so there’s no need for a lookup table here
   sortItemsByKey(_entries, getSortKey, !dateFieldConfig && type === String, order);
 
-  const indexFileName = getIndexFile(collection)?.name;
+  // Index file should always be at the top. It’s told by its path rather than by its slug, because
+  // another collection’s index file within this collection’s folder carries the same slug
+  const index = _entries.findIndex((entry) => isCollectionIndexFile(collection, entry));
 
-  // Index file should always be at the top
-  if (indexFileName) {
-    const index = _entries.findIndex((entry) => entry.slug === indexFileName);
-
-    if (index > -1) {
-      _entries.unshift(_entries.splice(index, 1)[0]);
-    }
+  if (index > -1) {
+    _entries.unshift(_entries.splice(index, 1)[0]);
   }
 
   return _entries;

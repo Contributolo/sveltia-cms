@@ -18,7 +18,7 @@ import { createDeepState, createRawState } from '$lib/services/utils/state.svelt
 
 /**
  * @import { AssetSubfolder, ExternalAsset, MediaLibraryService } from '$lib/types/private';
- * @import { SharedMediaLibraryOptions } from '$lib/types/public';
+ * @import { MediaField, SharedMediaLibraryOptions } from '$lib/types/public';
  */
 
 /**
@@ -38,10 +38,15 @@ export const uploadingExternalAssets = createRawState({ files: [] });
 
 /**
  * Get the options shared by all the media libraries, which include the file size limit and
- * transformations applied before uploading.
+ * transformations applied before uploading. The field-level options, if any, are merged into the
+ * global ones, as with `getMediaLibraryOptions()` in the media library integrations.
+ * @param {MediaField} [fieldConfig] Configuration of the field the files are selected for.
  * @returns {SharedMediaLibraryOptions} Options.
  */
-export const getSharedMediaLibraryOptions = () => cmsConfig.current?.media_libraries?.all ?? {};
+export const getSharedMediaLibraryOptions = (fieldConfig) => ({
+  ...cmsConfig.current?.media_libraries?.all,
+  ...fieldConfig?.media_libraries?.all,
+});
 
 /**
  * Show the toast reporting an error.
@@ -214,6 +219,26 @@ export const loadExternalAssets = async (service) => {
 };
 
 /**
+ * Validate and transform files before they are uploaded to a cloud storage service, and sort out
+ * the ones that can’t be uploaded, so the caller can tell the user.
+ * @param {File[]} files Files to be uploaded.
+ * @param {SharedMediaLibraryOptions} options Media library options, which include the file size
+ * limit and the transformations to apply.
+ * @returns {Promise<{ validFiles: File[], oversizedFileNames: string[], invalidFileNames: string[]
+ * }>} Files that can be uploaded, and the names of the files that were rejected.
+ */
+export const prepareExternalUploads = async (files, options) => {
+  const processed = await Promise.all(files.map((file) => processFile(file, options)));
+  const { validFiles, oversizedFiles, invalidFiles } = partitionProcessedFiles(processed);
+
+  return {
+    validFiles,
+    oversizedFileNames: oversizedFiles.map(({ name }) => name),
+    invalidFileNames: invalidFiles.map(({ name }) => name),
+  };
+};
+
+/**
  * Upload files to the selected cloud storage service, or replace an existing asset with a file.
  * Files are validated and transformed according to the shared media library options first, and
  * any rejected file is reported back so the caller can tell the user.
@@ -225,11 +250,11 @@ export const loadExternalAssets = async (service) => {
  */
 export const uploadExternalAssets = async (files, { originalAsset } = {}) => {
   const service = selectedCloudService.current;
-  const sharedOptions = getSharedMediaLibraryOptions();
-  const processed = await Promise.all(files.map((file) => processFile(file, sharedOptions)));
-  const { validFiles, oversizedFiles, invalidFiles } = partitionProcessedFiles(processed);
-  const oversizedFileNames = oversizedFiles.map(({ name }) => name);
-  const invalidFileNames = invalidFiles.map(({ name }) => name);
+
+  const { validFiles, oversizedFileNames, invalidFileNames } = await prepareExternalUploads(
+    files,
+    getSharedMediaLibraryOptions(),
+  );
 
   if (service && validFiles.length) {
     externalAssetsToast.current = {
@@ -402,6 +427,8 @@ export const renameExternalFolder = async ({ path: dirPath }, newName) => {
   const fetchOptions = getFetchOptions(service);
   const assets = getExternalSubfolderAssets(dirPath);
   const folders = getExternalFolderTree(dirPath);
+  // Checked up front, as reloading the list lets go of a focused folder that is no longer there
+  const focused = focusedExternalSubfolder.current?.path === dirPath;
 
   externalAssetsToast.current = { show: true, status: 'info', message: 'renaming_folder' };
 
@@ -432,7 +459,7 @@ export const renameExternalFolder = async ({ path: dirPath }, newName) => {
   await loadExternalAssets(service);
 
   // Keep the Info pane on the folder under its new name
-  if (focusedExternalSubfolder.current?.path === dirPath) {
+  if (focused) {
     focusedExternalSubfolder.current = { name: newName, path: newDirPath };
   }
 

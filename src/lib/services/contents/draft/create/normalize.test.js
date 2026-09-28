@@ -790,6 +790,130 @@ describe('contents/draft/create/normalize', () => {
       });
     });
 
+    it('should put the pairs of a duplicated KeyValue field in the default locale’s order', () => {
+      const fields = [
+        { name: 'metadata', widget: 'keyvalue', i18n: 'duplicate' },
+        { name: 'labels', widget: 'keyvalue', i18n: true },
+        {
+          name: 'sections',
+          widget: 'list',
+          i18n: 'duplicate',
+          fields: [
+            { name: 'attrs', widget: 'keyvalue' },
+            { name: 'notes', widget: 'keyvalue', i18n: true },
+          ],
+        },
+      ];
+
+      const en = {
+        'metadata.a': '1',
+        'metadata.b': '2',
+        'labels.a': 'A',
+        'labels.b': 'B',
+        'sections.0.attrs.a': '1',
+        'sections.0.attrs.b': '2',
+        'sections.0.notes.a': 'A',
+        'sections.0.notes.b': 'B',
+      };
+
+      const ja = {
+        'metadata.b': '2',
+        'metadata.a': '1',
+        'labels.b': 'ビー',
+        'labels.a': 'エー',
+        'sections.0.attrs.b': '2',
+        'sections.0.attrs.a': '1',
+        'sections.0.notes.b': 'ビー',
+        'sections.0.notes.a': 'エー',
+      };
+
+      const contentMap = normalizeContentMap({
+        fields,
+        contentMap: { en, ja },
+        defaultLocale: 'en',
+      });
+
+      // A field duplicated on its own or along with its List field follows the default locale; a
+      // translatable one keeps its own order, which its editor leaves alone
+      expect(Object.keys(contentMap.ja)).toEqual([
+        'labels.b',
+        'labels.a',
+        'sections.0.notes.b',
+        'sections.0.notes.a',
+        'metadata.a',
+        'metadata.b',
+        'sections.0.attrs.a',
+        'sections.0.attrs.b',
+      ]);
+      expect(Object.keys(contentMap.en)).toEqual(Object.keys(en));
+    });
+
+    it('should give a required single-item list saved without its item one', () => {
+      const fields = [
+        {
+          name: 'author',
+          widget: 'list',
+          max: 1,
+          fields: [{ name: 'name', default: 'Anonymous' }],
+        },
+        {
+          name: 'sponsor',
+          widget: 'list',
+          max: 1,
+          required: false,
+          fields: [{ name: 'name', default: 'Acme' }],
+        },
+      ];
+
+      expect(
+        normalizeContentMap({
+          fields,
+          contentMap: { en: { author: [], sponsor: [] } },
+          defaultLocale: 'en',
+        }),
+      ).toEqual({ en: { author: [], 'author.0.name': 'Anonymous', sponsor: [] } });
+
+      // An item that’s there is left alone
+      expect(
+        normalizeContentMap({
+          fields,
+          contentMap: { en: { 'author.0.name': 'Melvin' } },
+          defaultLocale: 'en',
+        }),
+      ).toEqual({ en: { 'author.0.name': 'Melvin', sponsor: [] } });
+    });
+
+    it('should give a required single-item list its item in another locale', () => {
+      const fields = [
+        {
+          name: 'author',
+          widget: 'list',
+          i18n: true,
+          max: 1,
+          fields: [{ name: 'name', i18n: true, default: 'Anonymous' }],
+        },
+        {
+          name: 'venue',
+          widget: 'list',
+          i18n: 'duplicate',
+          max: 1,
+          fields: [{ name: 'name', default: 'Hall' }],
+        },
+      ];
+
+      // A translated list gets its own item, while a duplicated one takes the default locale’s
+      expect(
+        normalizeContentMap({
+          fields,
+          contentMap: { en: { 'venue.0.name': 'Arena' }, fr: {} },
+          defaultLocale: 'en',
+        }),
+      ).toEqual({
+        en: { author: [], 'author.0.name': 'Anonymous', 'venue.0.name': 'Arena' },
+        fr: { author: [], 'author.0.name': 'Anonymous', 'venue.0.name': 'Arena' },
+      });
+    });
+
     it('should handle a missing default locale', () => {
       const fields = [{ name: 'title', widget: 'string', i18n: true }];
       const contentMap = { ja: {} };

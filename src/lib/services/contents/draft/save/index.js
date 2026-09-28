@@ -7,7 +7,7 @@ import {
   UPDATE_TOAST_DEFAULT_STATE,
 } from '$lib/services/contents/collection/data';
 import { buildNestedMoveChanges } from '$lib/services/contents/collection/nested/move';
-import { deleteBackup } from '$lib/services/contents/draft/backup';
+import { deleteBackup, getBackupSlug } from '$lib/services/contents/draft/backup';
 import { getReferencedPendingEntries } from '$lib/services/contents/draft/pending-entries';
 import { buildEntryAssetMoveChanges } from '$lib/services/contents/draft/save/asset-move';
 import { createSavingEntryData } from '$lib/services/contents/draft/save/changes';
@@ -21,6 +21,7 @@ import { expandInvalidFields } from '$lib/services/contents/editor/fields';
 import { awaitPendingFieldUpdates } from '$lib/services/contents/editor/pending';
 import { clearEntryHistoryCache } from '$lib/services/contents/entry/history';
 import { buildCascadeChanges } from '$lib/services/contents/entry/relations/cascade/update';
+import { assignAutoNowValues } from '$lib/services/contents/fields/date-time/auto-now';
 import { setLastCommitPublishHint } from '$lib/services/deployments/publish';
 import { isWorkflowDraft } from '$lib/services/workflow';
 import { saveWorkflowChanges } from '$lib/services/workflow/save';
@@ -102,8 +103,18 @@ export const saveEntry = async ({ draft, skipCI = undefined, overwrite = false }
   }
 
   if (isNew && collection._type === 'entry') {
-    assignManualSortOrder(draft);
+    // The entries added to the same collection from a Relation field have already taken the orders
+    // after the highest one, so the new entry comes after them
+    assignManualSortOrder(
+      draft,
+      draft.pendingEntries.filter((pendingEntry) => pendingEntry.collectionName === collectionName)
+        .length,
+    );
   }
+
+  // Set the DateTime fields with the `auto_now` option at save time rather than when the draft was
+  // created, so the value tells when the entry was actually saved
+  assignAutoNowValues(draft);
 
   const slugs = getSlugs({ draft });
   const { defaultLocaleSlug } = slugs;
@@ -176,6 +187,18 @@ export const saveEntry = async ({ draft, skipCI = undefined, overwrite = false }
     throw new Error('saving_failed', { cause: ex.cause ?? ex });
   }
 
+  // Delete the backup as soon as the changes are saved. A dev server that watches the content files
+  // may reload the page right after they’re written, e.g. Eleventy, and a backup that outlives the
+  // save would then offer to restore a draft that has already been saved. The changes are saved
+  // already, so a backup that can’t be deleted doesn’t fail the save. The backup is stored under
+  // the slug the entry had when it was opened, which a rename leaves behind
+  try {
+    await deleteBackup(collectionName, getBackupSlug(draft));
+  } catch (ex) {
+    // eslint-disable-next-line no-console
+    console.error(ex);
+  }
+
   await callEventHooks({
     type: 'postSave',
     entry: savingEntry,
@@ -200,7 +223,6 @@ export const saveEntry = async ({ draft, skipCI = undefined, overwrite = false }
     skipCI,
     count: 1 + cascadeEntries.length + movedEntries.length + pendingEntries.length,
   });
-  deleteBackup(collectionName, isNew ? '' : defaultLocaleSlug);
 
   if (originalEntry) {
     clearEntryHistoryCache(originalEntry.id);

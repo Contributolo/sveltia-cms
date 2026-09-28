@@ -1,5 +1,4 @@
-import { getCollection } from '$lib/services/contents/collection';
-import { getCollectionFile } from '$lib/services/contents/collection/files';
+import { resolveCollectionAndFile } from '$lib/services/contents/collection/files';
 import { isAutoDuplicationEnabled } from '$lib/services/contents/draft';
 import { revalidateField } from '$lib/services/contents/draft/validate/fields';
 import { getField } from '$lib/services/contents/entry/fields';
@@ -25,6 +24,53 @@ const VERSION_KEY = Symbol('valueMapVersion');
  * @returns {number | undefined} Version, or `undefined` if the map is not a proxy.
  */
 export const getValueMapVersion = (valueMap) => /** @type {any} */ (valueMap)?.[VERSION_KEY];
+
+/**
+ * Get the `i18n` option that applies to the given field: its own, or, if the field has none, that
+ * of the nearest ancestor that has one, such as the List or Object field it belongs to.
+ * @param {object} args Arguments.
+ * @param {Field} args.fieldConfig Field configuration.
+ * @param {GetFieldArgs} args.getFieldArgs Arguments for the `getField` function, including the key
+ * path of the field.
+ * @returns {Field['i18n']} Option, or `undefined` if neither the field nor its ancestors have one.
+ */
+export const getInheritedI18nOption = ({ fieldConfig, getFieldArgs }) => {
+  if (fieldConfig.i18n !== undefined) {
+    return fieldConfig.i18n;
+  }
+
+  const segments = getFieldArgs.keyPath.split('.');
+
+  // Look at the ancestors from the nearest one, skipping the list item indexes, which aren’t fields
+  // of their own, e.g. `items` for `items.0.name`
+  for (let index = segments.length - 2; index >= 0; index -= 1) {
+    if (!/^\d+$/.test(segments[index])) {
+      const { i18n } =
+        getField({ ...getFieldArgs, keyPath: segments.slice(0, index + 1).join('.') }) ?? {};
+
+      if (i18n !== undefined) {
+        return i18n;
+      }
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * Check if the given field’s value is duplicated from the default locale to the other locales. That
+ * is the case when the field has the `duplicate` i18n strategy, or, if the field has no `i18n`
+ * option of its own, when the nearest ancestor that has one, such as the List or Object field it
+ * belongs to, has the `duplicate` strategy. A duplicated List or Object field then holds the same
+ * items and values in every locale, the way `normalizeContentMap()` copies it when an entry is
+ * loaded, while a subfield explicitly made translatable keeps a value of its own in each locale.
+ * @param {object} args Arguments.
+ * @param {Field} args.fieldConfig Field configuration.
+ * @param {GetFieldArgs} args.getFieldArgs Arguments for the `getField` function, including the key
+ * path of the field.
+ * @returns {boolean} Whether the value is duplicated.
+ */
+export const isDuplicatedField = (args) => getInheritedI18nOption(args) === 'duplicate';
 
 /**
  * Copy the default locale value to other locales if the field’s i18n strategy is `duplicate`.
@@ -95,14 +141,13 @@ export const copyDefaultLocaleValue = ({
  */
 export const createProxy = ({ draft, locale: sourceLanguage, target = {}, getValueMap }) => {
   const { collectionName, fileName, isIndexFile } = draft;
-  const collection = getCollection(collectionName);
+  const resolved = resolveCollectionAndFile(collectionName, fileName);
 
-  const collectionFile =
-    collection && fileName ? getCollectionFile(collection, fileName) : undefined;
-
-  if (!collection || (fileName && !collectionFile)) {
+  if (!resolved) {
     return undefined;
   }
+
+  const { collection, collectionFile } = resolved;
 
   const {
     defaultLocale,
@@ -112,12 +157,13 @@ export const createProxy = ({ draft, locale: sourceLanguage, target = {}, getVal
   /**
    * Check if auto-duplication should be performed for the given field.
    * @param {Field} fieldConfig Field configuration.
+   * @param {GetFieldArgs} getFieldArgs Arguments for the `getField` function.
    * @returns {boolean} True if auto-duplication should be performed.
    */
-  const shouldAutoDuplicate = (fieldConfig) =>
+  const shouldAutoDuplicate = (fieldConfig, getFieldArgs) =>
     isAutoDuplicationEnabled() &&
-    fieldConfig.i18n === 'duplicate' &&
-    sourceLanguage === defaultLocale;
+    sourceLanguage === defaultLocale &&
+    isDuplicatedField({ fieldConfig, getFieldArgs });
 
   /**
    * Get field configuration for the given key path.
@@ -180,16 +226,17 @@ export const createProxy = ({ draft, locale: sourceLanguage, target = {}, getVal
 
       const { fieldConfig, getFieldArgs, valueMap } = getFieldInfo(obj, keyPath);
 
+      // Update the validity and validation message in real time if validation has already been
+      // performed. A value without a field of its own may be a KeyValue pair, which is validated
+      // as part of its field, so that’s left to `revalidateField()` to tell
+      revalidateField({ draft, locale: sourceLanguage, keyPath, value, valueMap });
+
       if (!fieldConfig) {
         return true;
       }
 
-      // Update the validity and validation message in real time if validation has already been
-      // performed
-      revalidateField({ draft, locale: sourceLanguage, keyPath, value, valueMap });
-
       // Copy value to other locales
-      if (shouldAutoDuplicate(fieldConfig)) {
+      if (shouldAutoDuplicate(fieldConfig, getFieldArgs)) {
         copyDefaultLocaleValue({ draft, getFieldArgs, fieldConfig, sourceLanguage, value });
       }
 
@@ -203,14 +250,14 @@ export const createProxy = ({ draft, locale: sourceLanguage, target = {}, getVal
         version += 1;
       }
 
-      const { fieldConfig } = getFieldInfo(obj, keyPath);
+      const { fieldConfig, getFieldArgs } = getFieldInfo(obj, keyPath);
 
       if (!fieldConfig) {
         return true;
       }
 
       // Remove the property from other locales
-      if (shouldAutoDuplicate(fieldConfig)) {
+      if (shouldAutoDuplicate(fieldConfig, getFieldArgs)) {
         Object.entries(draft.currentValues).forEach(([targetLanguage, content]) => {
           if (targetLanguage !== sourceLanguage && keyPath in content) {
             delete content[keyPath];

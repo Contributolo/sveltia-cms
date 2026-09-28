@@ -6,6 +6,7 @@ import dayjsTimeZone from 'dayjs/plugin/timezone';
 import dayjsUTC from 'dayjs/plugin/utc';
 
 import { getCanonicalLocale } from '$lib/services/contents/i18n';
+import { getOrCreate } from '$lib/services/utils/cache';
 import {
   DATE_FORMAT_OPTIONS,
   DATE_REGEX,
@@ -69,6 +70,8 @@ const parseWithFormatFallback = ({ value, format, parseAsUTC }) => {
  * @param {boolean} [args.dateOnly] Whether the field is date-only.
  * @param {boolean} [args.timeOnly] Whether the field is time-only.
  * @param {boolean} [args.includeUTCSeconds] Whether to append UTC seconds/milliseconds.
+ * @param {boolean} [args.includeSeconds] Whether to include the actual seconds rather than
+ * truncating the time to the minute, as the input does with its default `step`.
  * @returns {string} Formatted display string.
  */
 const formatDateTimeValue = ({
@@ -78,11 +81,12 @@ const formatDateTimeValue = ({
   dateOnly,
   timeOnly,
   includeUTCSeconds = false,
+  includeSeconds = false,
 }) => {
   const tz = timeZone || (inputTimeZone === 'utc' ? 'UTC' : undefined);
-  const { year, month, day, hour, minute } = getDateTimeParts({ date, timeZone: tz });
+  const { year, month, day, hour, minute, second } = getDateTimeParts({ date, timeZone: tz });
   const dateStr = `${year}-${month}-${day}`;
-  const timeStr = `${hour}:${minute}`;
+  const timeStr = `${hour}:${minute}${includeSeconds ? `:${second}` : ''}`;
 
   if (dateOnly) {
     return dateStr;
@@ -93,7 +97,7 @@ const formatDateTimeValue = ({
   }
 
   if (includeUTCSeconds && tz === 'UTC') {
-    return `${dateStr}T${timeStr}:00.000Z`;
+    return `${dateStr}T${timeStr}${includeSeconds ? '' : ':00'}.000Z`;
   }
 
   return `${dateStr}T${timeStr}`;
@@ -190,17 +194,26 @@ export const shouldUpdateValue = ({ newValue, currentValue, fieldConfig }) => {
  * Get the current date/time.
  * @param {DateTimeField} fieldConfig Field configuration.
  * @param {string} [timeZone] IANA timezone name.
+ * @param {object} [options] Options.
+ * @param {Date} [options.date] Date to use instead of the current date/time.
+ * @param {boolean} [options.includeSeconds] Whether to include the seconds.
  * @returns {string} Current date/time in the ISO 8601 format.
  */
-export const getCurrentDateTime = (fieldConfig, timeZone) => {
+export const getCurrentDateTime = (
+  fieldConfig,
+  timeZone,
+  { date = undefined, includeSeconds = false } = {},
+) => {
   const { dateOnly, timeOnly, inputTimeZone } = parseDateTimeConfig(fieldConfig);
 
   return formatDateTimeValue({
+    date,
     timeZone,
     inputTimeZone,
     dateOnly,
     timeOnly,
     includeUTCSeconds: true,
+    includeSeconds,
   });
 };
 
@@ -224,7 +237,11 @@ export const getCurrentValue = ({ inputValue, currentValue, fieldConfig, timeZon
   } = parseDateTimeConfig(fieldConfig);
 
   const _outputUTC = outputUTC ?? configOutputUTC;
-  const inputFormat = dateOnly ? 'YYYY-MM-DD' : timeOnly ? 'HH:mm' : 'YYYY-MM-DDTHH:mm';
+  // Check for a seconds component. The input element omits it with the default `step` of 60,
+  // yielding `HH:mm` or `YYYY-MM-DDTHH:mm`
+  const hasSeconds = !!inputValue && TIME_WITH_SECONDS_REGEX.test(inputValue);
+  const timeFormat = hasSeconds ? 'HH:mm:ss' : 'HH:mm';
+  const inputFormat = dateOnly ? 'YYYY-MM-DD' : timeOnly ? timeFormat : `YYYY-MM-DDT${timeFormat}`;
 
   const effectiveTimeZone =
     inputTimeZone === 'utc'
@@ -274,9 +291,6 @@ export const getCurrentValue = ({ inputValue, currentValue, fieldConfig, timeZon
     return inputValue;
   }
 
-  // Check for a seconds component. The input element omits it with the default `step` of 60,
-  // yielding `HH:mm` or `YYYY-MM-DDTHH:mm`.
-  const hasSeconds = TIME_WITH_SECONDS_REGEX.test(inputValue);
   // Append seconds (and milliseconds) for data format & framework compatibility
   const timeSuffix = currentValue ? `:00${currentValue.endsWith('.000') ? '.000' : ''}` : ':00';
 
@@ -308,6 +322,34 @@ export const getCurrentValue = ({ inputValue, currentValue, fieldConfig, timeZon
 };
 
 /**
+ * Get the current date/time as a value to be stored in the given field, formatted the same way as
+ * the field’s input would store it. Used for the `{{now}}` default value and the `auto_now` option.
+ * @param {DateTimeField} fieldConfig Field configuration.
+ * @param {object} [options] Options.
+ * @param {Date} [options.date] Date to use instead of the current date/time.
+ * @param {boolean} [options.includeSeconds] Whether to keep the seconds, which the input drops
+ * with its default `step`. The `{{now}}` default value is filled in the input, so it doesn’t, while
+ * a timestamp set on save does.
+ * @returns {string} Current date/time.
+ */
+export const getCurrentStorableValue = (
+  fieldConfig,
+  { date = undefined, includeSeconds = false } = {},
+) => {
+  const { singleCustomTimeZone: timeZone, outputUTC } = parseDateTimeConfig(fieldConfig);
+
+  return /** @type {string} */ (
+    getCurrentValue({
+      inputValue: getCurrentDateTime(fieldConfig, timeZone, { date, includeSeconds }),
+      currentValue: '',
+      fieldConfig,
+      timeZone,
+      outputUTC,
+    })
+  );
+};
+
+/**
  * Get the input value given the current value.
  * @param {object} args Arguments.
  * @param {string | undefined} args.currentValue Value in the entry draft datastore.
@@ -324,13 +366,18 @@ export const getInputValue = ({ currentValue, fieldConfig, timeZone }) => {
     return '';
   }
 
-  // If the current value is the standard format, return it as is
-  const value = dateOnly
-    ? currentValue.match(DATE_ONLY_MATCH_REGEX)?.groups?.date
-    : timeOnly
-      ? // Match both `YYYY-MM-DDTHH:mm(:ss)` and `HH:mm(:ss)` formats
-        currentValue.match(TIME_SUFFIX_MATCH_REGEX)?.groups?.time
-      : undefined;
+  // If the current value is the standard format, return it as is. A value in the custom format has
+  // to be parsed with it instead: a 12-hour time like `02:30 PM` starts with the same digits as
+  // `02:30` but means `14:30`
+  const value =
+    format && dayjs(currentValue, format, true).isValid()
+      ? undefined
+      : dateOnly
+        ? currentValue.match(DATE_ONLY_MATCH_REGEX)?.groups?.date
+        : timeOnly
+          ? // Match both `YYYY-MM-DDTHH:mm(:ss)` and `HH:mm(:ss)` formats
+            currentValue.match(TIME_SUFFIX_MATCH_REGEX)?.groups?.time
+          : undefined;
 
   if (value) {
     return value;
@@ -373,6 +420,43 @@ export const getInputValue = ({ currentValue, fieldConfig, timeZone }) => {
 };
 
 /**
+ * Cache of the formatters used by {@link getDateTimeFieldDisplayValue}, keyed by locale, the parts
+ * shown and time zone. `Date.prototype.toLocaleString()` and the like create a new formatter on
+ * each call when options are given, which is an order of magnitude slower than reusing one, and a
+ * display value is resolved for every referenced entry when the options of a Relation field are
+ * built. The keys come from the site configuration, so the cache stays small.
+ * @type {Map<string, Intl.DateTimeFormat>}
+ */
+const displayFormatterCache = new Map();
+
+/**
+ * Get a cached formatter for {@link getDateTimeFieldDisplayValue}. The options are the same as the
+ * ones the `Date` locale methods would be given, so the output is identical.
+ * @param {object} args Arguments.
+ * @param {string | undefined} args.locale Canonical locale.
+ * @param {'date' | 'time' | 'datetime'} args.parts Parts to be shown.
+ * @param {string | undefined} args.timeZone Time zone.
+ * @returns {Intl.DateTimeFormat} Formatter.
+ */
+const getDisplayFormatter = ({ locale, parts, timeZone }) =>
+  getOrCreate(displayFormatterCache, [locale, parts, timeZone].join('|'), () => {
+    if (parts === 'time') {
+      return new Intl.DateTimeFormat(locale, { ...TIME_FORMAT_OPTIONS, timeZone });
+    }
+
+    if (parts === 'date') {
+      return new Intl.DateTimeFormat(locale, { ...DATE_FORMAT_OPTIONS, timeZone });
+    }
+
+    return new Intl.DateTimeFormat(locale, {
+      ...DATE_FORMAT_OPTIONS,
+      ...TIME_FORMAT_OPTIONS,
+      timeZone,
+      timeZoneName: undefined,
+    });
+  });
+
+/**
  * Get the display value of a DateTime field.
  * @param {object} args Arguments.
  * @param {InternalLocaleCode} args.locale Locale code.
@@ -411,27 +495,28 @@ export const getDateTimeFieldDisplayValue = ({ locale, fieldConfig, currentValue
   }
 
   if (timeOnly) {
-    return date.toLocaleTimeString(canonicalLocale, {
-      ...TIME_FORMAT_OPTIONS,
+    return getDisplayFormatter({
+      locale: canonicalLocale,
+      parts: 'time',
       timeZone: displayTimeZone,
-    });
+    }).format(date);
   }
 
   if (dateOnly) {
-    return date.toLocaleDateString(canonicalLocale, {
-      ...DATE_FORMAT_OPTIONS,
+    return getDisplayFormatter({
+      locale: canonicalLocale,
+      parts: 'date',
       timeZone:
         displayTimeZone ||
         (utc || DATE_REGEX.test(currentValue) || TIME_SUFFIX_REGEX.test(currentValue)
           ? 'UTC'
           : undefined),
-    });
+    }).format(date);
   }
 
-  return date.toLocaleString(canonicalLocale, {
-    ...DATE_FORMAT_OPTIONS,
-    ...TIME_FORMAT_OPTIONS,
+  return getDisplayFormatter({
+    locale: canonicalLocale,
+    parts: 'datetime',
     timeZone: displayTimeZone,
-    timeZoneName: undefined,
-  });
+  }).format(date);
 };

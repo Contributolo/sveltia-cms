@@ -4,6 +4,7 @@ import { fetchAliasedBatch } from '$lib/services/backends/git/github/graphql';
 import { repository } from '$lib/services/backends/git/github/repository';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
+import { encodePath } from '$lib/services/backends/git/shared/url';
 import { getAllStatusLabels, getStatusLabel } from '$lib/services/workflow/labels';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
@@ -174,7 +175,7 @@ export const deleteBranch = async (branch) => {
   const { owner, repo } = getWorkflowRepository();
 
   try {
-    await fetchAPI(`/repos/${owner}/${repo}/git/refs/heads/${encodeURI(branch)}`, {
+    await fetchAPI(`/repos/${owner}/${repo}/git/refs/heads/${encodePath(branch)}`, {
       method: 'DELETE',
       responseType: 'raw',
     });
@@ -190,14 +191,18 @@ export const deleteBranch = async (branch) => {
  * Replace the CMS-managed status label on a pull request while preserving any other label.
  * @param {WorkflowPullRequest} pullRequest Pull request.
  * @param {WorkflowStatus} status New status.
+ * @see https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request
  * @see https://docs.github.com/en/rest/issues/issues#update-an-issue
  */
 export const updateLabels = async (pullRequest, status) => {
   const { owner, repo } = repository;
   const cmsLabels = getAllStatusLabels();
 
+  // Read the labels from the pulls endpoint: the issues endpoint's `GET` needs issue access, which
+  // a fine-grained token created from the token page doesn't have, while its `PATCH` also accepts
+  // pull request access. @see https://github.com/sveltia/sveltia-cms/issues/1014
   const { labels = [] } = /** @type {{ labels?: { name: string }[] }} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/issues/${pullRequest.number}`)
+    await fetchAPI(`/repos/${owner}/${repo}/pulls/${pullRequest.number}`)
   );
 
   const newLabels = [

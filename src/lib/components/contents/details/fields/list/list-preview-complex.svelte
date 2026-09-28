@@ -6,14 +6,13 @@
 -->
 <script>
   import { VisibilityObserver } from '@sveltia/ui';
-  import { isObject } from '@sveltia/utils/object';
 
   import Subsection from '$lib/components/contents/details/fields/object/subsection.svelte';
   import FieldPreview from '$lib/components/contents/details/preview/field-preview.svelte';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { getValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
   import { getSubtree } from '$lib/services/contents/entry/subtree';
-  import { getListFieldInfo } from '$lib/services/contents/fields/list/helpers';
+  import { getListFieldInfo, getListItemKey } from '$lib/services/contents/fields/list/helpers';
 
   /**
    * @import { FieldPreviewProps } from '$lib/types/private';
@@ -55,11 +54,18 @@
   const items = $derived(
     getSubtree(getValueMapSnapshot(entryDraft.current, locale), keyPath) ?? [],
   );
+  /**
+   * The variable type of each item, or `undefined` for a list without variable types. The `each`
+   * block below iterates over these primitives rather than over the items: the items are rebuilt
+   * from the snapshot on every update, and a keyed `each` block over them would rewrite the source
+   * of every item on every keystroke, which Svelte then walks through every nested preview.
+   * @type {(string | undefined)[]}
+   */
+  const itemTypes = $derived(items.map((item) => (hasVariableTypes ? item[typeKey] : undefined)));
 </script>
 
-{#each items as item, index (isObject(item) ? (item.__sc_item_id ?? index) : index)}
+{#each itemTypes as type, index (getListItemKey(items, index))}
   <VisibilityObserver>
-    {@const type = hasVariableTypes ? item[typeKey] : undefined}
     {@const typeConfig = type ? types?.find(({ name }) => name === type) : undefined}
     {#if hasVariableTypes && !typeConfig}
       <!-- Unknown type: a warning is displayed in the editor -->

@@ -90,6 +90,15 @@ describe('ListEditorSimple', () => {
     await expect.element(page.getByRole('textbox')).toHaveAttribute('aria-required', 'true');
   });
 
+  test('leaves the stored value alone until the items are edited', async () => {
+    const { draft } = await renderEditor(['a', 'b']);
+
+    expect(getInputValues()).toEqual(['a', 'b']);
+    // Rewriting the value would add the list placeholder, which the loaded content doesn’t have,
+    // so opening the entry would count as a change
+    expect(draft.currentValues._default).toEqual({ 'tags.0': 'a', 'tags.1': 'b' });
+  });
+
   test('stores the edited items, skipping blank ones', async () => {
     const { draft } = await renderEditor(['a', 'b']);
 
@@ -116,12 +125,26 @@ describe('ListEditorSimple', () => {
   test('does not add an item beyond the maximum', async () => {
     await renderEditor(['a', 'b'], { config: { max: 2 } });
 
-    await expect
-      .element(page.getByRole('button', { name: /Add\W+tags/ }))
-      .toHaveAttribute('aria-disabled', 'true');
+    await expect.element(page.getByRole('textbox').nth(1)).toBeVisible();
+    expect(page.getByRole('button', { name: /Add\W+tags/ }).elements()).toHaveLength(0);
     await page.getByRole('textbox').nth(0).element().focus();
     await userEvent.keyboard('{Enter}');
     expect(getInputValues()).toEqual(['a', 'b']);
+  });
+
+  test('shows a list limited to one item as a single input', async () => {
+    await renderEditor(['a'], { config: { max: 1 } });
+
+    await expect.element(page.getByRole('textbox')).toHaveValue('a');
+    // Neither reordering nor removing can do anything with the one row, and there’s no room to add
+    expect(page.getByRole('button').elements()).toHaveLength(0);
+  });
+
+  test('shows the item controls for more items than a limit of one', async () => {
+    await renderEditor(['a', 'b'], { config: { max: 1 } });
+
+    await expect.element(page.getByRole('textbox').nth(1)).toHaveValue('b');
+    expect(page.getByRole('button', { name: 'Remove' }).elements()).toHaveLength(2);
   });
 
   test('removes an item', async () => {

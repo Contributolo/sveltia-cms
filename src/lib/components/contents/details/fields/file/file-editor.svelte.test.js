@@ -1,4 +1,3 @@
-import { sleep } from '@sveltia/utils/misc';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
@@ -168,7 +167,6 @@ describe('FileEditor', () => {
     await expect
       .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
       .toBe(1);
-    await sleep(150);
     await page
       .elementLocator(
         /** @type {HTMLElement} */ (document.querySelector('#select-assets-grid [role="option"]')),
@@ -208,8 +206,6 @@ describe('FileEditor', () => {
     const dialog = page.getByRole('dialog', { name: 'Select Folder' });
 
     await expect.element(dialog.getByRole('listbox', { name: 'Folders' })).toBeVisible();
-    // A Sveltia UI list box starts handling clicks 100 ms after it’s mounted
-    await sleep(150);
     await dialog
       .getByRole('listbox', { name: 'Folders' })
       .getByRole('option', { name: 'gallery' })
@@ -247,8 +243,6 @@ describe('FileEditor', () => {
     const folders = dialog.getByRole('listbox', { name: 'Folders' });
 
     await expect.element(folders).toBeVisible();
-    // A Sveltia UI list box starts handling clicks 100 ms after it’s mounted
-    await sleep(150);
     await folders.getByRole('option', { name: 'gallery' }).click();
     await folders.getByRole('option', { name: 'news' }).click();
     await dialog.getByRole('button', { name: 'Select' }).click();
@@ -389,7 +383,6 @@ describe('FileEditor', () => {
     await expect
       .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
       .toBe(1);
-    await sleep(150);
     await page
       .elementLocator(
         /** @type {HTMLElement} */ (document.querySelector('#select-assets-grid [role="option"]')),
@@ -469,12 +462,10 @@ describe('FileEditor', () => {
 
       const dialog = page.getByRole('dialog', { name: 'Select Image' });
 
-      await sleep(150);
       await dialog.getByRole('option', { name: 'Test Cloud' }).click();
       await expect
         .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
         .toBe(1);
-      await sleep(150);
       await page
         .elementLocator(
           /** @type {HTMLElement} */ (
@@ -627,7 +618,6 @@ describe('FileEditor', () => {
     await expect
       .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
       .toBe(1);
-    await sleep(150);
     await page
       .elementLocator(
         /** @type {HTMLElement} */ (document.querySelector('#select-assets-grid [role="option"]')),
@@ -663,7 +653,7 @@ describe('FileEditor', () => {
     );
     // The move is previewed, animated, before it’s committed
     await expect
-      .poll(() => container.querySelector('.item-list > div .filename')?.textContent?.trim())
+      .poll(() => container.querySelector('.item-list > div [role="textbox"]')?.textContent?.trim())
       .toBe('/static/uploads/photo.png');
     second.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
     item.dispatchEvent(new DragEvent('dragend', { bubbles: true }));
@@ -671,5 +661,56 @@ describe('FileEditor', () => {
     await expect
       .poll(() => draft.currentValues._default['images.0'])
       .toBe('/static/uploads/photo.png');
+  });
+
+  test('adds a file dropped or pasted after one of multiple files is replaced', async () => {
+    const { draft, container } = await renderEditor(
+      { name: 'images', multiple: true },
+      ['/static/uploads/a.png', '/static/uploads/b.png'],
+      { 'images.0': '/static/uploads/a.png', 'images.1': '/static/uploads/b.png' },
+      { keyPath: 'images', typedKeyPath: 'images', fieldId: 'images' },
+    );
+
+    await page.getByRole('button', { name: 'Replace Image' }).nth(1).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Select Image' });
+
+    await expect
+      .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
+      .toBe(1);
+    await page
+      .elementLocator(
+        /** @type {HTMLElement} */ (document.querySelector('#select-assets-grid [role="option"]')),
+      )
+      .click();
+    await dialog.getByRole('button', { name: 'Insert' }).click();
+
+    await expect
+      .poll(() => draft.currentValues._default['images.1'])
+      .toBe('/static/uploads/photo.png');
+
+    // A dropped file is added to the list instead of replacing the same item again
+    /** @type {HTMLElement} */ (container.querySelector('.drop-target')).dispatchEvent(
+      createDropEvent([await createMockImageFile({ name: 'c.png' })]),
+    );
+    await expect.poll(() => draft.currentValues._default['images.2']).toMatch(/^blob:/);
+    expect(draft.currentValues._default['images.1']).toBe('/static/uploads/photo.png');
+
+    // So is a pasted one, after the Replace dialog is dismissed
+    await page.getByRole('button', { name: 'Replace Image' }).nth(0).click();
+    await expect.element(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect.element(dialog).not.toBeInTheDocument();
+
+    vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([
+      /** @type {any} */ ({
+        types: ['image/png'],
+        getType: vi.fn().mockResolvedValue(await createMockImageFile()),
+      }),
+    ]);
+
+    await page.getByRole('button', { name: 'Paste Image' }).click();
+    await expect.poll(() => draft.currentValues._default['images.3']).toMatch(/^blob:/);
+    expect(draft.currentValues._default['images.0']).toBe('/static/uploads/a.png');
   });
 });

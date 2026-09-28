@@ -1,6 +1,8 @@
-import { _ } from '@sveltia/i18n';
-
 import { fetchAPI, fetchGraphQL, graphqlVars } from '$lib/services/backends/git/shared/api';
+import {
+  createLocalizedError,
+  NOT_COLLABORATOR_ERROR_MESSAGE,
+} from '$lib/services/backends/git/shared/errors';
 import {
   applyDefaultBranch,
   REPOSITORY_INFO_PLACEHOLDER,
@@ -49,7 +51,13 @@ export const checkRepositoryAccess = async () => {
   const { repo } = repository;
   const { id, login, bot } = /** @type {User} */ (user.account);
   const baseURL = `/projects/${getProjectId()}`;
-  const url = bot ? `${baseURL}/service_accounts` : `${baseURL}/users?search=${login}`;
+
+  // The search matches the login anywhere in a user’s username, name or email, so a short login can
+  // match many users. Ask for the largest page GitLab allows, rather than the default of 20, so
+  // the user isn’t left out of the result
+  const url = bot
+    ? `${baseURL}/service_accounts?per_page=100`
+    : `${baseURL}/users?search=${encodeURIComponent(/** @type {string} */ (login))}&per_page=100`;
 
   const response = /** @type {Response} */ (
     await fetchAPI(url, {
@@ -61,9 +69,7 @@ export const checkRepositoryAccess = async () => {
   const users = response.ok ? /** @type {{ id: number }[]} */ (await response.json()) : [];
 
   if (!users.some((u) => u.id === id)) {
-    throw new Error('Not a collaborator of the repository', {
-      cause: new Error(_('repository_no_access', { values: { repo } })),
-    });
+    throw createLocalizedError(NOT_COLLABORATOR_ERROR_MESSAGE, 'repository_no_access', { repo });
   }
 };
 

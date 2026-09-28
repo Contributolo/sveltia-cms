@@ -19,14 +19,13 @@
 
   import CascadeDeleteNote from '$lib/components/common/cascade-delete-note.svelte';
   import BackButton from '$lib/components/common/page-toolbar/back-button.svelte';
-  import EditSlugDialog from '$lib/components/contents/details/edit-slug-dialog.svelte';
+  import ResetDialog from '$lib/components/contents/details/editor/reset-dialog.svelte';
+  import ResetMenuItems from '$lib/components/contents/details/editor/reset-menu-items.svelte';
   import PreviewLinkButton from '$lib/components/contents/details/preview-link-button.svelte';
   import EntryStatusMenu from '$lib/components/workflow/entry-status-menu.svelte';
   import PublishEntryButton from '$lib/components/workflow/publish-entry-button.svelte';
   import { goBack, goto, overlayTitle } from '$lib/services/app/navigation';
-  import { getAssetFolder } from '$lib/services/assets/folders';
   import { skipCIConfigured, skipCIEnabled } from '$lib/services/backends/git/shared/integration';
-  import { allEntries } from '$lib/services/contents';
   import { getCollectionLabel } from '$lib/services/contents/collection';
   import {
     contentUpdatesToast,
@@ -34,34 +33,39 @@
   } from '$lib/services/contents/collection/data';
   import { deleteEntries } from '$lib/services/contents/collection/data/delete';
   import { getCollectionFileLabel } from '$lib/services/contents/collection/files';
-  import {
-    getSharedEntryFileName,
-    isNestedCollection,
-    nestedFilterPath,
-  } from '$lib/services/contents/collection/nested';
+  import { isNestedCollection, nestedFilterPath } from '$lib/services/contents/collection/nested';
   import { collectionState } from '$lib/services/contents/collection/view';
   import { createDraft } from '$lib/services/contents/draft/create';
   import { duplicateDraft } from '$lib/services/contents/draft/create/duplicate';
   import { saveEntry } from '$lib/services/contents/draft/save';
   import { describeConflict } from '$lib/services/contents/draft/save/conflict';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
-  import { revertChanges } from '$lib/services/contents/draft/update/revert';
+  import { canResetEntry } from '$lib/services/contents/draft/update/reset';
   import { validateDraft } from '$lib/services/contents/draft/validate';
   import { activeInlineEditors, copyFromLocaleToast } from '$lib/services/contents/editor';
+  import {
+    awaitPendingFieldUpdates,
+    fieldUpdatePending,
+  } from '$lib/services/contents/editor/pending';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
   import { getSidebarPanels, showSidebarPanel } from '$lib/services/contents/editor/sidebar';
-  import { getAssociatedAssets } from '$lib/services/contents/entry/assets';
-  import { planCascadeDelete } from '$lib/services/contents/entry/relations/cascade/delete';
+  import { canUpdateSlug } from '$lib/services/contents/editor/slug';
+  import { getEntryRelativeAssets } from '$lib/services/contents/entry/assets';
+  import {
+    EMPTY_CASCADE_DELETE_PLAN,
+    planCascadeDelete,
+  } from '$lib/services/contents/entry/relations/cascade/delete';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
   import { getLocaleLabel } from '$lib/services/contents/i18n';
   import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
   import { deployPollTimedOut } from '$lib/services/deployments';
   import { recheckDeployments, retainDeployPolling } from '$lib/services/deployments/poll';
+  import { isSearchResultsPath } from '$lib/services/search/navigation';
   import { env } from '$lib/services/user/env.svelte';
   import { prefs } from '$lib/services/user/prefs.svelte';
   import {
+    checkPublishedVersion,
     getUnpublishedEntryByDraft,
-    hasPublishedVersion,
     isPendingDeletion,
     isWorkflowEnabled,
     workflowEnabled,
@@ -75,12 +79,10 @@
   } from '$lib/services/workflow/save';
 
   /**
-   * @import { CascadeDeletePlan, UnpublishedEntry, UpdateToastState } from '$lib/types/private';
+   * @import { UnpublishedEntry, UpdateToastState } from '$lib/types/private';
    * @import { EntryConflict } from '$lib/services/contents/draft/save/conflict';
+   * @import { ResetAction } from '$lib/services/contents/editor/reset';
    */
-
-  /** @type {CascadeDeletePlan} */
-  const EMPTY_PLAN = { targets: [], blockers: [] };
 
   /**
    * @typedef {object} Props
@@ -101,7 +103,6 @@
   // count: the fields are revalidated as they’re corrected, and a toast counting down to “0 fields
   // have errors” while it’s still on screen would be confusing
   let errorCount = $state(0);
-  let showEditSlugDialog = $state(false);
   let showDeleteDialog = $state(false);
   let showReviewDialog = $state(false);
   /**
@@ -128,20 +129,33 @@
   let progressMessage = $state('');
   /** @type {MenuButton | undefined} */
   let menuButton = $state();
+  /**
+   * Whether restoring the default values or clearing the fields would change anything. It takes
+   * going through the whole entry, so it’s only checked as the menu opens rather than on every
+   * change.
+   */
+  let resetAvailability = $state({ restore: false, clear: false });
+  /** @type {ResetAction} */
+  let resetAction = $state('revert');
+  let showResetDialog = $state(false);
+
+  /**
+   * Check whether restoring the default values or clearing the fields would change anything.
+   */
+  const updateResetAvailability = () => {
+    const draft = entryDraft.current;
+
+    resetAvailability = {
+      restore: !!draft && canResetEntry({ draft, restore: true }),
+      clear: !!draft && canResetEntry({ draft }),
+    };
+  };
 
   const notFound = $derived(entryDraft.current === undefined);
   const isNew = $derived(entryDraft.current?.isNew ?? true);
   const isIndexFile = $derived(!!entryDraft.current?.isIndexFile);
   const collection = $derived(entryDraft.current?.collection);
   const entryCollection = $derived(collection?._type === 'entry' ? collection : undefined);
-  /**
-   * Whether an entry is identified by its path within the collection folder rather than by a name
-   * of its own, which is the case in a nested collection that doesn’t store every entry as an index
-   * file. The slug editor can’t rename such an entry without relocating it, so it’s not offered.
-   */
-  const slugIsEntryPath = $derived(
-    !!collection && isNestedCollection(collection) && !getSharedEntryFileName(collection),
-  );
   const collectionFile = $derived(entryDraft.current?.collectionFile);
   const originalEntry = $derived(entryDraft.current?.originalEntry);
   const { i18nEnabled, allLocales, defaultLocale } = $derived(
@@ -189,7 +203,10 @@
   // There’s only something to put in the second pane when another locale can be edited alongside
   // the first one, or when the entry has a preview
   const canShowSecondPane = $derived((i18nEnabled && allLocales.length > 1) || canPreview);
-  /* v8 ignore start -- only read while the draft is there, as the preview is on by default */
+  // Whether the preview is shown in the second pane, which is all the pane shows for an entry with
+  // a single locale, so there’s nothing to sync the scrolling with otherwise
+  const previewShown = $derived(canPreview && !!entryEditorSettings.current?.showPreview);
+  /* v8 ignore start -- only read while the draft is there, and the preview is hidden */
   const hasSingleLocale = $derived(
     Object.keys(entryDraft.current?.currentValues ?? {}).length === 1,
   );
@@ -198,10 +215,11 @@
   // control group is locked meanwhile rather than just the button that started it
   const busy = $derived(saving || deleting || duplicating);
   const controlsDisabled = $derived(disabled || busy);
-  const modified = $derived(isNew || entryDraft.modified);
+  // A change still on its way to the draft counts, so a save can be started right after it
+  const modified = $derived(isNew || entryDraft.modified || fieldUpdatePending.current);
   const associatedAssets = $derived(
-    collectionName && originalEntry && getAssetFolder({ collectionName, fileName })?.entryRelative
-      ? getAssociatedAssets({ entry: originalEntry, collectionName, fileName, relative: true })
+    collectionName && originalEntry
+      ? getEntryRelativeAssets({ entry: originalEntry, collectionName, fileName })
       : [],
   );
   // Look the entry up in the store rather than using `originalEntry` directly, so the status button
@@ -217,10 +235,8 @@
   // The `delete` option only blocks taking an entry off the site. Discarding a pull request leaves
   // the published version untouched, so it stays available even when deletion is disabled
   const canDelete = $derived(entryCollection?.delete !== false);
-  // `allEntries.current` is a dependency, because the entry can be published from another view
-  const publishedVersionExists = $derived(
-    !!unpublishedEntry && !!allEntries.current && hasPublishedVersion(unpublishedEntry),
-  );
+  // The entry can be published from another view, so the check depends on `allEntries`
+  const publishedVersionExists = $derived(checkPublishedVersion(unpublishedEntry));
   // Deleting an entry that was never published just throws the draft away; anything else takes an
   // entry off the site
   const discardsDraft = $derived(!!unpublishedEntry && !publishedVersionExists);
@@ -246,7 +262,7 @@
   const cascadePlan = $derived(
     showDeleteDialog && collection && originalEntry && !discardsDraft
       ? planCascadeDelete({ collection, collectionFile, entries: [originalEntry] })
-      : EMPTY_PLAN,
+      : EMPTY_CASCADE_DELETE_PLAN,
   );
 
   // Keep the deploy state fresh while the editor is open, so a build that finishes in the
@@ -255,13 +271,16 @@
   $effect(() => retainDeployPolling());
 
   /**
-   * Go back to the previous page. If the entry is a singleton file, go to the collections list.
-   * Otherwise, go to the collection entries list — the folder being browsed for a nested
-   * collection, so the user lands where they opened the entry from.
+   * Go back to the previous page: the search results if the entry was opened from them. Otherwise,
+   * if the entry is a singleton file, go to the collections list, or go to the collection entries
+   * list — the folder being browsed for a nested collection, so the user lands where they opened
+   * the entry from.
    */
   const _goBack = () => {
+    const options = { returnTo: isSearchResultsPath };
+
     if (collectionName === '_singletons') {
-      goBack('/collections');
+      goBack('/collections', options);
 
       return;
     }
@@ -272,6 +291,7 @@
       dirPath
         ? `/collections/${collectionName}/filter/${dirPath}`
         : `/collections/${collectionName}`,
+      options,
     );
   };
 
@@ -398,6 +418,14 @@
     saving = true;
 
     try {
+      // A change still on its way to the draft enabled the button, but may turn out to change
+      // nothing, e.g. a trailing space typed in a rich text editor
+      await awaitPendingFieldUpdates();
+
+      if (!isNew && !entryDraft.modified) {
+        return;
+      }
+
       const savedEntry = await saveEntry({ draft, skipCI, overwrite });
       const savedDraft = /** @type {UnpublishedEntry} */ (savedEntry);
 
@@ -565,6 +593,8 @@
     iconic
     popupPosition="bottom-right"
     aria-label={_('show_editor_options')}
+    onclick={updateResetAvailability}
+    onkeydown={updateResetAvailability}
     bind:this={menuButton}
   >
     {#snippet popup()}
@@ -643,26 +673,29 @@
             }}
           />
         {/if}
-        <MenuItem
-          label={_('edit_slug')}
-          disabled={!!collectionFile ||
-            isNew ||
-            isIndexFile ||
-            pendingDeletion ||
-            entryCollection?.delete === false ||
-            slugIsEntryPath}
-          onclick={() => {
-            showEditSlugDialog = true;
+        <!-- A shortcut to the Slug panel, which a small screen lists above along with the other
+          sidebar panels -->
+        {#if !env.isSmallScreen}
+          <MenuItem
+            label={_('edit_slug')}
+            disabled={!canUpdateSlug(entryDraft.current)}
+            onclick={() => {
+              showSidebarPanel('slug');
+            }}
+          />
+        {/if}
+        <!-- A small screen lists the sidebar panels above, ending with a separator of their own -->
+        <ResetMenuItems
+          scope="entry"
+          separator={!env.isSmallScreen || (!disabled && !isNew)}
+          available={{
+            revert: modified && !pendingDeletion,
+            restore: resetAvailability.restore && !pendingDeletion,
+            clear: resetAvailability.clear && !pendingDeletion,
           }}
-        />
-        <MenuItem
-          label={_('revert_all_changes')}
-          disabled={!modified || pendingDeletion}
-          onclick={() => {
-            /* v8 ignore next 3 -- the menu is only offered while the draft is there */
-            if (entryDraft.current) {
-              revertChanges({ draft: entryDraft.current });
-            }
+          onSelect={(action) => {
+            resetAction = action;
+            showResetDialog = true;
           }}
         />
         {#if deployPollTimedOut.current}
@@ -702,7 +735,7 @@
           <MenuItemCheckbox
             label={_('sync_scrolling')}
             checked={entryEditorSettings.current?.syncScrolling}
-            disabled={!showSecondPane || (!canPreview && hasSingleLocale)}
+            disabled={!showSecondPane || (!previewShown && hasSingleLocale)}
             onChange={() => {
               entryEditorSettings.current = {
                 ...entryEditorSettings.current,
@@ -743,7 +776,13 @@
   </Alert>
 </Toast>
 
-<EditSlugDialog bind:open={showEditSlugDialog} />
+<ResetDialog
+  bind:open={showResetDialog}
+  action={resetAction}
+  onClose={() => {
+    menuButton?.focus();
+  }}
+/>
 
 <ConfirmationDialog
   bind:open={showReviewDialog}

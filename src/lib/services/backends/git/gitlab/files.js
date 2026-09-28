@@ -10,6 +10,7 @@ import {
   repository,
 } from '$lib/services/backends/git/gitlab/repository';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
+import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { fetchAndParseFiles } from '$lib/services/backends/git/shared/fetch';
 import { startSimulatedProgress } from '$lib/services/backends/git/shared/progress';
 
@@ -113,12 +114,25 @@ export const fetchFileList = async () => {
     .map(({ path, sha }) => ({ path, sha, size: 0, name: getPathInfo(path).basename }));
 };
 
+/**
+ * Number of blob batches requested at the same time on GitLab.com. Each batch is a heavy query, so
+ * this is kept well below the general limit on requests in flight.
+ */
+export const BLOB_CONCURRENCY = 4;
+
+/**
+ * Number of blob batches requested at the same time on a self-hosted instance, which typically runs
+ * on less powerful hardware and is more likely to time out under load.
+ */
+export const SELF_HOSTED_BLOB_CONCURRENCY = 2;
+
 const FETCH_BLOBS_QUERY = `
   query($fullPath: ID!, $branch: String!, $paths: [String!]!) {
     project(fullPath: $fullPath) {
       repository {
         blobs(ref: $branch, paths: $paths) {
           nodes {
+            path
             rawTextBlob
           }
         }
@@ -139,7 +153,8 @@ const FETCH_BLOBS_QUERY = `
  * @param {string} query GraphQL query string.
  * @param {Record<string, any>} [variables] Any variable to be applied to the query, other than the
  * paths.
- * @returns {Promise<BlobItem[]>} Fetched blobs, in the same order as the given paths.
+ * @returns {Promise<BlobItem[]>} Fetched blobs, in the same order as the given paths. A path that
+ * isn’t on the branch is left out, so select the `path` to match a blob to its file.
  * @throws {Error} When a request for a single path fails.
  * @see https://docs.gitlab.com/api/graphql/#data-limits
  * @see https://gitlab.com/gitlab-org/gitlab/-/merge_requests/212456
@@ -177,7 +192,8 @@ export const fetchBlobBatch = async (paths, query, variables = {}) => {
  * @param {string} query GraphQL query string.
  * @param {Record<string, any>} [variables] Any variable to be applied to the query, other than the
  * paths.
- * @returns {Promise<BlobItem[]>} Fetched blobs, in the same order as the given paths.
+ * @returns {Promise<BlobItem[]>} Fetched blobs, in the same order as the given paths. A path that
+ * isn’t on the branch is left out, so select the `path` to match a blob to its file.
  * @see https://docs.gitlab.com/api/graphql/reference/#repositoryblob
  * @see https://docs.gitlab.com/api/graphql/reference/#tree
  * @see https://forum.gitlab.com/t/graphql-api-read-raw-file/35389
@@ -190,12 +206,10 @@ export const fetchBlobNodes = async (paths, query, variables = {}) => {
 
   const { isSelfHosted = false } = repository;
   const batchSize = isSelfHosted ? 20 : 100;
-  const fetchingPaths = [...paths];
-  /** @type {BlobItem[]} */
-  const blobs = [];
+  const concurrency = isSelfHosted ? SELF_HOSTED_BLOB_CONCURRENCY : BLOB_CONCURRENCY;
 
   // Fetch all the text contents with the GraphQL API. Pagination would fail if `paths` becomes too
-  // long, so we just use a fixed number of paths to iterate. The complexity score of this query is
+  // long, so we just use a fixed number of paths per request. The complexity score of this query is
   // 15 + (2 * node size) so 100 paths = 215 complexity, giving the following conditions:
   // 1. The max number of records is 100
   // 2. The max query complexity is 250 or 300
@@ -207,30 +221,42 @@ export const fetchBlobNodes = async (paths, query, variables = {}) => {
   // Only the first two conditions can be satisfied by a fixed count; the size of a blob is unknown
   // until it’s fetched, so {@link fetchBlobBatch} handles the third one by splitting a batch that
   // turns out to be too large.
-  for (;;) {
-    const currentPaths = fetchingPaths.splice(0, batchSize);
+  const batches = Array.from({ length: Math.ceil(paths.length / batchSize) }, (_, index) => ({
+    index,
+    paths: paths.slice(index * batchSize, (index + 1) * batchSize),
+  }));
 
-    blobs.push(...(await fetchBlobBatch(currentPaths, query, variables)));
+  /** @type {BlobItem[][]} */
+  const results = Array(batches.length);
 
-    if (!fetchingPaths.length) {
-      break;
-    }
-  }
+  // The batches are independent, so a few of them are requested at once rather than one after
+  // another; a large repository needs dozens of them, and each is a full round trip
+  await runConcurrently(
+    batches,
+    async ({ index, paths: batchPaths }) => {
+      results[index] = await fetchBlobBatch(batchPaths, query, variables);
+    },
+    { concurrency },
+  );
 
-  return blobs;
+  // Keep the order of the given paths, although callers match a blob to its file by path
+  return results.flat();
 };
 
 /**
  * Fetch the blobs for the given file paths, and map them back to those paths.
  * @param {string[]} paths List of file paths to fetch.
- * @param {string} query GraphQL query string.
- * @returns {Promise<Record<string, BlobItem>>} Fetched blobs mapped by file path.
+ * @param {string} query GraphQL query string, which has to select the `path` of each blob.
+ * @returns {Promise<Record<string, BlobItem>>} Fetched blobs mapped by file path. A path missing
+ * from the branch has no blob.
  */
 export const fetchBlobs = async (paths, query) => {
   const blobs = await fetchBlobNodes(paths, query);
 
-  // Map the blobs back to their respective file paths
-  return Object.fromEntries(paths.map((path, index) => [path, blobs[index]]));
+  // Map the blobs back by their own paths rather than by position: GitLab leaves a path that isn’t
+  // on the branch out of the response, e.g. a file deleted by a push made during the load, which
+  // would otherwise give every later file the content of the one after it
+  return Object.fromEntries(blobs.map((blob) => [/** @type {string} */ (blob.path), blob]));
 };
 
 /**

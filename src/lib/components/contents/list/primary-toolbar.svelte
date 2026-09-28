@@ -8,8 +8,6 @@
     Toolbar,
     TruncatedText,
   } from '@sveltia/ui';
-  import { sanitize } from 'isomorphic-dompurify';
-  import { marked } from 'marked';
 
   import BackButton from '$lib/components/common/page-toolbar/back-button.svelte';
   import ReorderControls from '$lib/components/contents/list/reorder-controls.svelte';
@@ -21,29 +19,15 @@
   import {
     collectionState,
     listedEntries,
+    listedUnpublishedEntries,
     reordering,
     setReorderMode,
   } from '$lib/services/contents/collection/view';
   import { env } from '$lib/services/user/env.svelte';
+  import { sanitizeInlineMarkdown } from '$lib/services/utils/string';
   import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
-  /**
-   * Options for {@link sanitize}.
-   */
-  const SANITIZE_OPTIONS = {
-    ALLOWED_TAGS: ['strong', 'em', 'del', 'code', 'a'],
-    ALLOWED_ATTR: ['href'],
-  };
-
   let showDeleteDialog = $state(false);
-
-  /**
-   * Parse the given string as Markdown and sanitize the result to only allow certain tags.
-   * @param {string} str Original string.
-   * @returns {string} Sanitized string.
-   */
-  const _sanitize = (str) =>
-    sanitize(/** @type {string} */ (marked.parseInline(str)), SANITIZE_OPTIONS);
 
   /* v8 ignore start -- only read while a collection is selected, once the app locale is loaded */
   const name = $derived(selectedCollection.current?.name ?? '');
@@ -66,6 +50,11 @@
     creationDisabled,
   } = $derived(collectionState.current);
   const deleteDisabled = $derived(!selectedEntries.current.length || !canDelete);
+  // The empty entry list offers a Create button of its own, so the floating one is only needed once
+  // the list has entries, including unpublished ones, which can be the only ones in the collection
+  const hasEntries = $derived(
+    !!(listedEntries.current.length || listedUnpublishedEntries.current.length),
+  );
 </script>
 
 {#if selectedCollection.current}
@@ -84,7 +73,7 @@
     {:else}
       <div role="none" class="description">
         <TruncatedText>
-          <bdi>{@html _sanitize(description || '')}</bdi>
+          <bdi>{@html sanitizeInlineMarkdown(description || '')}</bdi>
         </TruncatedText>
       </div>
     {/if}
@@ -118,7 +107,7 @@
         />
       {/if}
       <FloatingActionButtonWrapper>
-        {#if !env.isSmallScreen || (listedEntries.current.length && !creationDisabled)}
+        {#if !env.isSmallScreen || (hasEntries && !creationDisabled)}
           <CreateEntryButton
             collectionName={name}
             label={env.isSmallScreen ? undefined : _('create')}

@@ -9,20 +9,18 @@
   import { _, locale as appLocale } from '@sveltia/i18n';
   import { Button, Icon } from '@sveltia/ui';
 
-  import Image from '$lib/components/assets/shared/image.svelte';
   import PreviewLinkButton from '$lib/components/contents/details/preview-link-button.svelte';
+  import EntryThumbnail from '$lib/components/contents/shared/entry-thumbnail.svelte';
   import DeployStatusBadge from '$lib/components/workflow/deploy-status-badge.svelte';
   import { goto } from '$lib/services/app/navigation';
-  import { allEntries } from '$lib/services/contents';
   import { getCollection, getCollectionLabel } from '$lib/services/contents/collection';
   import {
     getCollectionFile,
     getCollectionFileLabel,
   } from '$lib/services/contents/collection/files';
-  import { getEntryThumbnail } from '$lib/services/contents/entry/assets';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
   import { deployments, productionSHA } from '$lib/services/deployments';
-  import { hasPublishedVersion } from '$lib/services/workflow';
+  import { checkPublishedVersion } from '$lib/services/workflow';
   import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
   /**
@@ -95,8 +93,8 @@
       collection?.publish !== false,
   );
   // Deleting an entry that has a published version only throws away the pending changes.
-  // `allEntries.current` is a dependency, because the entry can be published from another view
-  const publishedVersionExists = $derived(!!allEntries.current && hasPublishedVersion(entry));
+  // The entry can be published from another view, so the check depends on `allEntries`
+  const publishedVersionExists = $derived(checkPublishedVersion(entry));
   // The `delete` option only blocks taking an entry off the site. Discarding a pull request leaves
   // the published version untouched, so it stays available even when deletion is disabled
   const canDelete = $derived(
@@ -147,11 +145,7 @@ a merged one -->
     }}
   >
     {#if collection?._type === 'entry'}
-      {#await getEntryThumbnail(collection, entry) then src}
-        {#if src}
-          <Image {src} variant="icon" cover />
-        {/if}
-      {/await}
+      <EntryThumbnail {collection} {entry} variant="icon" />
     {/if}
     <span role="none" class="text">
       <span role="none" class="collection"><bdi>{collectionLabel}</bdi></span>

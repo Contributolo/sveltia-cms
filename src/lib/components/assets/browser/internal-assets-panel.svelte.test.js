@@ -1,5 +1,4 @@
 import { addMessages, locale } from '@sveltia/i18n';
-import { sleep } from '@sveltia/utils/misc';
 import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
@@ -118,7 +117,14 @@ describe('InternalAssetsPanel', () => {
 
   test('lists the assets in the saved view type within a drop zone', async () => {
     const onDrop = vi.fn();
-    const props = $state({ assets, selectedResources: [], onDrop });
+
+    const props = $state({
+      assets,
+      kind: /** @type {'image'} */ ('image'),
+      selectedResources: [],
+      onDrop,
+    });
+
     const { container } = await render(InternalAssetsPanel, props);
     const listbox = page.getByRole('listbox', { name: 'Available Images' });
 
@@ -126,7 +132,6 @@ describe('InternalAssetsPanel', () => {
     expect(listbox.element()).toHaveClass('list');
     await expect.poll(() => listbox.getByRole('option').elements().length).toBe(2);
 
-    await sleep(150);
     await page
       .elementLocator(
         /** @type {HTMLElement} */ (

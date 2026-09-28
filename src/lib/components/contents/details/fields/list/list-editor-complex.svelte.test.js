@@ -1,4 +1,3 @@
-import { sleep } from '@sveltia/utils/misc';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
@@ -46,10 +45,11 @@ const sectionsField = {
  * Render the editor within a draft.
  * @param {ComplexListField} fieldConfig Field configuration.
  * @param {Record<string, any>} values Flattened values.
+ * @param {Record<string, any>} [props] Any other props, e.g. `required`.
  * @returns {Promise<{ draft: any, container: HTMLElement, entryDraft: any }>} Draft, container
  * and draft state.
  */
-const renderEditor = async (fieldConfig, values) => {
+const renderEditor = async (fieldConfig, values, props = {}) => {
   const draft = createMockDraft({ fields: [fieldConfig], values: { _default: values } });
 
   const { container, entryDraft } = await renderWithDraft(ListEditorComplex, {
@@ -61,6 +61,7 @@ const renderEditor = async (fieldConfig, values) => {
       fieldId: fieldConfig.name,
       fieldLabel: fieldConfig.label ?? fieldConfig.name,
       fieldConfig,
+      ...props,
     },
   });
 
@@ -269,6 +270,26 @@ describe('ListEditorComplex (more)', () => {
       .toEqual(['a', 'c', 'new']);
   });
 
+  test('adds an item with an empty pair to a list with a single KeyValue subfield', async () => {
+    /** @type {ComplexListField} */
+    const pairsField = {
+      name: 'pairs',
+      widget: 'list',
+      label: 'Pairs',
+      label_singular: 'Pair',
+      field: { name: 'pair', widget: 'keyvalue' },
+    };
+
+    const { draft } = await renderEditor(pairsField, { 'pairs.0.foo': 'bar' });
+
+    await page.getByRole('button', { name: /Add\W+Pair/ }).click();
+
+    // The empty key is kept as is, not turned into an array index
+    await expect.poll(() => draft.currentValues._default['pairs.1.']).toBe('');
+    expect(Object.keys(draft.currentValues._default)).not.toContain('pairs.1.0');
+    expect(draft.currentValues._default['pairs.0.foo']).toBe('bar');
+  });
+
   test('removes and reorders the items of a list with a single subfield', async () => {
     const { draft } = await renderEditor(tagsField, {
       'tags.0': 'a',
@@ -336,12 +357,11 @@ describe('ListEditorComplex (more)', () => {
       .poll(() => getStoredItems(draft, 'authors').map(({ name }) => name))
       .toEqual(['Anonymous', 'Melvin']);
 
-    // The limit is reached
-    await expect.element(page.getByRole('button', { name: /Add\W+Author/ })).toBeDisabled();
-    await expect.poll(() => document.querySelector('dialog.popup')).toBeNull();
-    await page.getByRole('button', { name: 'List Item Options' }).nth(0).click();
-    await expect.element(page.getByRole('menuitem', { name: 'Duplicate' })).toBeDisabled();
-    await expect.element(page.getByRole('menuitem', { name: 'Add Item Below' })).toBeDisabled();
+    // The limit is reached, so the add button and the item options are gone
+    await expect
+      .poll(() => page.getByRole('button', { name: /Add\W+Author/ }).elements())
+      .toHaveLength(0);
+    expect(page.getByRole('button', { name: 'List Item Options' }).elements()).toHaveLength(0);
   });
 
   test('starts minimized when configured, expanding once an item is added', async () => {
@@ -400,7 +420,6 @@ describe('ListEditorComplex (more)', () => {
     await renderEditor({ ...authorsField, allow_duplicate: false }, { 'authors.0.name': 'Melvin' });
 
     await page.getByRole('button', { name: 'List Item Options' }).click();
-    await sleep(150);
     expect(page.getByRole('menuitem', { name: 'Duplicate' }).elements()).toHaveLength(0);
     await expect.element(page.getByRole('menuitem', { name: 'Add Item Above' })).toBeVisible();
   });
@@ -575,6 +594,23 @@ describe('ListEditorComplex (more)', () => {
 
     await expect.element(page.getByRole('button', { name: /Add\W+Author/ })).toBeDisabled();
     await expect.element(page.getByRole('button', { name: 'List Item Options' })).toBeDisabled();
+    // Removing the item would remove it from the default locale as well
+    await expect.element(page.getByRole('button', { name: 'Remove' })).toBeDisabled();
+  });
+
+  test('locks the items of a read-only field', async () => {
+    // e.g. a List field duplicated in another locale along with its Object field
+    await renderEditor(
+      authorsField,
+      { 'authors.0.name': 'Melvin', 'authors.1.name': 'Elsie' },
+      {
+        readonly: true,
+      },
+    );
+
+    await expect.element(page.getByRole('button', { name: /Add\W+Author/ })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Remove' }).nth(0)).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Reorder Item' }).nth(0)).toBeDisabled();
   });
 
   test('writes a change to every locale for a duplicated field', async () => {
@@ -781,5 +817,88 @@ describe('ListEditorComplex (more)', () => {
     // The summary defaults to the first field
     await expect.element(page.getByText('/static/uploads/photo.png')).toBeInTheDocument();
     expect(container.querySelector('.item-body .summary img')).toBeNull();
+  });
+});
+
+describe('ListEditorComplex (single item)', () => {
+  /** @type {ComplexListField} */
+  const authorField = { ...authorsField, max: 1 };
+
+  test('shows a required item without the list controls', async () => {
+    const { container } = await renderEditor(authorField, { 'authors.0.name': 'Melvin' });
+
+    await expect.element(page.getByRole('textbox').nth(0)).toHaveValue('Melvin');
+    // No item count, list toggle, reorder controls or Remove button; only the item’s own toggle
+    expect(page.getByText('1 Author').elements()).toHaveLength(0);
+    expect(page.getByRole('button', { name: 'Collapse' }).elements()).toHaveLength(1);
+    expect(page.getByRole('button', { name: 'Reorder Item' }).elements()).toHaveLength(0);
+    expect(page.getByRole('button', { name: 'Remove' }).elements()).toHaveLength(0);
+    // The list is labelled with the field name instead of the item count
+    expect(container.querySelector('[hidden]')?.textContent).toBe('Author');
+  });
+
+  test('keeps the item open when the list would start minimized', async () => {
+    const { container } = await renderEditor(
+      { ...authorField, minimize_collapsed: true },
+      { 'authors.0.name': 'Melvin' },
+    );
+
+    await expect.element(page.getByRole('textbox').nth(0)).toBeVisible();
+    expect(container.querySelector('.item-list.collapsed')).toBeNull();
+  });
+
+  test('lets an optional item be removed and added again', async () => {
+    const { draft } = await renderEditor(
+      authorField,
+      { 'authors.0.name': 'Melvin' },
+      { required: false },
+    );
+
+    await page.getByRole('button', { name: 'Remove' }).click();
+    await expect.poll(() => getStoredItems(draft, 'authors')).toEqual([]);
+    // The empty list shows the Add button alone, still without an item count
+    expect(page.getByText('0 Authors').elements()).toHaveLength(0);
+
+    await page.getByRole('button', { name: /Add\W+Author/ }).click();
+    await expect
+      .poll(() => getStoredItems(draft, 'authors').map(({ name }) => name))
+      .toEqual(['Anonymous']);
+    await expect
+      .poll(() => page.getByRole('button', { name: /Add\W+Author/ }).elements())
+      .toHaveLength(0);
+  });
+
+  test('lets the item of a list with variable types be removed to choose another type', async () => {
+    await renderEditor({ ...sectionsField, max: 1 }, { 'sections.0.type': 'hero' });
+
+    await expect.element(page.getByRole('button', { name: 'Remove' })).toBeVisible();
+    expect(page.getByRole('button', { name: 'Reorder Item' }).elements()).toHaveLength(0);
+  });
+
+  test('locks the item in a locale whose values follow the default locale', async () => {
+    // The field editor makes a field duplicated from the default locale read-only there
+    await renderEditor(
+      authorField,
+      { 'authors.0.name': 'Melvin' },
+      { required: false, readonly: true },
+    );
+
+    // The optional item can’t be removed there, which would remove it from the default locale
+    await expect.element(page.getByRole('button', { name: 'Remove' })).toBeDisabled();
+  });
+
+  test('can’t add the item in a locale whose values follow the default locale', async () => {
+    await renderEditor(authorField, {}, { required: false, readonly: true });
+
+    await expect.element(page.getByRole('button', { name: /Add\W+Author/ })).toBeDisabled();
+  });
+
+  test('shows the list controls for more items than the limit', async () => {
+    await renderEditor(authorField, { 'authors.0.name': 'Melvin', 'authors.1.name': 'Elsie' });
+
+    // The extra item has to be removable
+    await expect.element(page.getByText('2 Authors')).toBeVisible();
+    expect(page.getByRole('button', { name: 'Remove' }).elements()).toHaveLength(2);
+    expect(page.getByRole('button', { name: 'Reorder Item' }).elements()).toHaveLength(2);
   });
 });

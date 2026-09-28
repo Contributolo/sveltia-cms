@@ -23,9 +23,12 @@ ignorePaths:
   - data/**/*.json
   - package/**
   - src/**/*.test.js
+  - e2e/**/*.e2e.js
+  - e2e/fixtures/configs/**
   - src/lib/locales/*.yaml
-  - '!src/lib/locales/en-*.yaml'
   - .claude/**
+  # Non-English locales; negative globs are not supported, so match everything but `en-*.yaml`
+  - src/lib/locales/{[^e]*,e[^n]*}.yaml
 words:
   - analyzing
   - appinstalled
@@ -61,6 +64,7 @@ words:
   - exif
   - exifr
   - FedRAMP
+  - filechooser
   - Flavored
   - Forgejo
   - frontmatter

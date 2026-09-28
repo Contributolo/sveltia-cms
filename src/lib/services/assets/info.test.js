@@ -16,11 +16,14 @@ import {
   _resetAssetBlobCache,
   _resetRevocationQueue,
   _resetThumbnailDB,
+  cacheAssetBlob,
+  createDisplayBlobURL,
   getAssetBaseURL,
   getAssetBlob,
   getAssetBlobURL,
   getAssetPublicURL,
   getAssetThumbnailURL,
+  getDisplayBlob,
   getFolderPublicPath,
   getMediaFieldSource,
   getMediaFieldURL,
@@ -393,6 +396,80 @@ describe('assets/info', () => {
     });
   });
 
+  describe('getDisplayBlob', () => {
+    it('should wrap an SVG image, whatever the case and parameters of its type', async () => {
+      const { createInertSVG } = await import('$lib/services/utils/media/image/svg');
+      const wrapper = new Blob(['<svg/>'], { type: 'image/svg+xml' });
+
+      vi.mocked(createInertSVG).mockResolvedValue(wrapper);
+
+      const svg = new Blob(['<svg><script/></svg>'], { type: 'image/svg+xml' });
+      const svgWithParams = new Blob(['<svg/>'], { type: 'Image/SVG+XML; charset=utf-8' });
+
+      expect(await getDisplayBlob(svg)).toBe(wrapper);
+      expect(createInertSVG).toHaveBeenCalledWith(svg);
+      expect(await getDisplayBlob(svgWithParams)).toBe(wrapper);
+    });
+
+    it.each([
+      'text/html',
+      'application/xhtml+xml',
+      'text/xml',
+      'application/xml',
+      'application/xslt+xml',
+    ])('should turn a %s document into plain text', async (type) => {
+      const { createInertSVG } = await import('$lib/services/utils/media/image/svg');
+      const blob = new Blob(['<script>alert(1)</script>'], { type });
+      const result = await getDisplayBlob(blob);
+
+      expect(result).not.toBe(blob);
+      expect(result.type).toBe('text/plain');
+      expect(await result.text()).toBe('<script>alert(1)</script>');
+      expect(createInertSVG).not.toHaveBeenCalled();
+    });
+
+    it.each(['image/png', 'application/pdf', 'text/plain', 'video/mp4', ''])(
+      'should leave a %s file as is',
+      async (type) => {
+        const blob = new Blob(['data'], { type });
+
+        expect(await getDisplayBlob(blob)).toBe(blob);
+      },
+    );
+  });
+
+  describe('createDisplayBlobURL', () => {
+    it('should create the URL of the blob to be displayed', async () => {
+      const { createInertSVG } = await import('$lib/services/utils/media/image/svg');
+      const wrapper = new Blob(['<svg/>'], { type: 'image/svg+xml' });
+      const file = new File(['<svg/>'], 'test.svg', { type: 'image/svg+xml' });
+
+      vi.mocked(createInertSVG).mockResolvedValue(wrapper);
+
+      expect(await createDisplayBlobURL(file)).toBe('blob:mock-url');
+      expect(global.URL.createObjectURL).toHaveBeenCalledExactlyOnceWith(wrapper);
+    });
+  });
+
+  describe('cacheAssetBlob', () => {
+    it('should give the asset the URL of the display blob, and keep the original', async () => {
+      const { createInertSVG } = await import('$lib/services/utils/media/image/svg');
+      const wrapper = new Blob(['<svg/>'], { type: 'image/svg+xml' });
+      const file = new File(['<svg><script/></svg>'], 'test.svg', { type: 'image/svg+xml' });
+      const svgAsset = { ...mockAsset, path: 'assets/images/test.svg', name: 'test.svg' };
+
+      vi.mocked(createInertSVG).mockResolvedValue(wrapper);
+      global.fetch = vi.fn();
+
+      expect(await cacheAssetBlob(svgAsset, file)).toBe(file);
+      expect(svgAsset.blobURL).toBe('blob:mock-url');
+      expect(global.URL.createObjectURL).toHaveBeenCalledExactlyOnceWith(wrapper);
+      // The original is read back, not the wrapper behind the URL
+      expect(await getAssetBlob(svgAsset)).toBe(file);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getAssetBlobURL', () => {
     it('should return existing blobURL if available', async () => {
       const assetWithBlobURL = {
@@ -636,6 +713,109 @@ describe('assets/info', () => {
       const result = await getAssetThumbnailURL(assetWithFile);
 
       expect(result).toBe(undefined);
+    });
+
+    describe('thumbnail source', () => {
+      /** @type {any} */
+      let transformImageMock;
+      const thumbnailBlob = new Blob(['thumbnail'], { type: 'image/webp' });
+
+      beforeEach(async () => {
+        const { transformImage } = await import('$lib/services/utils/media/image/transform');
+
+        mockIndexedDB.get.mockResolvedValue(undefined);
+        transformImageMock = vi.mocked(transformImage);
+        transformImageMock.mockClear();
+        transformImageMock.mockResolvedValue(thumbnailBlob);
+      });
+
+      it('should not cache a downloaded original on the asset', async () => {
+        const asset = { ...mockAsset };
+
+        mockBackend.fetchBlob.mockResolvedValue(new Blob(['data']));
+
+        await getAssetThumbnailURL(asset);
+
+        const [[source]] = transformImageMock.mock.calls;
+
+        // The MIME type is still derived from the file name
+        expect(source.type).toBe('image/jpeg');
+        expect(asset.blobURL).toBeUndefined();
+        // The only object URL is the thumbnail’s own
+        expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+        expect(URL.createObjectURL).toHaveBeenCalledWith(thumbnailBlob);
+      });
+
+      it('should not cache a file read from a handle on the asset', async () => {
+        const file = new File(['data'], 'test.jpg', { type: 'image/jpeg' });
+        const asset = { ...mockAsset, handle: { getFile: vi.fn(async () => file) } };
+
+        await getAssetThumbnailURL(asset);
+
+        expect(transformImageMock).toHaveBeenCalledWith(file, expect.any(Object));
+        expect(asset.blobURL).toBeUndefined();
+      });
+
+      it('should not create an object URL for an unsaved file', async () => {
+        const file = new File(['data'], 'test.jpg', { type: 'image/jpeg' });
+        const asset = { ...mockAsset, file };
+
+        await getAssetThumbnailURL(asset);
+
+        expect(transformImageMock).toHaveBeenCalledWith(file, expect.any(Object));
+        expect(asset.blobURL).toBeUndefined();
+      });
+
+      it('should read the blob behind an existing object URL', async () => {
+        const asset = { ...mockAsset, blobURL: 'blob:existing' };
+
+        await getAssetThumbnailURL(asset);
+
+        expect(global.fetch).toHaveBeenCalledWith('blob:existing');
+        expect(transformImageMock).toHaveBeenCalledWith(mockBlob, expect.any(Object));
+        expect(mockBackend.fetchBlob).not.toHaveBeenCalled();
+      });
+
+      it('should join a download already in flight rather than start another', async () => {
+        const asset = { ...mockAsset };
+        /** @type {any} */
+        let resolveDownload;
+
+        mockBackend.fetchBlob.mockReturnValue(
+          new Promise((resolve) => {
+            resolveDownload = resolve;
+          }),
+        );
+
+        // A caller that wants the full-size file starts the download first
+        const blobPromise = getAssetBlob(asset);
+        const urlPromise = getAssetThumbnailURL(asset);
+
+        resolveDownload(new Blob(['data']));
+        await Promise.all([blobPromise, urlPromise]);
+
+        expect(mockBackend.fetchBlob).toHaveBeenCalledTimes(1);
+        expect(transformImageMock).toHaveBeenCalledWith(await blobPromise, expect.any(Object));
+      });
+
+      it('should reject when the handle cannot be read', async () => {
+        const asset = {
+          ...mockAsset,
+          handle: { getFile: vi.fn(async () => Promise.reject(new Error('NotFoundError'))) },
+        };
+
+        await expect(getAssetThumbnailURL(asset)).rejects.toThrow(
+          'Failed to retrieve blob from file handle',
+        );
+      });
+
+      it('should reject when the backend returns no blob', async () => {
+        mockBackend.fetchBlob.mockResolvedValue(null);
+
+        await expect(getAssetThumbnailURL({ ...mockAsset })).rejects.toThrow(
+          'Failed to retrieve blob',
+        );
+      });
     });
 
     describe('hasCachedThumbnail', () => {
@@ -1051,6 +1231,66 @@ describe('assets/info', () => {
       const result = getAssetPublicURL(templateAsset, { pathOnly: true });
 
       expect(result).toBe('/@assets/images/666-test/my-image.jpg');
+    });
+
+    it('should keep the literal text around a template tag in a path segment', () => {
+      const templateAsset = {
+        ...mockAsset,
+        path: 'static/images/post-hello/a.jpg',
+        folder: {
+          ...mockAsset.folder,
+          internalPath: 'static/images/post-{{slug}}',
+          publicPath: '/images/post-{{slug}}',
+          hasTemplateTags: true,
+        },
+      };
+
+      expect(getAssetPublicURL(templateAsset, { pathOnly: true })).toBe('/images/post-hello/a.jpg');
+    });
+
+    it('should handle several template tags, repeated or with a transformation', () => {
+      const templateAsset = {
+        ...mockAsset,
+        path: 'static/2024-hello/hello/a.jpg',
+        folder: {
+          ...mockAsset.folder,
+          internalPath: 'static/{{year}}-{{slug | lower}}/{{slug | lower}}',
+          publicPath: '/{{slug | lower}}/{{year}}',
+          hasTemplateTags: true,
+        },
+      };
+
+      expect(getAssetPublicURL(templateAsset, { pathOnly: true })).toBe('/hello/2024/a.jpg');
+    });
+
+    it('should leave a tag only found in the public path as is', () => {
+      const templateAsset = {
+        ...mockAsset,
+        path: 'static/hello/a.jpg',
+        folder: {
+          ...mockAsset.folder,
+          internalPath: 'static/{{slug}}',
+          publicPath: '/{{locale}}/{{slug}}',
+          hasTemplateTags: true,
+        },
+      };
+
+      expect(getAssetPublicURL(templateAsset, { pathOnly: true })).toBe('/{{locale}}/hello/a.jpg');
+    });
+
+    it('should prefix the public path to an asset in a root media folder', () => {
+      const rootAsset = {
+        ...mockAsset,
+        path: 'photo.jpg',
+        name: 'photo.jpg',
+        folder: { ...mockAsset.folder, internalPath: '', publicPath: '/' },
+      };
+
+      expect(getAssetPublicURL(rootAsset, { pathOnly: true })).toBe('/photo.jpg');
+
+      rootAsset.folder = { ...rootAsset.folder, publicPath: '/uploads' };
+
+      expect(getAssetPublicURL(rootAsset, { pathOnly: true })).toBe('/uploads/photo.jpg');
     });
 
     it('should encode file path when encoding is enabled', async () => {

@@ -23,6 +23,7 @@
   import { getValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
   import {
     getInitialExpanderState,
+    isExpanded,
     syncExpanderStates,
   } from '$lib/services/contents/editor/fields';
   import { getKeysByPrefix } from '$lib/services/contents/entry/key-paths';
@@ -106,9 +107,7 @@
     fieldContext === 'rich-text-editor-component' || locale === defaultLocale || i18n !== false,
   );
   const parentExpandedKeyPath = $derived(`${keyPath}#`);
-  const parentExpanded = $derived(
-    entryDraft.current?.expanderStates?._[parentExpandedKeyPath] ?? true,
-  );
+  const parentExpanded = $derived(isExpanded(entryDraft.current, parentExpandedKeyPath));
   const hasVariableTypes = $derived(Array.isArray(types));
   const typeKeyPath = $derived(`${keyPath}.${typeKey}`);
   /* v8 ignore start -- only read for an object with variable types */
@@ -157,9 +156,12 @@
       }
 
       if (_type) {
-        forEachTargetLocale({ valueStore: draft[valueStoreKey], locale, i18n }, (_valueMap) => {
-          _valueMap[typeKeyPath] = _type;
-        });
+        forEachTargetLocale(
+          { valueStore: draft[valueStoreKey], locale, i18n, draft, keyPath },
+          (_valueMap) => {
+            _valueMap[typeKeyPath] = _type;
+          },
+        );
 
         // Wait until `subFields` is updated
         await tick();
@@ -182,13 +184,16 @@
               keyPathPrefix: keyPath,
             });
 
-      forEachTargetLocale({ valueStore: draft[valueStoreKey], locale, i18n }, (_valueMap) => {
-        // Apply the new values through the Proxy
-        Object.assign(_valueMap, toRaw({ ...newValueMap, ..._valueMap }));
+      forEachTargetLocale(
+        { valueStore: draft[valueStoreKey], locale, i18n, draft, keyPath },
+        (_valueMap) => {
+          // Apply the new values through the Proxy
+          Object.assign(_valueMap, toRaw({ ...newValueMap, ..._valueMap }));
 
-        // Disable validation
-        delete _valueMap[keyPath];
-      });
+          // Disable validation
+          delete _valueMap[keyPath];
+        },
+      );
     });
 
   /**
@@ -196,7 +201,14 @@
    */
   const removeFields = () => {
     forEachTargetLocale(
-      { valueStore: entryDraft.current?.[valueStoreKey], locale, i18n },
+      {
+        valueStore: entryDraft.current?.[valueStoreKey],
+        locale,
+        i18n,
+        // The Remove button is only offered while the draft is there
+        draft: /** @type {EntryDraft} */ (entryDraft.current),
+        keyPath,
+      },
       (_valueMap) => {
         // Assign `null` before deleting each property, so the draft proxy can revalidate the field.
         // The value map is the draft’s live map, which is mutated right below, so its key paths
@@ -323,7 +335,7 @@
           typedKeyPath:
             hasVariableTypes && type
               ? `${typedKeyPath}<${type}>.${subField.name}`
-              : `${keyPath}.${subField.name}`,
+              : `${typedKeyPath}.${subField.name}`,
         })}
         expanded={parentExpanded}
         {unknownType}
