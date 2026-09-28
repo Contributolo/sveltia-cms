@@ -567,6 +567,7 @@ no_entries_found: Keine Einträge gefunden.
 
 # Upload dialog: title and button label
 upload_assets: Neue Medien hochladen
+
 # New Folder button and dialog in the Asset Library
 new_folder: Neuer Ordner
 new_folder_name: Ordnername
@@ -581,6 +582,7 @@ new_folder_error:
 # Progress and error messages while the folder is being created
 creating_folder: Ordner wird angelegt …
 creating_folder_failed: Der Ordner konnte nicht angelegt werden.
+
 # Menu on a folder in the Asset Library, and the Rename Folder and Delete Folder dialogs
 folder_options: Ordneroptionen
 show_folder_options: Ordneroptionen anzeigen
@@ -1112,6 +1114,9 @@ swap_panes: Bereiche tauschen
 # {$locale} is the localized language name for the current content pane, e.g., English
 edit_x_locale: '{$locale}-Inhalt bearbeiten'
 preview_x_locale: '{$locale}-Inhalt in der Vorschau'
+# The content of a monolingual entry, which has no locale to name
+edit_content: Inhalt bearbeiten
+preview_content: Inhalt in der Vorschau
 
 # Preview iframe labels
 content_preview: Inhaltsvorschau
@@ -1120,6 +1125,8 @@ content_preview: Inhaltsvorschau
 # {$locale} is the localized language name for the content options menu, e.g., English
 show_content_options_x_locale: Inhaltsoptionen für {$locale} anzeigen
 content_options_x_locale: Inhaltsoptionen für {$locale}
+show_content_options: Inhaltsoptionen anzeigen
+content_options: Inhaltsoptionen
 
 # Field container labels
 # {$field} is the field’s display label
@@ -1193,9 +1200,20 @@ translate_from: Übersetzen aus…
 # {$locale} is the localized language name of the source content being translated, e.g., English
 translate_from_x: Aus {$locale} übersetzen
 
-# Revert changes
+# Revert changes, restore the default values or clear the fields. The field options menu offers
+# them for a field, the content options menu of an editor pane for the locale it shows, and the
+# editor options menu for the whole entry, the latter two asking for confirmation first
 revert_changes: Änderungen zurücknehmen
 revert_all_changes: Alle Änderungen zurücknehmen
+restore_default: Standard wiederherstellen
+clear_all: Alle Felder leeren
+confirm_reverting_changes: Sollen wirklich alle Änderungen an diesem Eintrag zurückgenommen werden?
+# {$locale} is a locale name, e.g. French
+confirm_reverting_changes_x_locale: Sollen wirklich alle Änderungen am Inhalt für {$locale} zurückgenommen werden?
+confirm_restoring_defaults: Sollen die Standardwerte aller Felder in diesem Eintrag wirklich wiederhergestellt werden? Bisherige Änderungen gehen verloren.
+confirm_restoring_defaults_x_locale: Sollen die Standardwerte aller Felder im Inhalt für {$locale} wirklich wiederhergestellt werden? Bisherige Änderungen gehen verloren.
+confirm_clearing_fields: Sollen wirklich alle Felder in diesem Eintrag geleert werden? Bisherige Änderungen gehen verloren.
+confirm_clearing_fields_x_locale: Sollen wirklich alle Felder im Inhalt für {$locale} geleert werden? Bisherige Änderungen gehen verloren.
 
 # Slug editing
 edit_slug: Slug bearbeiten
@@ -1337,6 +1355,12 @@ entry_sidebar:
     # Button in the panel header that validates the entry on demand
     validate: Validieren
 
+  # Slug panel: shows the entry slug and lets the user edit it
+  slug:
+    title: Slug
+    generated_on_save: Der Slug wird beim Speichern aus dem Inhalt des Eintrags erzeugt. Darin enthaltene Datums- und Zeitangaben entsprechen dem Zeitpunkt des Speicherns.
+    unavailable: Dieser Eintrag hat keinen Slug.
+
   # History panel: shows entry commit history
   history:
     title: Verlauf
@@ -1353,6 +1377,7 @@ saving_entry:
   error:
     title: Fehler
     description: Beim Speichern des Eintrags ist ein Fehler aufgetreten. Bitte später erneut versuchen.
+
 # Dialog shown when saving the entry would overwrite a change someone else has made in the
 # repository since the entry was opened in the editor
 save_conflict:
@@ -1370,6 +1395,7 @@ save_conflict:
   save_anyway: Trotzdem speichern
   # Error shown when the repository was updated between the check above and the commit itself
   branch_moved: Das Repository wurde während des Speicherns von jemand anderem aktualisiert. Bitte erneut versuchen.
+
 # Notice shown in the entry editor when someone else has changed or deleted the entry in the
 # repository while the user has it open. The change itself is described with the `save_conflict`
 # strings above
@@ -1462,10 +1488,10 @@ list_item_value: Wert des Elements
 # Example: “Add Image”, “Add Author”
 # {$name} is the label of the item type that can be added
 add_x: '{$name} hinzufügen'
+
 # List item context menu
 # aria-label for the button opening the menu, and for the menu itself
 list_item_options: Optionen für das Listenelement
-
 add_item_above: Element darüber einfügen
 add_item_below: Element darunter einfügen
 
@@ -1485,6 +1511,7 @@ opacity: Deckkraft
 
 # Select field: empty option placeholder
 unselected_option: (keine)
+
 # Relation field: creating a referenced entry without leaving the editor
 relation_field:
   # Note shown in the dialog. {$name} is the singular label of the referenced collection
@@ -1533,6 +1560,7 @@ assets_dialog:
 
   # Stock photo panels
   available_images: Verfügbare Bilder
+  available_files: Verfügbare Dateien
 
   # URL entry option
   enter_url: URL eingeben
@@ -1659,6 +1687,7 @@ cloud_storage:
 
   aws_s3:
     auth_key_label: Geheimer Zugriffsschlüssel
+
   bunny_storage:
     auth_key_label: Passwort der Storage Zone
 
@@ -1936,6 +1965,8 @@ config:
     preview_path_field_not_found: Die Option `preview_path` verweist auf `{$name}`, in der Sammlung ist aber kein solches Feld definiert. Der Vorschau-Link wird daher nicht angezeigt.
     # {$name} is the default identifier field name; Don’t localize `identifier_field` and `slug`
     missing_identifier_field: Die Sammlung hat kein Feld `{$name}`, nach dem neue Einträge benannt werden könnten, deshalb bekommt jeder neue Eintrag einen zufälligen Slug. Ein Feld `{$name}` ergänzen oder die Option `identifier_field` oder `slug` setzen.
+    # Don’t localize `slug`, `i18n`, `multiple_files`, `multiple_folders` and `multiple_root_folders`
+    slug_i18n_ineffective: Die Option `i18n` von `slug` hat keine Wirkung, weil die Sammlung nicht die i18n-Struktur `multiple_files`, `multiple_folders` oder `multiple_root_folders` verwendet, bei der jede Sprache eine eigene Datei hat.
     # Don’t localize `i18n`
     i18n_not_configured: Die Option `i18n` ist aktiviert, i18n ist aber weder auf der obersten Ebene der Konfiguration noch in der Sammlung konfiguriert, deshalb hat die Option keine Wirkung.
     # {$option} is an option path from the configuration, such as `filter.Regulation`
