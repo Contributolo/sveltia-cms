@@ -14,7 +14,7 @@
 
   import { getReactDom, loadReactDom, reactDomLoaded } from '$lib/services/api/react-dom';
   import { customComponentRegistry } from '$lib/services/api/registries';
-  import { getMediaFieldURL } from '$lib/services/assets/info';
+  import { getMediaFieldURL } from '$lib/services/assets/media-field';
   import { cmsConfig } from '$lib/services/config';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { BUILTIN_COMPONENTS } from '$lib/services/contents/fields/rich-text';
@@ -24,15 +24,15 @@
     COMPONENT_QUERY_SELECTOR,
     CONTAINER_QUERY_SELECTOR,
     IMAGE_QUERY_SELECTOR,
-    sanitizeRichTextHTML,
     splitMarkdownBlocks,
-  } from '$lib/services/contents/fields/rich-text/helpers';
+  } from '$lib/services/contents/fields/rich-text/previews';
+  import { sanitizeRichTextHTML } from '$lib/services/contents/fields/rich-text/sanitize';
 
   /**
    * @import { ReactElement } from 'react';
    * @import { FieldPreviewProps } from '$lib/types/private';
    * @import { MarkdownField, RichTextField } from '$lib/types/public';
-   * @import { ComponentPreview } from '$lib/services/contents/fields/rich-text/helpers';
+   * @import { ComponentPreview } from '$lib/services/contents/fields/rich-text/previews';
    */
 
   /**

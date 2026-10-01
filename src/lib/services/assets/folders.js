@@ -1,6 +1,7 @@
 import { getPathInfo } from '@sveltia/utils/file';
 import { escapeRegExp } from '@sveltia/utils/string';
 
+import { lockedBranch } from '$lib/services/backends/branch-access';
 import { ESCAPED_PLACEHOLDER_REGEX } from '$lib/services/common/template/constants';
 import { getCustomComponentName } from '$lib/services/contents/fields/rich-text/components/definitions';
 import {
@@ -8,9 +9,10 @@ import {
   hasLocalePlaceholder,
 } from '$lib/services/contents/i18n/placeholder';
 import { createDerivedState, createRawState } from '$lib/services/utils/state.svelte';
+import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
 /**
- * @import { AssetFolderInfo, TypedFieldKeyPath } from '$lib/types/private';
+ * @import { Asset, AssetFolderInfo, TypedFieldKeyPath } from '$lib/types/private';
  */
 
 /**
@@ -77,17 +79,19 @@ export const getAssetFolder = (cond) => {
     // If the condition has a `componentName`, it is a field-level media folder for a custom editor
     // component. In that case, the `collectionName` and `fileName` are not relevant for the match.
     // The folder is registered with the component name, while the fields within the component get
-    // the prefixed component ID, e.g. `x-youtube`, so resolve it first
-    if ('componentName' in cond) {
+    // the prefixed component ID, e.g. `x-youtube`, so resolve it first. Callers pass the key even
+    // when there is no component, so check the value rather than the key
+    if (cond.componentName) {
       return (
         folder.componentName === (getCustomComponentName(cond.componentName) ?? cond.componentName)
       );
     }
 
+    // A field-level folder stores `isIndexFile: false`, while callers may pass `undefined`
     return (
       folder.collectionName === cond.collectionName &&
       folder.fileName === cond.fileName &&
-      ('isIndexFile' in cond ? folder.isIndexFile === cond.isIndexFile : !folder.isIndexFile)
+      !!folder.isIndexFile === !!cond.isIndexFile
     );
   });
 };
@@ -213,9 +217,31 @@ export const getAssetFoldersByPath = (path, { matchSubFolders = true } = {}) => 
 
 /**
  * Check if asset creation is allowed in the folder. Can’t upload assets if collection assets are
- * saved at entry-relative paths or the asset folder contains template tags.
+ * saved at entry-relative paths, the asset folder contains template tags, or the folder is
+ * read-only.
  * @param {AssetFolderInfo | undefined} assetFolder Asset folder.
  * @returns {boolean} Result.
  */
 export const canCreateAsset = (assetFolder) =>
-  !!assetFolder && !assetFolder.entryRelative && !assetFolder.hasTemplateTags;
+  !!assetFolder &&
+  !assetFolder.entryRelative &&
+  !assetFolder.hasTemplateTags &&
+  !assetFolder.readonly;
+
+/**
+ * Whether the media library can’t be changed. Uploading, replacing, renaming, moving and deleting
+ * assets, and creating folders, commit straight to the configured branch rather than going through
+ * review, which neither an Open Authoring contributor nor a user who can’t push to the branch can
+ * do. An asset attached to an entry is committed with that entry, so it’s unaffected.
+ */
+export const assetsLocked = createDerivedState(
+  () => openAuthoring.current || !!lockedBranch.current,
+);
+
+/**
+ * Check if any of the given assets is stored in a read-only folder, in which case none of them can
+ * be changed, renamed, replaced or deleted along with the others.
+ * @param {Asset[]} assets Assets.
+ * @returns {boolean} Result.
+ */
+export const hasReadonlyAsset = (assets) => assets.some(({ folder }) => !!folder?.readonly);

@@ -1,6 +1,10 @@
 import { backend } from '$lib/services/backends';
-import { getPreviousSha } from '$lib/services/contents/draft/save/changes';
-import { buildSingleFileContent } from '$lib/services/contents/draft/save/content';
+import { getArrayItemTarget, getPreviousSha } from '$lib/services/contents/draft/save/changes';
+import {
+  buildSingleFileContent,
+  getFieldComments,
+  getSingleFileComments,
+} from '$lib/services/contents/draft/save/content';
 import { serializeContent } from '$lib/services/contents/draft/save/serialize';
 import { resolveFileConfig } from '$lib/services/contents/file/config';
 import { formatEntryFile } from '$lib/services/contents/file/format';
@@ -92,10 +96,23 @@ export const buildEntryUpdateChanges = async ({
 
     const [previousSha, data] = await Promise.all([
       getPreviousSha({ cacheDB, previousPath: path }),
-      formatEntryFile({ content: buildSingleFileContent({ config, entry, draft }), _file }),
+      formatEntryFile({
+        content: buildSingleFileContent({ config, entry, draft }),
+        _file,
+        comments: getSingleFileComments({ config, fields: draft.fields }),
+      }),
     ]);
 
-    return [/** @type {FileChange} */ ({ action: 'update', slug, path, previousSha, data })];
+    return [
+      /** @type {FileChange} */ ({
+        action: 'update',
+        slug,
+        path,
+        previousSha,
+        data,
+        ...getArrayItemTarget(entry),
+      }),
+    ];
   }
 
   const localeChanges = await Promise.all(
@@ -111,6 +128,7 @@ export const buildEntryUpdateChanges = async ({
         formatEntryFile({
           content: serializeContent({ draft, locale, valueMap: le.content }),
           _file,
+          comments: getFieldComments(draft.fields),
         }),
       ]);
 

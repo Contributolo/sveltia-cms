@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { callEventHooks } from '$lib/services/api/events';
+import { lockedBranch } from '$lib/services/backends/branch-access';
 import { skipCIConfigured, skipCIEnabled } from '$lib/services/backends/git/shared/integration';
 import { saveChanges } from '$lib/services/backends/save';
 import { getCollection } from '$lib/services/contents/collection';
@@ -20,7 +21,7 @@ import { expandInvalidFields } from '$lib/services/contents/editor/fields';
 import { awaitPendingFieldUpdates } from '$lib/services/contents/editor/pending';
 import { clearEntryHistoryCache } from '$lib/services/contents/entry/history';
 import { assignAutoNowValues } from '$lib/services/contents/fields/date-time/auto-now';
-import { setLastCommitPublishHint } from '$lib/services/deployments/publish';
+import { setLastCommitPublishHint } from '$lib/services/deployments';
 import { isWorkflowDraft, unpublishedEntries } from '$lib/services/workflow';
 import { saveWorkflowChanges } from '$lib/services/workflow/save';
 
@@ -62,7 +63,7 @@ vi.mock('$lib/services/contents/editor/fields');
 vi.mock('$lib/services/contents/editor/pending');
 vi.mock('$lib/services/contents/entry/history');
 vi.mock('$lib/services/contents/fields/date-time/auto-now');
-vi.mock('$lib/services/deployments/publish');
+vi.mock('$lib/services/deployments');
 vi.mock('$lib/services/workflow', async (importOriginal) => ({
   .../** @type {object} */ (await importOriginal()),
   isWorkflowDraft: vi.fn(),
@@ -180,6 +181,29 @@ describe('draft/save/index', () => {
 
       // Nothing is published yet, because the changes only exist in a pull request
       expect(vi.mocked(setLastCommitPublishHint)).toHaveBeenCalledWith(false);
+    });
+
+    it('should refuse to save a read-only entry', async () => {
+      mockDraft.collection.readonly = true;
+
+      await expect(saveEntry()).rejects.toThrow('saving_failed');
+      expect(validateEntry).not.toHaveBeenCalled();
+      expect(saveChanges).not.toHaveBeenCalled();
+      expect(saveWorkflowChanges).not.toHaveBeenCalled();
+    });
+
+    it('should refuse to save an entry to a branch the user can’t push to', async () => {
+      lockedBranch.current = 'main';
+
+      try {
+        const error = await saveEntry().catch((/** @type {Error} */ ex) => ex);
+
+        expect(error).toBeInstanceOf(Error);
+        expect(/** @type {Error} */ (error).cause).toEqual(new Error('readonly_branch'));
+        expect(saveChanges).not.toHaveBeenCalled();
+      } finally {
+        lockedBranch.current = undefined;
+      }
     });
 
     it('should decide on the workflow per draft', async () => {
@@ -323,6 +347,28 @@ describe('draft/save/index', () => {
       expect(saveChanges).toHaveBeenCalledTimes(1);
     });
 
+    it('should keep checking the item of an entry in an array file when overwriting', async () => {
+      const locales = { en: { path: 'data/members.json', content: { title: 'A' } } };
+
+      // The item at the position may be another entry that has moved there, so it’s still checked
+      mockDraft.isNew = false;
+      mockDraft.originalEntry = { id: 'test-id', slug: '1', arrayIndex: 1, locales };
+      vi.mocked(detectEntryConflict).mockResolvedValue({ type: 'modified', entry: { id: 'x' } });
+      vi.mocked(createSavingEntryData).mockResolvedValue({
+        savingEntry: { id: 'test-id', slug: '1', arrayIndex: 1, locales },
+        changes: [
+          { action: 'update', path: 'data/members.json', arrayItem: { index: 1, locales } },
+        ],
+        savingAssets: [],
+      });
+
+      await saveEntry({ overwrite: true });
+
+      const { changes } = vi.mocked(saveChanges).mock.calls[0][0];
+
+      expect(changes[0].arrayItem).toEqual({ index: 1, locales });
+    });
+
     it('should save when there is no conflict', async () => {
       vi.mocked(detectEntryConflict).mockResolvedValue(undefined);
 
@@ -349,6 +395,28 @@ describe('draft/save/index', () => {
       vi.mocked(saveChanges).mockRejectedValue(new Error('Save failed'));
 
       await expect(saveEntry()).rejects.toThrow('saving_failed');
+    });
+
+    it('should fail without saving when an entry file cannot be formatted', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const formatError = new Error(
+        'Entries in the custom “csv” format can’t be saved, as no `toFile` method was registered ' +
+          'for it with `CMS.registerCustomFormat()`',
+      );
+
+      vi.mocked(createSavingEntryData).mockRejectedValue(formatError);
+
+      // The original error is the cause, so its message can be shown to the user
+      await expect(saveEntry()).rejects.toThrow(
+        expect.objectContaining({ message: 'saving_failed', cause: formatError }),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(formatError);
+      expect(saveChanges).not.toHaveBeenCalled();
+      expect(callEventHooks).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'postSave' }),
+      );
+      errorSpy.mockRestore();
     });
 
     it('should update toast with published status for git backend', async () => {

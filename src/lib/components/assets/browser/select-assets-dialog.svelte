@@ -20,7 +20,8 @@
   import InternalAssetsPanel from '$lib/components/assets/browser/internal-assets-panel.svelte';
   import CreateSubfolderDialog from '$lib/components/assets/list/create-subfolder-dialog.svelte';
   import ViewSwitcher from '$lib/components/common/page-toolbar/view-switcher.svelte';
-  import { getFolderPublicPath } from '$lib/services/assets/info';
+  import { assetsLocked } from '$lib/services/assets/folders';
+  import { getFolderPublicPath, revokeBlobURLIfNeeded } from '$lib/services/assets/info';
   import {
     canBrowseSubfolders,
     getDirName,
@@ -54,7 +55,6 @@
   import { prefs } from '$lib/services/user/prefs.svelte';
   import { createPath, getGitHash } from '$lib/services/utils/file';
   import { SUPPORTED_IMAGE_TYPES } from '$lib/services/utils/media/image';
-  import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
   /**
    * @import {
@@ -219,12 +219,15 @@
   );
   /** Path of the directory being browsed, which is where uploaded files go. */
   const browsedPath = $derived(createPath([targetFolderPath, subfolderPath]));
-  /** Assets shown in the panel: those right in the browsed directory, or every asset listed. */
-  const panelAssets = $derived(
-    browsingSubfolders
-      ? listedAssets.filter(({ path }) => getDirName(path) === browsedPath)
-      : listedAssets,
+  /**
+   * Assets right in the browsed directory. Dropped files go there, even during a search, so only
+   * these can be replaced by one.
+   */
+  const browsedDirAssets = $derived(
+    listedAssets.filter(({ path }) => getDirName(path) === browsedPath),
   );
+  /** Assets shown in the panel: those right in the browsed directory, or every asset listed. */
+  const panelAssets = $derived(browsingSubfolders ? browsedDirAssets : listedAssets);
   const subfolders = $derived(
     browsingSubfolders ? getSubfolders({ dirPath: browsedPath, assets: listedAssets }) : [],
   );
@@ -350,7 +353,7 @@
    * @param {File[]} files File list.
    */
   const onDrop = async (files) => {
-    const replace = await checkDuplicates({ files, listedAssets });
+    const replace = await checkDuplicates({ files, listedAssets: browsedDirAssets });
 
     if (replace === undefined) {
       // User cancelled the dialog
@@ -370,6 +373,9 @@
     rawSearchTerms = '';
     subfolderPath = '';
     selectedSubfolderPaths = [];
+    // The blob URLs of dropped files belong to the dialog, since the field takes the file itself on
+    // Insert
+    droppedAssets.forEach((asset) => revokeBlobURLIfNeeded(asset.blobURL));
     droppedAssets = [];
     unsavedAssets = [];
     selectedResources = [];
@@ -495,12 +501,13 @@
   {#if browsingSubfolders}
     <!--
       Creating a folder commits straight to the configured branch rather than going through
-      review, so it’s not something an Open Authoring contributor can do
+      review, so it’s not something an Open Authoring contributor or a user who can’t push to the
+      branch can do, nor anyone within a read-only folder
     -->
     <Button
       variant="ghost"
       iconic
-      disabled={openAuthoring.current}
+      disabled={assetsLocked.current || !!selectedFolder?.readonly}
       aria-label={_('new_folder')}
       onclick={() => {
         showNewFolderDialog = true;

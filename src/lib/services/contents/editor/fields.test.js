@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getField } from '$lib/services/contents/entry/fields';
@@ -6,8 +8,10 @@ import {
   expandInvalidFields as _expandInvalidFields,
   getInitialExpanderState as _getInitialExpanderState,
   syncExpanderStates as _syncExpanderStates,
+  findEditorField,
   getExpanderKeys,
   highlightEditorField,
+  highlightPreviewTemplateField,
   isExpanded,
 } from './fields.js';
 
@@ -100,6 +104,272 @@ describe('highlightEditorField', () => {
       { type: 'highlight-editor-field', payload: { locale, keyPath } },
       'https://example.com',
     );
+  });
+});
+
+describe('findEditorField', () => {
+  /** @type {HTMLElement} */
+  let pane;
+
+  /**
+   * Add a field to the pane.
+   * @param {string} keyPath Key path.
+   * @param {HTMLElement} [parent] Parent element.
+   * @returns {HTMLElement} Field element.
+   */
+  const addField = (keyPath, parent = pane) => {
+    const field = document.createElement('div');
+
+    field.className = 'field';
+    field.dataset.keyPath = keyPath;
+    parent.append(field);
+
+    return field;
+  };
+
+  beforeEach(() => {
+    pane = document.createElement('div');
+    pane.className = 'pane';
+    pane.dataset.mode = 'edit';
+    pane.dataset.locale = 'en';
+    document.body.innerHTML = '<div class="content-editor"></div>';
+    document.body.firstElementChild?.append(pane);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('returns a field that is already rendered', async () => {
+    addField('title');
+
+    const field = addField('body');
+
+    await expect(findEditorField({ locale: 'en', keyPath: 'body' })).resolves.toBe(field);
+  });
+
+  it('returns the path editor, marked with a validation key', async () => {
+    const field = document.createElement('div');
+
+    field.className = 'field';
+    field.dataset.validationKey = '_path';
+    pane.append(field);
+
+    await expect(findEditorField({ locale: 'en', keyPath: '_path' })).resolves.toBe(field);
+  });
+
+  it('scrolls to the last rendered field of the deepest rendered parent until it is rendered', async () => {
+    addField('title');
+
+    const sections = addField('sections');
+
+    addField('sections.0.heading', sections);
+
+    const heading = addField('sections.4.heading', sections);
+    /** @type {HTMLElement | undefined} */
+    let target;
+    /** @type {HTMLElement[]} */
+    const scrolled = [];
+
+    vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(
+      /**
+       * Render the next field below the one scrolled to.
+       * @param {any} options Options.
+       * @this {HTMLElement}
+       */
+      function scroll(options) {
+        expect(options).toEqual({ block: 'center' });
+        scrolled.push(this);
+
+        if (this === heading) {
+          addField('sections.4.cards', sections);
+        } else {
+          target = addField('sections.4.cards.3.title', sections);
+        }
+      },
+    );
+
+    const field = await findEditorField({
+      locale: 'en',
+      keyPath: 'sections.4.cards.3.title',
+      interval: 0,
+    });
+
+    expect(field).toBe(target);
+    expect(scrolled.map((element) => element.dataset.keyPath)).toEqual([
+      'sections.4.heading',
+      'sections.4.cards',
+    ]);
+  });
+
+  it('scrolls to the last rendered field of the pane for a top-level field', async () => {
+    addField('title');
+
+    const description = addField('description');
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
+
+    await expect(
+      findEditorField({ locale: 'en', keyPath: 'body', interval: 0 }),
+    ).resolves.toBeNull();
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy.mock.contexts[0]).toBe(description);
+  });
+
+  it('returns `null` if no parent is rendered', async () => {
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+
+    await expect(
+      findEditorField({ locale: 'en', keyPath: 'title', interval: 0 }),
+    ).resolves.toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns `null` if the pane is not found', async () => {
+    addField('title');
+
+    await expect(findEditorField({ locale: 'fr', keyPath: 'title' })).resolves.toBeNull();
+  });
+
+  it('returns `null` if the pane is removed while scrolling', async () => {
+    addField('title');
+
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {
+      pane.remove();
+    });
+
+    await expect(
+      findEditorField({ locale: 'en', keyPath: 'body', interval: 0 }),
+    ).resolves.toBeNull();
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it('gives up after the given number of attempts', async () => {
+    const list = addField('list');
+    let count = 0;
+
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {
+      count += 1;
+      addField(`list.${count}`, list);
+    });
+
+    await expect(
+      findEditorField({ locale: 'en', keyPath: 'list.9', maxAttempts: 3, interval: 0 }),
+    ).resolves.toBeNull();
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('highlightPreviewTemplateField', () => {
+  /**
+   * Create an element-like target.
+   * @param {string | null} keyPath Value of the `data-key-path` attribute.
+   * @param {any} [parent] Parent element.
+   * @returns {any} Element.
+   */
+  const createElementLike = (keyPath, parent) => {
+    /** @type {any} */
+    const element = {
+      getAttribute: vi.fn(() => keyPath),
+      closest: vi.fn(() => (keyPath !== null ? element : (parent?.closest() ?? null))),
+    };
+
+    return element;
+  };
+
+  /**
+   * Call the function with an event.
+   * @param {any} event Event-like object.
+   * @param {string} [locale] Locale.
+   */
+  const run = (event, locale = 'en') => {
+    highlightPreviewTemplateField({ event, locale });
+  };
+
+  /**
+   * Get the key paths of the fields that have been highlighted.
+   * @returns {string[]} Key paths.
+   */
+  const getHighlightedKeyPaths = () =>
+    vi.mocked(window.postMessage).mock.calls.map(([{ payload }]) => payload.keyPath);
+
+  beforeEach(() => {
+    vi.stubGlobal('window', {
+      location: { origin: 'https://example.com' },
+      postMessage: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('highlights the field of the clicked element', () => {
+    const target = createElementLike('sections.0.heading');
+
+    run({ type: 'click', target }, 'fr');
+
+    expect(target.closest).toHaveBeenCalledWith('[data-key-path]');
+    expect(window.postMessage).toHaveBeenCalledExactlyOnceWith(
+      { type: 'highlight-editor-field', payload: { locale: 'fr', keyPath: 'sections.0.heading' } },
+      'https://example.com',
+    );
+  });
+
+  it('highlights the field of the closest marked ancestor', () => {
+    run({ type: 'click', target: createElementLike(null, createElementLike('sections.1')) });
+
+    expect(getHighlightedKeyPaths()).toEqual(['sections.1']);
+  });
+
+  it('does nothing when no element or an empty key path is marked', () => {
+    run({ type: 'click', target: createElementLike(null) });
+    run({ type: 'click', target: createElementLike('') });
+
+    expect(window.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the document is clicked', () => {
+    run({ type: 'click', target: {} });
+
+    expect(window.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the template has prevented the default action', () => {
+    run({ type: 'click', target: createElementLike('title'), defaultPrevented: true });
+    run({
+      type: 'keydown',
+      key: 'Enter',
+      target: createElementLike('title'),
+      defaultPrevented: true,
+    });
+
+    expect(window.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('highlights the field when Enter is pressed on the marked element', () => {
+    const target = createElementLike('title');
+
+    run({ type: 'keydown', key: 'Enter', target });
+
+    expect(target.closest).not.toHaveBeenCalled();
+    expect(getHighlightedKeyPaths()).toEqual(['title']);
+  });
+
+  it('ignores Enter pressed on an element inside the marked element', () => {
+    run({
+      type: 'keydown',
+      key: 'Enter',
+      target: createElementLike(null, createElementLike('title')),
+    });
+
+    expect(window.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('ignores other keys', () => {
+    run({ type: 'keydown', key: ' ', target: createElementLike('title') });
+
+    expect(window.postMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -657,6 +927,38 @@ describe('editor/fields', () => {
       });
 
       expect(Array.isArray(keys)).toBe(true);
+    });
+
+    it('should expand an item of a list field with variable types', () => {
+      const sections = {
+        name: 'sections',
+        widget: 'list',
+        types: [
+          { name: 'hero', fields: [{ name: 'heading' }] },
+          { name: 'text', fields: [{ name: 'heading' }, { name: 'body', widget: 'text' }] },
+        ],
+      };
+
+      vi.mocked(getField).mockImplementation(({ keyPath }) => {
+        if (keyPath === 'sections') {
+          return sections;
+        }
+
+        if (keyPath === 'sections.2') {
+          // The resolved type has no `widget`
+          return sections.types[1];
+        }
+
+        if (keyPath === 'sections.2.heading') {
+          return { name: 'heading' };
+        }
+
+        return undefined;
+      });
+
+      expect(
+        getExpanderKeys({ collectionName: 'pages', valueMap: {}, keyPath: 'sections.2.heading' }),
+      ).toEqual(['sections#', 'sections.2']);
     });
   });
 

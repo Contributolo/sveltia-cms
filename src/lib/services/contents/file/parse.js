@@ -7,8 +7,8 @@ import { customFileFormatRegistry } from '$lib/services/api/registries';
 import { getCollection } from '$lib/services/contents/collection';
 import { isCollectionIndexFilePath } from '$lib/services/contents/collection/entries/index-file';
 import { getCollectionFile } from '$lib/services/contents/collection/files';
-import { FRONTMATTER_FORMATS } from '$lib/services/contents/file';
 import { getFrontMatterDelimiters, resolveFileConfig } from '$lib/services/contents/file/config';
+import { FRONTMATTER_FORMATS } from '$lib/services/contents/file/constants';
 import { getOrCreate } from '$lib/services/utils/cache';
 
 /**
@@ -119,26 +119,26 @@ export const parseFrontMatter = ({ collection, collectionFile, isIndexFile, form
   const ed = escapeRegExp(endDelimiter);
   const cacheKey = `${sd}|${ed}`;
 
-  // Front matter matching: allow an empty head and only match a block at the start of the file.
+  // Front matter matching: allow an empty head, including no line at all between the delimiters
+  // (e.g. Jekyll’s `---\n---`), and only match a block at the start of the file.
   const regex = getOrCreate(
     frontMatterRegexCache,
     cacheKey,
-    () => new RegExp(`^${sd}\n(?:(?<head>[\\s\\S]*?))\n${ed}(?:\n(?<body>[\\s\\S]*))?$`, 's'),
+    () => new RegExp(`^${sd}\n(?:(?<head>[\\s\\S]*?)\n)?${ed}(?:\n(?<body>[\\s\\S]*))?$`, 's'),
   );
 
-  const { head, body } =
+  const groups =
     (format === 'json-frontmatter' && startDelimiter === '{' && endDelimiter === '}'
       ? text.match(DOUBLE_BRACE_JSON_FRONT_MATTER_REGEX)?.groups
-      : undefined) ??
-    text.match(regex)?.groups ??
-    {};
+      : undefined) ?? text.match(regex)?.groups;
 
-  if (!head && !body) {
+  if (!groups) {
     // Support Markdown without a front matter block, particularly for VitePress
     // The text can be an empty string, but it’s okay to return an empty body
     return { [bodyKey]: text };
   }
 
+  const { head = '', body } = groups;
   let parsedHead = {};
 
   if (format === 'yaml-frontmatter') {
@@ -231,6 +231,13 @@ export const parseEntryFile = async ({ text = '', path, folder: { collectionName
     }
   } catch (/** @type {any} */ ex) {
     throw new Error(`${path} could not be parsed due to ${ex.name}: ${ex.message}`);
+  }
+
+  if (customFileFormatRegistry.has(format)) {
+    throw new Error(
+      `${path} could not be parsed, as no \`fromFile\` method was registered for the custom ` +
+        `“${format}” format with \`CMS.registerCustomFormat()\``,
+    );
   }
 
   throw new Error(`${path} could not be parsed due to an unknown format: ${format}`);

@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
+import { lockedBranch } from '$lib/services/backends/branch-access';
 import { getCollection, selectedCollection } from '$lib/services/contents/collection';
 import { selectedEntries } from '$lib/services/contents/collection/entries';
 import { reordering, setReorderMode } from '$lib/services/contents/collection/view';
@@ -46,9 +47,37 @@ describe('PrimaryToolbar', () => {
           fields: [{ name: 'title', widget: 'string' }],
         },
         {
+          name: 'single',
+          label: 'Single',
+          folder: 'content/single',
+          limit: 1,
+          fields: [{ name: 'title', widget: 'string' }],
+        },
+        {
+          name: 'closed',
+          label: 'Closed',
+          folder: 'content/closed',
+          limit: 0,
+          fields: [{ name: 'title', widget: 'string' }],
+        },
+        {
           name: 'settings',
           label: 'Settings',
           files: [{ name: 'general', file: 'data/general.yml', fields: [{ name: 'x' }] }],
+        },
+        {
+          name: 'frozen',
+          label: 'Frozen',
+          folder: 'content/frozen',
+          readonly: true,
+          reorder: true,
+          fields: [{ name: 'title', widget: 'string' }],
+        },
+        {
+          name: 'frozen_settings',
+          label: 'Frozen Settings',
+          readonly: true,
+          files: [{ name: 'general', file: 'data/frozen.yml', fields: [{ name: 'x' }] }],
         },
       ],
     });
@@ -57,6 +86,7 @@ describe('PrimaryToolbar', () => {
   beforeEach(() => {
     env.isSmallScreen = false;
     forkedRepository.current = undefined;
+    lockedBranch.current = undefined;
     selectedEntries.current = [];
     setReorderMode(false);
     setEntries([
@@ -124,7 +154,7 @@ describe('PrimaryToolbar', () => {
       .element(page.getByRole('status'))
       .toHaveTextContent(
         'info Information You cannot add new entries to this collection because it has reached its limit of ' +
-          '1 entries.',
+          '1 entry.',
       );
   });
 
@@ -146,6 +176,18 @@ describe('PrimaryToolbar', () => {
       .toBeVisible();
   });
 
+  test('warns about a limit of 1 entry in the singular', async () => {
+    selectedCollection.current = getCollection('single');
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information This collection is nearing its limit of 1 entry. You can only create 1 more entry.',
+      );
+  });
+
   test('explains when creation is disabled', async () => {
     selectedCollection.current = getCollection('locked');
 
@@ -156,6 +198,70 @@ describe('PrimaryToolbar', () => {
       .toHaveTextContent(
         'info Information Creating new entries in this collection is disabled by the administrator.',
       );
+  });
+
+  test('explains when creation is disabled with a limit of 0', async () => {
+    selectedCollection.current = getCollection('closed');
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information Creating new entries in this collection is disabled by the administrator.',
+      );
+
+    // The message comes above the toolbar, like the read-only one
+    expect(
+      page
+        .getByRole('status')
+        .element()
+        .compareDocumentPosition(page.getByRole('toolbar', { name: 'Collection' }).element()),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  test('explains when the collection is read-only, and disables the entry actions', async () => {
+    selectedCollection.current = getCollection('frozen');
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information This collection is read-only. You can view its content but cannot make ' +
+          'any changes.',
+      );
+    await expect.element(page.getByRole('button', { name: 'Create New Entry' })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: /^Delete/ })).toBeDisabled();
+    expect(page.getByRole('button', { name: 'Reorder Entries' }).elements()).toHaveLength(0);
+  });
+
+  test('explains when a file collection is read-only', async () => {
+    selectedCollection.current = getCollection('frozen_settings');
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information This collection is read-only. You can view its content but cannot make ' +
+          'any changes.',
+      );
+  });
+
+  test('explains when the collection is read-only because the user can’t push to the branch', async () => {
+    selectedCollection.current = getCollection('posts');
+    lockedBranch.current = 'main';
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information You don’t have permission to push to the “\u2068main\u2069” branch. ' +
+          'You can view this content but cannot make any changes.',
+      );
+    await expect.element(page.getByRole('button', { name: 'Create New Entry' })).toBeDisabled();
   });
 
   test('hides the entry actions for a file collection', async () => {

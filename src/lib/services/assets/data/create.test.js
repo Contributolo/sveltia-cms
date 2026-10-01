@@ -4,11 +4,14 @@ import { createFileList, saveAssets, updateStores } from './create.js';
 
 // Mock dependencies
 vi.mock('$lib/services/assets', () => ({
+  getAssetByInternalPath: vi.fn(),
+  getAssetsByDirName: vi.fn(),
+}));
+
+vi.mock('$lib/services/assets/state', () => ({
   allAssets: { current: undefined },
   focusedAsset: { set: vi.fn() },
   overlaidAsset: { set: vi.fn() },
-  getAssetByInternalPath: vi.fn(),
-  getAssetsByDirName: vi.fn(),
 }));
 
 vi.mock('$lib/services/assets/data', () => ({
@@ -39,6 +42,9 @@ vi.mock('$lib/services/integrations/media-libraries/default', () => ({
 
 vi.mock('$lib/services/utils/file', () => ({
   createPath: vi.fn((/** @type {string[]} */ segments) => segments.filter(Boolean).join('/')),
+}));
+
+vi.mock('$lib/services/assets/file-name', () => ({
   formatFileName: vi.fn((fileName) => fileName),
 }));
 
@@ -91,6 +97,9 @@ vi.mock('$lib/services/config', () => ({
 
 vi.mock('$lib/services/utils/file', () => ({
   createPath: vi.fn((/** @type {string[]} */ segments) => segments.filter(Boolean).join('/')),
+}));
+
+vi.mock('$lib/services/assets/file-name', () => ({
   formatFileName: vi.fn((fileName) => fileName),
 }));
 
@@ -374,7 +383,7 @@ describe('assets/data/create', () => {
 
     it('should keep a same-named asset when replaceDuplicates is disabled', async () => {
       const { getAssetsByDirName } = await import('$lib/services/assets');
-      const { formatFileName } = await import('$lib/services/utils/file');
+      const { formatFileName } = await import('$lib/services/assets/file-name');
 
       vi.mocked(getAssetsByDirName).mockReturnValue([
         {
@@ -684,7 +693,8 @@ describe('assets/data/create', () => {
     });
 
     it('should update focusedAsset when it exists', async () => {
-      const { focusedAsset, getAssetByInternalPath } = await import('$lib/services/assets');
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset } = await import('$lib/services/assets/state');
 
       const oldAsset = {
         path: '/images/old.jpg',
@@ -710,7 +720,8 @@ describe('assets/data/create', () => {
     });
 
     it('should update overlaidAsset when it exists', async () => {
-      const { overlaidAsset, getAssetByInternalPath } = await import('$lib/services/assets');
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { overlaidAsset } = await import('$lib/services/assets/state');
 
       const oldAsset = {
         path: '/images/old.jpg',
@@ -736,8 +747,8 @@ describe('assets/data/create', () => {
     });
 
     it('should update both focusedAsset and overlaidAsset when they exist', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
 
       const oldFocused = {
         path: '/images/focused.jpg',

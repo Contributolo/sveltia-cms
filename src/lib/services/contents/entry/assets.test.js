@@ -44,6 +44,9 @@ vi.mock('$lib/services/assets', () => ({
    * @returns {boolean} `true` if the path is relative.
    */
   isRelativePath: (path) => !/^[/@]/.test(path),
+}));
+
+vi.mock('$lib/services/assets/state', () => ({
   allAssets: mockAllAssets,
 }));
 
@@ -53,13 +56,20 @@ vi.mock('$lib/services/assets/folders', () => ({
 }));
 
 vi.mock('$lib/services/assets/info', () => ({
+  revokeBlobURLIfNeeded: mockRevokeBlobURLIfNeeded,
+}));
+
+vi.mock('$lib/services/assets/media-field', () => ({
   getMediaFieldSource: mockGetMediaFieldSource,
   getMediaFieldURL: mockGetMediaFieldURL,
-  revokeBlobURLIfNeeded: mockRevokeBlobURLIfNeeded,
 }));
 
 vi.mock('$lib/services/contents/collection', () => ({
   getCollection: mockGetCollection,
+}));
+
+vi.mock('$lib/services/contents/collection/predicates', () => ({
+  isArrayFileCollection: vi.fn((collection) => !!collection?._file?.arrayFile),
 }));
 
 vi.mock('$lib/services/contents/collection/entries', () => ({
@@ -1608,6 +1618,18 @@ describe('getEntryRelativeAssets', () => {
     mockGetPathInfo.mockImplementation((path) => ({
       dirname: path.split('/').slice(0, -1).join('/'),
     }));
+  });
+
+  test('returns nothing for an entry stored in a file with the other entries', () => {
+    // The entries share the folder of the file, and any of them can use an asset there
+    mockGetAssetFolder.mockReturnValue({ collectionName: 'members', entryRelative: true });
+    mockGetCollection.mockReturnValue({
+      name: 'members',
+      _type: 'entry',
+      _file: { arrayFile: true },
+    });
+
+    expect(getEntryRelativeAssets({ entry, collectionName: 'members' })).toEqual([]);
   });
 
   test('returns the assets stored alongside the entry', () => {

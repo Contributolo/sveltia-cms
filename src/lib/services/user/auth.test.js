@@ -103,6 +103,19 @@ vi.mock('$lib/services/backends/poll', () => ({
 
 const mockRepositoryHead = vi.hoisted(() => ({ current: '' }));
 
+const mockLockedBranch = vi.hoisted(() => ({
+  current: /** @type {string | undefined} */ (undefined),
+}));
+
+const mockMergeLockedBranch = vi.hoisted(() => ({
+  current: /** @type {string | undefined} */ (undefined),
+}));
+
+vi.mock('$lib/services/backends/branch-access', () => ({
+  lockedBranch: mockLockedBranch,
+  mergeLockedBranch: mockMergeLockedBranch,
+}));
+
 vi.mock('$lib/services/backends/git/shared/fetch', () => ({
   repositoryHead: mockRepositoryHead,
 }));
@@ -1280,7 +1293,15 @@ describe('auth service', () => {
       mockUnpublishedEntriesLoaded.current = true;
       mockPublishingBranches.current = ['cms/posts/hello'];
 
+      const openAuthoringModule = await import('$lib/services/workflow/open-authoring');
+      const forkPermissionGranted = openAuthoringModule.requestForkPermission('owner/repo');
+
+      openAuthoringModule.forkedRepository.current = { owner: 'user', repo: 'repo' };
+      openAuthoringModule.openAuthoringInitialized.current = true;
+
       mockRepositoryHead.current = 'abc123';
+      mockLockedBranch.current = 'main';
+      mockMergeLockedBranch.current = 'main';
 
       Object.assign(mockPrefs, {
         theme: 'dark',
@@ -1298,6 +1319,9 @@ describe('auth service', () => {
       expect(mockLocalStorage.delete).toHaveBeenCalledWith('netlify-cms-user');
       expect(mockStopRemoteChangePolling).toHaveBeenCalled();
       expect(mockRepositoryHead.current).toBe('');
+      // The next user may be allowed to push to the branch
+      expect(mockLockedBranch.current).toBeUndefined();
+      expect(mockMergeLockedBranch.current).toBeUndefined();
       expect(mockBackend.signOut).toHaveBeenCalled();
       expect(mockLocalStorage.set).toHaveBeenCalledWith('sveltia-cms.user', {});
       expect(mockBackendName.current).toEqual(undefined);
@@ -1307,6 +1331,11 @@ describe('auth service', () => {
       expect(mockUnpublishedEntries.current).toEqual([]);
       expect(mockUnpublishedEntriesLoaded.current).toBe(false);
       expect(mockPublishingBranches.current).toEqual([]);
+      // The next user must not reuse the previous user’s fork
+      expect(openAuthoringModule.forkedRepository.current).toBeUndefined();
+      expect(openAuthoringModule.openAuthoringInitialized.current).toBe(false);
+      expect(openAuthoringModule.forkPermissionRequest.current).toBeUndefined();
+      await expect(forkPermissionGranted).resolves.toBe(false);
       expect(mockResetDeployingEntries).toHaveBeenCalled();
     });
 

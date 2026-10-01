@@ -2,7 +2,9 @@ import equal from 'fast-deep-equal';
 import { untrack } from 'svelte';
 
 import { backend } from '$lib/services/backends';
+import { lockedBranch } from '$lib/services/backends/branch-access';
 import { getGroupingKey } from '$lib/services/common/view';
+import { isReadonly } from '$lib/services/config/readonly';
 import { allEntries } from '$lib/services/contents';
 import { selectedCollection } from '$lib/services/contents/collection';
 import {
@@ -16,6 +18,7 @@ import {
   isNestedCollection,
   nestedFilterPath,
 } from '$lib/services/contents/collection/nested';
+import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
 import { usesCurrentTime } from '$lib/services/contents/collection/view/conditions';
 import { filterEntries, parseFilterConfig } from '$lib/services/contents/collection/view/filter';
 import {
@@ -48,7 +51,11 @@ import { openAuthoring } from '$lib/services/workflow/open-authoring';
 /**
  * @typedef {object} CollectionState
  * @property {boolean} isEntryCollection Whether the selected collection is an entry collection.
- * @property {boolean} canCreate Whether new entries can be created in the selected collection.
+ * @property {boolean} readonly Whether the selected collection is read-only, because of its own or
+ * the global `readonly` option. Nothing can be created, deleted or reordered in it then.
+ * @property {boolean} canCreate Whether new entries can be created in the selected collection. It’s
+ * `false` with the `create: false` option, and also with `limit: 0`, which forbids creating entries
+ * the same way rather than being a quota to reach.
  * @property {boolean} canDelete Whether entries can be deleted from the selected collection.
  * @property {boolean} canReorder Whether entries in the selected collection can be reordered.
  * @property {number} quota The maximum number of entries allowed in the selected collection.
@@ -56,8 +63,8 @@ import { openAuthoring } from '$lib/services/workflow/open-authoring';
  * collection before reaching the quota.
  * @property {boolean} nearingQuota Whether the number of remaining entries is at or below the
  * warning threshold.
- * @property {boolean} creationDisabled Whether creating new entries is currently disabled, either
- * due to permissions or because the quota has been reached.
+ * @property {boolean} creationDisabled Whether creating new entries is currently disabled, due to
+ * permissions, because the collection is read-only or because the quota has been reached.
  */
 
 /**
@@ -236,13 +243,23 @@ const QUOTA_WARNING_THRESHOLD = 5;
  */
 export const collectionState = createDerivedState(() => {
   const { current: _selectedCollection } = selectedCollection;
+  const readonly = !!_selectedCollection && isReadonly({ collection: _selectedCollection });
 
   if (_selectedCollection?._type === 'entry') {
-    const canCreate = _selectedCollection.create ?? true;
-    const canDelete = _selectedCollection.delete ?? true;
+    // `limit: 0` means no entries can ever be created, so it’s treated like `create: false`
+    const canCreate = (_selectedCollection.create ?? true) && _selectedCollection.limit !== 0;
+    const canDelete = !readonly && (_selectedCollection.delete ?? true);
+
     // Reordering writes the new order straight to the configured branch rather than going through
-    // review, so it’s not something an Open Authoring contributor can do
-    const canReorder = !!_selectedCollection.reorder && !openAuthoring.current;
+    // review, even in a collection using Editorial Workflow, so it’s not something an Open
+    // Authoring contributor or a user who can’t push to the branch can do. An entry collection
+    // storing all the entries in one file can always be reordered
+    const canReorder =
+      !readonly &&
+      (!!_selectedCollection.reorder || isArrayFileCollection(_selectedCollection)) &&
+      !openAuthoring.current &&
+      !lockedBranch.current;
+
     const quota = _selectedCollection?.limit ?? Infinity;
 
     // In a nested collection, `listedEntries` only holds the folder being browsed, while the
@@ -260,18 +277,20 @@ export const collectionState = createDerivedState(() => {
 
     return {
       isEntryCollection: true,
+      readonly,
       canCreate,
       canDelete,
       canReorder,
       quota,
       remaining,
       nearingQuota: remaining > 0 && remaining <= QUOTA_WARNING_THRESHOLD,
-      creationDisabled: !canCreate || remaining <= 0,
+      creationDisabled: !canCreate || readonly || remaining <= 0,
     };
   }
 
   return {
     isEntryCollection: false,
+    readonly,
     canCreate: false,
     canDelete: false,
     canReorder: false,

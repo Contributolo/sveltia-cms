@@ -1,6 +1,7 @@
 import { callEventHooks } from '$lib/services/api/events';
 import { skipCIConfigured, skipCIEnabled } from '$lib/services/backends/git/shared/integration';
 import { saveChanges } from '$lib/services/backends/save';
+import { getReadonlyMessage, isDraftReadonly } from '$lib/services/config/readonly';
 import { getCollection } from '$lib/services/contents/collection';
 import {
   contentUpdatesToast,
@@ -22,16 +23,19 @@ import { awaitPendingFieldUpdates } from '$lib/services/contents/editor/pending'
 import { clearEntryHistoryCache } from '$lib/services/contents/entry/history';
 import { buildCascadeChanges } from '$lib/services/contents/entry/relations/cascade/update';
 import { assignAutoNowValues } from '$lib/services/contents/fields/date-time/auto-now';
-import { setLastCommitPublishHint } from '$lib/services/deployments/publish';
+import { setLastCommitPublishHint } from '$lib/services/deployments';
 import { isWorkflowDraft } from '$lib/services/workflow';
 import { saveWorkflowChanges } from '$lib/services/workflow/save';
 
 /**
  * @import {
+ * Asset,
  * ChangeResults,
  * CommitOptions,
  * Entry,
  * EntryDraft,
+ * EntrySlugVariants,
+ * FileChange,
  * InternalCollection,
  * } from '$lib/types/private';
  */
@@ -60,6 +64,68 @@ const updateStores = ({ useWorkflow, skipCI, count }) => {
 };
 
 /**
+ * Work out the file changes for saving the entry draft, including those of the entries and assets
+ * the save takes along. An entry file that can’t be formatted, e.g. in a custom format registered
+ * without a formatter, fails the save rather than being written empty.
+ * @param {object} args Arguments.
+ * @param {EntryDraft} args.draft Draft to save.
+ * @param {EntrySlugVariants} args.slugs Entry slugs.
+ * @returns {Promise<{ savingEntry: Entry, changes: FileChange[], savingAssets: Asset[],
+ * cascadeEntries: Entry[], movedEntries: Entry[] }>} Saving entry, file changes, assets, and the
+ * other entries rewritten in the same commit.
+ * @throws {Error} A `saving_failed` error when the changes could not be worked out, with the
+ * original error as its `cause`, so the message can be shown to the user.
+ */
+const buildChanges = async ({ draft, slugs }) => {
+  const { collection, fileName, originalEntry } = draft;
+
+  try {
+    const { savingEntry, changes, savingAssets } = await createSavingEntryData({ draft, slugs });
+
+    // When the slug has been edited, the entries referencing this one through a Relation field have
+    // to be rewritten in the same commit, or they would be left pointing at an entry that no longer
+    // exists under that name
+    const { changes: cascadeChanges, savingEntries: cascadeEntries } = await buildCascadeChanges({
+      collection,
+      collectionFile: draft.collectionFile,
+      originalEntry,
+      savingEntry,
+    });
+
+    changes.push(...cascadeChanges);
+
+    // Moving an entry in a nested collection takes everything below it to the new location
+    const { changes: moveChanges, savingEntries: movedEntries } = await buildNestedMoveChanges({
+      collection,
+      originalEntry,
+      savingEntry,
+    });
+
+    changes.push(...moveChanges);
+
+    // Assets stored next to the entry belong to it, so they follow it to its new folder
+    const { changes: assetMoveChanges, savingAssets: movedAssets } =
+      await buildEntryAssetMoveChanges({
+        collection,
+        fileName,
+        originalEntry,
+        savingEntry,
+        changes,
+      });
+
+    changes.push(...assetMoveChanges);
+    savingAssets.push(...movedAssets);
+
+    return { savingEntry, changes, savingAssets, cascadeEntries, movedEntries };
+  } catch (/** @type {any} */ ex) {
+    // eslint-disable-next-line no-console
+    console.error(ex);
+
+    throw new Error('saving_failed', { cause: ex });
+  }
+};
+
+/**
  * Save the entry draft.
  * @param {object} args Arguments.
  * @param {EntryDraft} args.draft Draft to save.
@@ -67,11 +133,23 @@ const updateStores = ({ useWorkflow, skipCI, count }) => {
  * @param {boolean} [args.overwrite] Whether to save even if someone else has changed the entry
  * since the draft was opened. Without it, such a save is refused with a `save_conflict` error whose
  * `cause` is the conflict found by {@link detectEntryConflict}, so the user can be asked first.
+ * An entry stored in a file with the other entries of the collection is still refused if its item
+ * has changed, as it’s told by its position, and the item at the position may now be another entry
+ * that has moved there.
  * @returns {Promise<Entry>} Saved entry.
- * @throws {Error} When the entry could not be validated or saved, or would overwrite someone else’s
- * change.
+ * @throws {Error} When the entry is read-only, could not be validated or saved, or would overwrite
+ * someone else’s change.
  */
 export const saveEntry = async ({ draft, skipCI = undefined, overwrite = false }) => {
+  // The editor offers no way to save a read-only entry, but make sure nothing is written anyway
+  if (isDraftReadonly(draft)) {
+    const { collection, collectionFile } = draft;
+
+    throw new Error('saving_failed', {
+      cause: new Error(getReadonlyMessage('entry', { collection, collectionFile })),
+    });
+  }
+
   const { isNew, collection, collectionName, fileName, originalEntry } = draft;
   // A collection can opt in or out of Editorial Workflow on its own, but an entry that already has
   // a pull request stays in it
@@ -118,36 +196,11 @@ export const saveEntry = async ({ draft, skipCI = undefined, overwrite = false }
 
   const slugs = getSlugs({ draft });
   const { defaultLocaleSlug } = slugs;
-  const { savingEntry, changes, savingAssets } = await createSavingEntryData({ draft, slugs });
 
-  // When the slug has been edited, the entries referencing this one through a Relation field have
-  // to be rewritten in the same commit, or they would be left pointing at an entry that no longer
-  // exists under that name
-  const { changes: cascadeChanges, savingEntries: cascadeEntries } = await buildCascadeChanges({
-    collection,
-    collectionFile: draft.collectionFile,
-    originalEntry,
-    savingEntry,
+  const { savingEntry, changes, savingAssets, cascadeEntries, movedEntries } = await buildChanges({
+    draft,
+    slugs,
   });
-
-  changes.push(...cascadeChanges);
-
-  // Moving an entry in a nested collection takes everything below it to the new location
-  const { changes: moveChanges, savingEntries: movedEntries } = await buildNestedMoveChanges({
-    collection,
-    originalEntry,
-    savingEntry,
-  });
-
-  changes.push(...moveChanges);
-
-  // Assets stored next to the entry belong to it, so they follow it to its new folder
-  const { changes: assetMoveChanges, savingAssets: movedAssets } = await buildEntryAssetMoveChanges(
-    { collection, fileName, originalEntry, savingEntry, changes },
-  );
-
-  changes.push(...assetMoveChanges);
-  savingAssets.push(...movedAssets);
 
   // The entries created from a Relation field go into the same commit as the entry referring to
   // them, so neither can end up without the other

@@ -5,10 +5,16 @@ import { callEventHooks } from '$lib/services/api/events';
 import { globalAssetFolder } from '$lib/services/assets/folders';
 import { backend } from '$lib/services/backends';
 import { cmsConfig } from '$lib/services/config';
+import { allEntries } from '$lib/services/contents';
 import { isNestedCollection } from '$lib/services/contents/collection/nested';
+import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
 import { addAlias } from '$lib/services/contents/draft/save/aliases';
 import { replaceBlobURL } from '$lib/services/contents/draft/save/assets';
-import { buildSingleFileContent } from '$lib/services/contents/draft/save/content';
+import {
+  buildSingleFileContent,
+  getFieldComments,
+  getSingleFileComments,
+} from '$lib/services/contents/draft/save/content';
 import { createEntryPath } from '$lib/services/contents/draft/save/entry-path';
 import { serializeContent } from '$lib/services/contents/draft/save/serialize';
 import { getCanonicalSlug, getFillSlugOptions } from '$lib/services/contents/draft/slugs';
@@ -140,7 +146,13 @@ const replaceBlobURLs = async ({
   // Replace blob URLs in File/Image fields with asset paths
   await Promise.all(
     matches.map(async ([blobURL]) => {
-      const { file, folder = _globalAssetFolder, replace, subfolderPath } = files[blobURL] ?? {};
+      const {
+        file,
+        folder = _globalAssetFolder,
+        replace,
+        subfolderPath,
+        nameTemplate,
+      } = files[blobURL] ?? {};
 
       if (file) {
         await replaceBlobURL({
@@ -149,6 +161,7 @@ const replaceBlobURLs = async ({
           folder,
           replace,
           subfolderPath,
+          nameTemplate,
           blobURL,
         });
       }
@@ -319,6 +332,27 @@ export const getPreviousSha = async ({ previousPath, cacheDB }) => {
 };
 
 /**
+ * Get the item that a change to an entry applies to, if the entry is stored in a file with the
+ * other entries of an entry collection. The item is identified by its position, and by the content
+ * the user has seen, so that the change doesn’t apply to another item if the array has changed.
+ * The content is taken from the entry in the store, as the given entry can be a copy with the
+ * change already made to it, e.g. a reference to a renamed asset or entry. Without one, the given
+ * entry stands in, which the item then has to match.
+ * @param {Entry | undefined} entry Existing entry. `undefined` for a new entry, which is added to
+ * the end of the array.
+ * @returns {Pick<FileChange, 'arrayItem'>} Properties to add to the change.
+ */
+export const getArrayItemTarget = (entry) => {
+  if (entry?.arrayIndex === undefined) {
+    return {};
+  }
+
+  const { locales } = allEntries.current.find(({ id }) => id === entry.id) ?? entry;
+
+  return { arrayItem: { index: entry.arrayIndex, locales } };
+};
+
+/**
  * Get file change information for the entry draft, specifically for a single-file entry.
  * @param {object} args Arguments.
  * @param {EntryDraft} args.draft Entry draft.
@@ -350,7 +384,9 @@ export const getSingleFileChange = async ({ draft, savingEntry, cacheDB }) => {
     data: await formatEntryFile({
       content: buildSingleFileContent({ config, entry: savingEntry, draft }),
       _file,
+      comments: getSingleFileComments({ config, fields: draft.fields }),
     }),
+    ...(isArrayFileCollection(collection) && !isNew ? getArrayItemTarget(originalEntry) : {}),
   };
 };
 
@@ -391,6 +427,7 @@ export const getMultiFileChange = async ({ draft, savingEntry, cacheDB, locale }
       data: await formatEntryFile({
         content: serializeContent({ draft, locale, valueMap: content }),
         _file,
+        comments: getFieldComments(draft.fields),
       }),
     };
   }
@@ -455,6 +492,11 @@ export const createSavingEntryData = async ({ draft, slugs }) => {
     id,
     slug: nested ? subPath : defaultLocaleSlug,
     subPath,
+    // An entry stored in a file with the other entries keeps its position, while a new one gets
+    // one once the file is saved
+    ...(draft.isNew || draft.originalEntry?.arrayIndex === undefined
+      ? {}
+      : { arrayIndex: draft.originalEntry.arrayIndex }),
     locales: Object.fromEntries(
       Object.entries(localizedEntryMap).map(([locale, localizedEntry]) => [
         locale,

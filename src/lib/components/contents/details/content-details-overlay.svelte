@@ -6,6 +6,7 @@
     EmptyState,
     Group,
     Icon,
+    Infobar,
     ResizableHandle,
     ResizablePane,
     ResizablePaneGroup,
@@ -24,6 +25,7 @@
   import Toolbar from '$lib/components/contents/details/toolbar.svelte';
   import { focusOverlay, rememberFocus } from '$lib/services/app/focus';
   import { goto } from '$lib/services/app/navigation';
+  import { getReadonlyMessage, isDraftReadonly } from '$lib/services/config/readonly';
   import { selectedCollection } from '$lib/services/contents/collection';
   import { collectionState } from '$lib/services/contents/collection/view';
   import {
@@ -43,7 +45,11 @@
     showContentOverlay,
     showDuplicateToast,
   } from '$lib/services/contents/editor';
-  import { getExpanderKeys, syncExpanderStates } from '$lib/services/contents/editor/fields';
+  import {
+    findEditorField,
+    getExpanderKeys,
+    syncExpanderStates,
+  } from '$lib/services/contents/editor/fields';
   import {
     getDefaultPanes,
     getLocaleContentLabel,
@@ -93,6 +99,11 @@
   let restoring = false;
   let switching = false;
   /**
+   * Number of field highlight requests so far, so a request still looking for its field can tell
+   * whether a newer one has come in.
+   */
+  let highlightRequestCount = 0;
+  /**
    * Width of the first pane in pixels, used to place the pane swap button over the gutter between
    * the panes. The button sits next to the resize handle rather than inside it: the handle is a
    * focusable `separator`, and a button nested in it is an interactive control inside another one.
@@ -126,7 +137,14 @@
   );
   /* v8 ignore stop */
   const paneStateKey = $derived(getPaneStateKey({ collection, collectionFile }));
-  const { canCreate, quota, creationDisabled } = $derived(collectionState.current);
+  const {
+    readonly: collectionReadonly,
+    canCreate,
+    quota,
+    creationDisabled,
+  } = $derived(collectionState.current);
+  // The entry can be viewed but not changed, which the editor says up front
+  const readonly = $derived(isDraftReadonly(entryDraft.current));
   const [firstPaneSize, secondPaneSize, minPaneSize] = $derived(
     getPaneSizes({ firstPane: editorFirstPane.current, secondPane: editorSecondPane.current }),
   );
@@ -266,6 +284,10 @@
    * @param {FieldKeyPath} args.keyPath Key path of the field.
    */
   const highlightEditorField = async ({ locale, keyPath }) => {
+    highlightRequestCount += 1;
+
+    const request = highlightRequestCount;
+
     await ensureEditPaneVisible(locale);
 
     const draft = entryDraft.current;
@@ -291,32 +313,27 @@
       stateMap: Object.fromEntries(expanderKeys.map((key) => [key, true])),
     });
 
-    window.requestAnimationFrame(() => {
-      const key = CSS.escape(keyPath);
+    const targetField = await findEditorField({ locale, keyPath });
 
-      // The path editor isn’t a field, so it’s marked with a validation key instead of a key path
-      const targetField = document.querySelector(
-        `.content-editor .pane[data-mode="edit"][data-locale="${CSS.escape(locale)}"] ` +
-          `.field:is([data-key-path="${key}"], [data-validation-key="${key}"])`,
-      );
+    // Finding the field can take a while, so leave it to a newer request that came in meanwhile
+    if (!targetField || request !== highlightRequestCount) {
+      return;
+    }
 
-      if (targetField) {
-        /* v8 ignore start -- `scrollIntoViewIfNeeded()` is non-standard; Firefox doesn’t have it */
-        if (typeof targetField.scrollIntoViewIfNeeded === 'function') {
-          targetField.scrollIntoViewIfNeeded();
-        } else {
-          targetField.scrollIntoView();
-        }
-        /* v8 ignore stop */
+    /* v8 ignore start -- `scrollIntoViewIfNeeded()` is non-standard; Firefox doesn’t have it */
+    if (typeof targetField.scrollIntoViewIfNeeded === 'function') {
+      targetField.scrollIntoViewIfNeeded();
+    } else {
+      targetField.scrollIntoView();
+    }
+    /* v8 ignore stop */
 
-        const widgetWrapper = targetField.querySelector('.field-wrapper');
+    const widgetWrapper = targetField.querySelector('.field-wrapper');
 
-        /** @type {HTMLElement | null} */ (
-          widgetWrapper?.querySelector('[contenteditable="true"], [tabindex="0"]') ??
-            widgetWrapper?.querySelector('input, textarea, button')
-        )?.focus();
-      }
-    });
+    /** @type {HTMLElement | null} */ (
+      widgetWrapper?.querySelector('[contenteditable="true"], [tabindex="0"]') ??
+        widgetWrapper?.querySelector('input, textarea, button')
+    )?.focus();
   };
 
   /**
@@ -377,8 +394,10 @@
 
   $effect(() => {
     if (prefs.devModeEnabled) {
+      // Log a plain copy rather than the `$state` proxy. Taking it reads every value in the draft,
+      // so the draft is logged again whenever a value or its validity changes
       // eslint-disable-next-line no-console
-      console.info('entryDraft', entryDraft.current);
+      console.info('entryDraft', $state.snapshot(entryDraft.current));
     }
   });
 
@@ -510,6 +529,16 @@
   bind:this={wrapper}
 >
   {#key entryDraft.current?.id}
+    <!-- A new entry that can’t be created gets the message in place of the editor instead -->
+    {#if readonly && !loading && !(isNew && creationDisabled)}
+      <Infobar
+        dismissible={false}
+        --sui-infobar-border-width="0 0 1px"
+        --sui-infobar-message-justify-content="center"
+      >
+        {getReadonlyMessage('entry', { collection, collectionFile })}
+      </Infobar>
+    {/if}
     <Toolbar disabled={loading || (isNew && creationDisabled)} />
     {#if loading}
       <EmptyState>
@@ -522,6 +551,8 @@
         <div role="none">
           {#if notFound}
             {_('entry_not_found')}
+          {:else if collectionReadonly}
+            {getReadonlyMessage('collection', { collection })}
           {:else if !canCreate}
             {_('creating_entries_disabled_by_admin')}
           {:else}

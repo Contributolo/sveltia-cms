@@ -13,6 +13,7 @@
   import EntryThumbnail from '$lib/components/contents/shared/entry-thumbnail.svelte';
   import DeployStatusBadge from '$lib/components/workflow/deploy-status-badge.svelte';
   import { goto } from '$lib/services/app/navigation';
+  import { isReadonly } from '$lib/services/config/readonly';
   import { getCollection, getCollectionLabel } from '$lib/services/contents/collection';
   import {
     getCollectionFile,
@@ -20,7 +21,7 @@
   } from '$lib/services/contents/collection/files';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
   import { deployments, productionSHA } from '$lib/services/deployments';
-  import { checkPublishedVersion } from '$lib/services/workflow';
+  import { canMergePullRequest, checkPublishedVersion } from '$lib/services/workflow';
   import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
   /**
@@ -62,6 +63,9 @@
   const collectionFile = $derived(
     collection && fileName ? getCollectionFile(collection, fileName) : undefined,
   );
+  // A read-only entry can be opened and viewed, but not moved through the stages, published or
+  // discarded
+  const readonly = $derived(isReadonly({ collection, collectionFile }));
   // The card has no locale of its own, so the link points at the entry’s default one
   const defaultLocale = $derived((collectionFile ?? collection)?._i18n?.defaultLocale);
   // A merged change goes out with the production build, which is a different commit from the pull
@@ -85,10 +89,13 @@
   );
   // The entry can only be published from the last column, and the collection’s `publish` option can
   // hide the control altogether. An Open Authoring contributor can’t merge a pull request on the
-  // configured repository, so they never get the control
+  // configured repository, and neither can a user who can push to the entry’s branch but not merge
+  // into the configured branch, so they never get the control
   const canPublish = $derived(
     !deploying &&
+      !readonly &&
       !openAuthoring.current &&
+      canMergePullRequest(pullRequest) &&
       (status === 'pending_publish' || deletion) &&
       collection?.publish !== false,
   );
@@ -99,6 +106,7 @@
   // the published version untouched, so it stays available even when deletion is disabled
   const canDelete = $derived(
     !deploying &&
+      !readonly &&
       (publishedVersionExists ||
         (collection?._type === 'entry' ? collection.delete !== false : true)),
   );
@@ -112,13 +120,13 @@
 </script>
 
 <!-- A pending deletion has no stages to move through, so its card doesn’t drag, and neither does
-a merged one -->
+a merged or read-only one -->
 <div
   role="listitem"
   class="card"
   class:dragging
-  class:static={deletion || deploying}
-  draggable={!busy && !deletion && !deploying}
+  class:static={deletion || deploying || readonly}
+  draggable={!busy && !deletion && !deploying && !readonly}
   ondragstart={(/** @type {DragEvent} */ event) => {
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = 'move';

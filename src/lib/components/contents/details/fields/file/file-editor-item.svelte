@@ -9,11 +9,15 @@
   import EditableText from '$lib/components/common/editable-text.svelte';
   import ReorderControls from '$lib/components/common/reorder-controls.svelte';
   import { getAssetByPath } from '$lib/services/assets';
-  import { getMediaFieldURL } from '$lib/services/assets/info';
+  import { formatFileName } from '$lib/services/assets/file-name';
   import { getMediaKind } from '$lib/services/assets/kinds';
+  import { getMediaFieldURL } from '$lib/services/assets/media-field';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
-  import { getUnsavedFileDisplayPath } from '$lib/services/contents/fields/file/helpers';
-  import { formatFileName, isEquivalentFileExtension } from '$lib/services/utils/file';
+  import {
+    getUnsavedFileDisplayPath,
+    getUnsavedFileName,
+  } from '$lib/services/contents/fields/file/helpers';
+  import { isEquivalentFileExtension } from '$lib/services/utils/file';
   import { watch } from '$lib/services/utils/state.svelte';
 
   /**
@@ -105,6 +109,20 @@
    */
   const unsaved = $derived(!!file && !!value?.startsWith('blob:'));
   const canRename = $derived(unsaved && !readonly);
+  /**
+   * Name the unsaved file will be saved with, which is filled with the current draft content if the
+   * `filename_template` media library option applies to the file.
+   */
+  const unsavedFileName = $derived(
+    file
+      ? /** @type {string} */ (
+          getUnsavedFileName({
+            draft: /** @type {EntryDraft} */ (entryDraft.current),
+            blobURL: value,
+          })
+        )
+      : undefined,
+  );
   const oldExtension = $derived(file ? getPathInfo(file.name).extension : undefined);
   /** Sanitized file name to be saved, which may be different from the entered name. */
   const finalName = $derived(formatFileName(newName.trim()));
@@ -134,8 +152,8 @@
       return '';
     }
 
-    if (file) {
-      const name = decodeURI(file.name.normalize());
+    if (unsavedFileName) {
+      const name = decodeURI(unsavedFileName.normalize());
 
       return getUnsavedFileDisplayPath({
         draft: /** @type {EntryDraft} */ (entryDraft.current),
@@ -181,6 +199,8 @@
     });
 
     entryDraft.current.files[value].file = newFile;
+    // The name is set by hand, so the file name template no longer applies
+    delete entryDraft.current.files[value].nameTemplate;
     file = newFile;
     editing = false;
   };
@@ -192,7 +212,7 @@
    * confirmation.
    */
   const applyNewName = () => {
-    if (!file || !finalName || finalName === file.name) {
+    if (!file || !finalName || finalName === unsavedFileName) {
       return true;
     }
 
@@ -308,7 +328,7 @@
       <EditableText
         id="{fieldId}-value"
         value={fileDisplayPath}
-        initialText={file?.name}
+        initialText={unsavedFileName}
         bind:editing
         bind:text={newName}
         bind:inputElement

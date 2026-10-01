@@ -214,17 +214,40 @@ describe('CMS.registerCustomFormat()', () => {
     expect(() => CMS.registerCustomFormat('test', '.test', { fromFile, toFile })).not.toThrow();
   });
 
-  test('registers format with only parser', () => {
+  test('registers format with only parser, warning that its entries can’t be saved', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fromFile = () => {};
 
     expect(() => CMS.registerCustomFormat('test', '.test', { fromFile })).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'The custom “test” format has no `toFile` method, so its entries can’t be saved',
+    );
+    warnSpy.mockRestore();
   });
 
-  test('registers format with only formatter', () => {
+  test('registers format with only formatter, warning that its entries can’t be loaded', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const toFile = () => {};
 
     // @ts-ignore
     expect(() => CMS.registerCustomFormat('test', '.test', { toFile })).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'The custom “test” format has no `fromFile` method, so its entries can’t be loaded',
+    );
+    warnSpy.mockRestore();
+  });
+
+  test('does not warn about a missing method of a built-in format', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    CMS.registerCustomFormat('json', 'json', { fromFile: () => ({}) });
+    // @ts-ignore
+    CMS.registerCustomFormat('yaml-frontmatter', 'md', { toFile: () => '' });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   test('throws TypeError if name is not a non-empty string', () => {
@@ -326,6 +349,15 @@ describe('CMS.registerCustomFormat()', () => {
     ).toThrow('The `toFile` option for `CMS.registerCustomFormat()` must be a function');
   });
 
+  test('throws TypeError if the only method provided is not a function', () => {
+    // @ts-ignore
+    expect(() => CMS.registerCustomFormat('test', '.test', { fromFile: 'invalid' })).toThrow(
+      'The `fromFile` option for `CMS.registerCustomFormat()` must be a function',
+    );
+    // @ts-ignore
+    expect(() => CMS.registerCustomFormat('test', '.test', { toFile: 123 })).toThrow(TypeError);
+  });
+
   test('accepts async functions as parser/formatter', () => {
     const asyncFromFile = async () => {};
     const asyncToFile = async () => {};
@@ -388,6 +420,12 @@ describe('CMS.registerEditorComponent()', () => {
     expect(() => CMS.registerEditorComponent(definition)).toThrow(
       'The `definition.id` must be a non-empty string',
     );
+  });
+
+  test('accepts a definition without the optional label and toPreview', () => {
+    const { label, toPreview, ...definition } = validDefinition;
+
+    expect(() => CMS.registerEditorComponent(definition)).not.toThrow();
   });
 
   test('throws TypeError if label is not a non-empty string', () => {
@@ -751,6 +789,13 @@ describe('CMS.registerPreviewTemplate()', () => {
     );
   });
 
+  test('registers a wrapped component as a preview template', () => {
+    const component = { $$typeof: Symbol.for('react.memo'), type: () => null };
+
+    // @ts-ignore
+    expect(() => CMS.registerPreviewTemplate('posts', component)).not.toThrow();
+  });
+
   test('throws TypeError when component is not a function', () => {
     // @ts-ignore
     expect(() => CMS.registerPreviewTemplate('posts', 'not-a-function')).toThrow(TypeError);
@@ -793,6 +838,14 @@ describe('CMS.registerFieldType()', () => {
     // The components will receive Immutable Maps, so the library is loaded ahead of time
     expect(preloadImmutable).toHaveBeenCalled();
     expect(preloadReactDom).toHaveBeenCalled();
+  });
+
+  test('registers field type with wrapped components', () => {
+    const control = { $$typeof: Symbol.for('react.forward_ref'), render: () => null };
+    const preview = { $$typeof: Symbol.for('react.memo'), type: () => null };
+
+    // @ts-ignore
+    expect(() => CMS.registerFieldType('test', control, preview)).not.toThrow();
   });
 
   test('registers field type with string control', () => {
@@ -1106,6 +1159,26 @@ describe('CMS Proxy - unsupported functions', () => {
     const result = CMS.someRandomProperty;
 
     expect(result).toBeUndefined();
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+});
+
+describe('CMS.React', () => {
+  test('is the React instance bundled with the CMS', async () => {
+    const { default: React } = await import('react');
+    const { React: ReactExport } = await import('.');
+
+    expect(CMS.React).toBe(React);
+    expect(ReactExport).toBe(React);
+    expect(typeof CMS.React.useState).toBe('function');
+  });
+
+  test('does not log a warning', () => {
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // eslint-disable-next-line no-unused-expressions
+    CMS.React;
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
   });

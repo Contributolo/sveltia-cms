@@ -19,6 +19,7 @@ import {
   isOpenAuthoringConfigured,
 } from '$lib/services/backends/git/github/fork';
 import {
+  checkBranchAccess,
   checkRepositoryAccess,
   fetchDefaultBranchName,
   repository,
@@ -27,7 +28,7 @@ import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { MAX_CONCURRENT_REQUESTS } from '$lib/services/backends/git/shared/concurrency';
 import { fetchAndParseFiles } from '$lib/services/backends/git/shared/fetch';
 import { startSimulatedProgress } from '$lib/services/backends/git/shared/progress';
-import { openAuthoringInitialized } from '$lib/services/workflow/open-authoring';
+import { forkedRepository, openAuthoringInitialized } from '$lib/services/workflow/open-authoring';
 
 // Mock dependencies
 vi.mock('$lib/services/backends/git/github/commits');
@@ -36,6 +37,7 @@ vi.mock('$lib/services/backends/git/github/repository');
 vi.mock('$lib/services/backends/git/shared/api');
 vi.mock('$lib/services/backends/git/shared/fetch');
 vi.mock('$lib/services/workflow/open-authoring', () => ({
+  forkedRepository: { current: undefined },
   openAuthoringInitialized: { current: false },
 }));
 
@@ -466,6 +468,7 @@ describe('GitHub files service', () => {
       expect(fetchAndParseFiles).toHaveBeenCalledWith({
         repository,
         checkAccess: checkRepositoryAccess,
+        checkBranchAccess,
         fetchDefaultBranchName,
         fetchLastCommit,
         fetchFileList,
@@ -490,6 +493,23 @@ describe('GitHub files service', () => {
       );
     });
 
+    test('skips the branch check for a contributor, whose changes go to their fork', async () => {
+      vi.mocked(isOpenAuthoringConfigured).mockReturnValue(true);
+      vi.mocked(fetchAndParseFiles).mockResolvedValue();
+      openAuthoringInitialized.current = true;
+      forkedRepository.current = { owner: 'mona', repo: 'site' };
+
+      try {
+        await fetchFiles();
+
+        expect(fetchAndParseFiles).toHaveBeenCalledWith(
+          expect.objectContaining({ checkBranchAccess: undefined }),
+        );
+      } finally {
+        forkedRepository.current = undefined;
+      }
+    });
+
     test('leaves the fork alone once it has been set up', async () => {
       vi.mocked(isOpenAuthoringConfigured).mockReturnValue(true);
       vi.mocked(fetchAndParseFiles).mockResolvedValue();
@@ -512,6 +532,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'application/octet-stream']]),
         blob: vi.fn().mockResolvedValue(new Blob(['binary data'])),
       };
@@ -538,6 +559,7 @@ describe('GitHub files service', () => {
       });
 
       vi.mocked(fetchAPI).mockResolvedValue({
+        ok: true,
         headers: new Map([['Content-Type', 'application/octet-stream']]),
         blob: vi.fn().mockResolvedValue(new Blob(['binary data'])),
       });
@@ -557,6 +579,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'image/svg+xml']]),
         text: vi.fn().mockResolvedValue('<svg></svg>'),
       };
@@ -581,6 +604,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'text/plain']]),
         text: vi.fn().mockResolvedValue('text content'),
       };
@@ -603,6 +627,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'application/json']]),
         text: vi.fn().mockResolvedValue('{"key":"value"}'),
       };
@@ -625,6 +650,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'text/markdown']]),
         text: vi.fn().mockResolvedValue('# Readme'),
       };
@@ -640,6 +666,26 @@ describe('GitHub files service', () => {
       expect(result.type).toBe('text/markdown');
     });
 
+    test('throws instead of returning an error response as the file content', async () => {
+      const asset = /** @type {any} */ ({ sha: 'test-sha', path: 'image.jpg' });
+
+      const mockResponse = {
+        ok: false,
+        status: 404,
+        headers: new Map([['Content-Type', 'application/json']]),
+        text: vi.fn().mockResolvedValue('{"message":"Not Found"}'),
+        blob: vi.fn(),
+      };
+
+      vi.mocked(fetchAPI).mockResolvedValue(mockResponse);
+
+      await expect(fetchBlob(asset)).rejects.toMatchObject({
+        message: 'Failed to fetch the blob',
+        cause: { status: 404 },
+      });
+      expect(mockResponse.text).not.toHaveBeenCalled();
+    });
+
     test('calls fetchAPI with correct repository and asset SHA', async () => {
       const asset = /** @type {any} */ ({
         sha: 'custom-sha-123',
@@ -647,6 +693,7 @@ describe('GitHub files service', () => {
       });
 
       const mockResponse = {
+        ok: true,
         headers: new Map([['Content-Type', 'application/octet-stream']]),
         blob: vi.fn().mockResolvedValue(new Blob()),
       };

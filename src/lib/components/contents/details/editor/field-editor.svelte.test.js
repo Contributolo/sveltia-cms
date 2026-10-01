@@ -80,13 +80,14 @@ describe('FieldEditor', () => {
     await expect.poll(() => draft.currentValues.en.title).toBe('Hi');
   });
 
-  test('marks an optional field and shows a comment', async () => {
+  test('marks an optional field without showing its comment', async () => {
     const { container } = await renderEditor({
       fieldConfig: { name: 'title', widget: 'string', required: false, comment: 'Optional' },
     });
 
     expect(container.querySelector('.required')).toBeNull();
-    expect(container.querySelector('.comment')).toHaveTextContent('Optional');
+    // Like Netlify/Decap CMS, a comment is written to the YAML file rather than shown in the UI
+    expect(container).not.toHaveTextContent('Optional');
     await expect.element(page.getByRole('textbox')).toHaveAttribute('aria-required', 'false');
   });
 
@@ -247,6 +248,29 @@ describe('FieldEditor', () => {
 
     await expect.element(page.getByRole('textbox')).toHaveAttribute('aria-readonly', 'true');
     // Nothing can be copied or reverted
+    expect(page.getByRole('button', { name: 'Show Field Options' }).elements()).toHaveLength(0);
+  });
+
+  test('locks every field of a read-only entry', async () => {
+    const fieldConfig = { name: 'title', widget: 'string', i18n: true };
+
+    const draft = createMockDraft({
+      fields: [fieldConfig],
+      i18n: { i18nEnabled: true, defaultLocale: 'en', allLocales: ['en', 'ja'] },
+      values: { en: { title: 'Hello' }, ja: {} },
+    });
+
+    // The collection is a static property of the draft, so the flag is set on the object itself
+    /** @type {any} */ (draft.collection).readonly = true;
+
+    await renderWithDraft(FieldEditor, {
+      draft,
+      props: { locale: 'en', keyPath: 'title', typedKeyPath: 'title', fieldConfig },
+    });
+
+    await expect.element(page.getByRole('textbox')).toHaveAttribute('aria-readonly', 'true');
+    // Nothing can be translated, copied or reverted
+    expect(page.getByRole('button', { name: /Translate/ }).elements()).toHaveLength(0);
     expect(page.getByRole('button', { name: 'Show Field Options' }).elements()).toHaveLength(0);
   });
 

@@ -21,6 +21,14 @@ import { optimizeSVG, transformImage } from '$lib/services/utils/media/image/tra
  */
 
 /**
+ * Normalize the `filename_template` media library option.
+ * @param {unknown} template Option value.
+ * @returns {string | undefined} Template, or `undefined` if it’s not a non-blank string.
+ */
+export const normalizeFileNameTemplate = (template) =>
+  typeof template === 'string' && template.trim() ? template.trim() : undefined;
+
+/**
  * Get normalized default media library options.
  * @param {object} [options] Options.
  * @param {MediaField} [options.fieldConfig] Field configuration.
@@ -34,6 +42,7 @@ export const getDefaultMediaLibraryOptions = ({ fieldConfig } = {}) => {
     max_file_size: maxSize,
     multiple,
     slugify_filename: slugify,
+    filename_template: fileNameTemplate,
     transformations,
   } = typeof options === 'boolean' ? {} : (options?.config ?? {});
 
@@ -43,6 +52,7 @@ export const getDefaultMediaLibraryOptions = ({ fieldConfig } = {}) => {
       max_file_size: typeof maxSize === 'number' && Number.isInteger(maxSize) ? maxSize : Infinity,
       multiple: typeof multiple === 'boolean' ? multiple : false,
       slugify_filename: typeof slugify === 'boolean' ? slugify : false,
+      filename_template: normalizeFileNameTemplate(fileNameTemplate),
       transformations: isObject(transformations) ? transformations : undefined,
     },
   };

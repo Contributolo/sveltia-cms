@@ -10,12 +10,15 @@ import {
   removeMarkdownImages,
 } from '$lib/services/assets/data/cascade';
 
-vi.mock('$lib/services/assets', () => ({
+vi.mock('$lib/services/assets/state', () => ({
   allAssets: { current: [] },
 }));
 
 vi.mock('$lib/services/assets/info', () => ({
   getAssetPublicURL: vi.fn((asset) => `/${asset.path}`),
+}));
+
+vi.mock('$lib/services/assets/media-field', () => ({
   getMediaFieldSource: vi.fn(() => undefined),
 }));
 
@@ -27,7 +30,7 @@ vi.mock('$lib/services/config', () => ({
   cmsConfig: { current: {} },
 }));
 
-vi.mock('$lib/services/contents/collection/entries', () => ({
+vi.mock('$lib/services/assets/references', () => ({
   getAssetReferences: vi.fn(async () => []),
   getComparableAssetURL: vi.fn((url) => url.replace('https://example.com', '')),
   MARKDOWN_IMAGE_REGEX: /!\[.*?\]\((.+?)(?:\s+".*?")?\)/g,
@@ -51,15 +54,20 @@ vi.mock('$lib/services/contents/entry/changes', () => ({
   resolveCacheDB: vi.fn(),
 }));
 
+vi.mock('$lib/services/contents/entry/readonly', () => ({
+  isEntryReadonly: vi.fn(() => false),
+}));
+
 vi.mock('$lib/services/contents/entry/summary', () => ({
   getEntrySummary: vi.fn((collection, entry) => entry.locales._default?.content?.title ?? ''),
 }));
 
-const { allAssets } = await import('$lib/services/assets');
-const { getAssetPublicURL, getMediaFieldSource } = await import('$lib/services/assets/info');
+const { allAssets } = await import('$lib/services/assets/state');
+const { getAssetPublicURL } = await import('$lib/services/assets/info');
+const { getMediaFieldSource } = await import('$lib/services/assets/media-field');
 const { cmsConfig } = await import('$lib/services/config');
 const { allEntries } = await import('$lib/services/contents');
-const { getAssetReferences } = await import('$lib/services/contents/collection/entries');
+const { getAssetReferences } = await import('$lib/services/assets/references');
 
 const { isCollectionIndexFile } =
   await import('$lib/services/contents/collection/entries/index-file');
@@ -540,6 +548,25 @@ describe('planAssetDeletion()', () => {
       collectionFile,
       isIndexFile: true,
     });
+  });
+});
+
+describe('planAssetDeletion() with read-only entries', () => {
+  const asset = createAsset('a.png');
+
+  test('blocks the deletion of an asset used by a read-only file', async () => {
+    const collectionFile = { name: 'general', readonly: true };
+    const post = createPost('general', { image: '/static/uploads/a.png' });
+
+    getAssetReferences.mockResolvedValue([
+      createReference(post, 'image', imageField, { collectionFile }),
+    ]);
+
+    const { blockers } = await planAssetDeletion([asset]);
+
+    expect(blockers).toEqual([
+      expect.objectContaining({ keyPath: 'image', messages: ['readonly_reference'] }),
+    ]);
   });
 });
 

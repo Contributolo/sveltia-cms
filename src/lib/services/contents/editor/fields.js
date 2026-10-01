@@ -1,3 +1,4 @@
+import { sleep } from '@sveltia/utils/misc';
 import { escapeRegExp } from '@sveltia/utils/string';
 
 import { getField, LIST_KEY_PATH_REGEX } from '$lib/services/contents/entry/fields';
@@ -170,7 +171,13 @@ export const getExpanderKeys = ({
         keys.add(`${parentKeyPath}.${parentConfig.name}#`);
       }
 
-      if (parentConfig?.widget === 'list' && 'field' in /** @type {ListField} */ (parentConfig)) {
+      // A list item is expanded by its own key: `config` is the subfield of a List field with
+      // `field`, or the resolved type of a List field with `types`, which has no `widget`
+      if (
+        parentConfig?.widget === 'list' &&
+        ('field' in /** @type {ListField} */ (parentConfig) ||
+          'types' in /** @type {ListField} */ (parentConfig))
+      ) {
         keys.add(_keyPath);
       }
     }
@@ -219,4 +226,132 @@ export const highlightEditorField = ({ locale, keyPath }) => {
     { type: 'highlight-editor-field', payload: { locale, keyPath } },
     window.location.origin,
   );
+};
+
+/**
+ * Get the last rendered field of the deepest rendered parent of the given field in an edit pane.
+ * @param {HTMLElement} pane Edit pane element.
+ * @param {FieldKeyPath} keyPath Key path of the field.
+ * @returns {HTMLElement | undefined} Field element.
+ */
+const getLastRenderedParentField = (pane, keyPath) => {
+  const parts = keyPath.split('.');
+
+  // Deepest parent first, then the root
+  for (let depth = parts.length - 1; depth >= 0; depth -= 1) {
+    const parentKeyPath = parts.slice(0, depth).join('.');
+
+    /** @type {NodeListOf<HTMLElement>} */
+    const fields = pane.querySelectorAll(
+      parentKeyPath
+        ? `.field[data-key-path^="${CSS.escape(`${parentKeyPath}.`)}"]`
+        : '.field[data-key-path]',
+    );
+
+    if (fields.length) {
+      return fields[fields.length - 1];
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * Find the field with the given key path in the edit pane for the given locale. The pane renders
+ * fields lazily as they scroll into view, so a field just revealed by expanding its parents may not
+ * be rendered yet, especially near the bottom of the pane. In that case, scroll the pane towards
+ * the field, to the last rendered field of its deepest rendered parent, until it’s rendered or no
+ * more fields are rendered.
+ * @param {object} args Arguments.
+ * @param {InternalLocaleCode} args.locale Locale of the edit pane.
+ * @param {FieldKeyPath} args.keyPath Key path of the field. The path editor isn’t a field, so it’s
+ * marked with a validation key instead of a key path; that’s matched as well.
+ * @param {number} [args.maxAttempts] How many times to scroll the pane before giving up.
+ * @param {number} [args.interval] How long to wait for fields to render after scrolling, in
+ * milliseconds.
+ * @returns {Promise<HTMLElement | null>} Field element, or `null` if it couldn’t be found.
+ */
+export const findEditorField = async ({ locale, keyPath, maxAttempts = 20, interval = 100 }) => {
+  const key = CSS.escape(keyPath);
+  const selector = `.field:is([data-key-path="${key}"], [data-validation-key="${key}"])`;
+
+  // Let the expanded parents render first
+  await new Promise((resolve) => {
+    window.requestAnimationFrame(resolve);
+  });
+
+  /** @type {HTMLElement | null} */
+  const pane = document.querySelector(
+    `.content-editor .pane[data-mode="edit"][data-locale="${CSS.escape(locale)}"]`,
+  );
+
+  if (!pane) {
+    return null;
+  }
+
+  /** @type {HTMLElement | undefined} */
+  let previousLastRenderedField;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    /** @type {HTMLElement | null} */
+    const field = pane.querySelector(selector);
+
+    if (field || !pane.isConnected) {
+      return field;
+    }
+
+    const lastRenderedField = getLastRenderedParentField(pane, keyPath);
+
+    // Stop if no more fields are rendered after scrolling, e.g. when the field doesn’t exist or is
+    // hidden by a condition
+    if (!lastRenderedField || lastRenderedField === previousLastRenderedField) {
+      return null;
+    }
+
+    previousLastRenderedField = lastRenderedField;
+    lastRenderedField.scrollIntoView({ block: 'center' });
+
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(interval);
+  }
+
+  return pane.querySelector(selector);
+};
+
+/**
+ * Highlight the Edit Pane field that corresponds to an element in a custom preview template, just
+ * like clicking a field in the default preview does. The template marks the element with the
+ * `data-key-path` attribute, which Scroll Synchronization also uses. A click on the element or
+ * anything inside it highlights the field of the innermost marked element, while the Enter key
+ * does so only when the marked element itself has the focus, so it doesn’t get in the way of a
+ * focused link or form control. The template can opt out by calling `preventDefault()`.
+ * @param {object} args Arguments.
+ * @param {MouseEvent | KeyboardEvent} args.event `click` or `keydown` event on the preview frame’s
+ * document.
+ * @param {InternalLocaleCode} args.locale Locale of the Preview Pane.
+ * @see https://github.com/sveltia/sveltia-cms/issues/1029
+ */
+export const highlightPreviewTemplateField = ({ event, locale }) => {
+  const isKeyDown = event.type === 'keydown';
+
+  if (
+    event.defaultPrevented ||
+    (isKeyDown && /** @type {KeyboardEvent} */ (event).key !== 'Enter')
+  ) {
+    return;
+  }
+
+  // The target comes from the frame’s realm, so `instanceof Element` can’t be used. A key event
+  // always targets an element, while a click event can be dispatched to the document
+  const { target } = event;
+
+  const element = /** @type {Element | null | undefined} */ (
+    isKeyDown ? target : /** @type {Element} */ (target).closest?.('[data-key-path]')
+  );
+
+  const keyPath = element?.getAttribute('data-key-path');
+
+  if (keyPath) {
+    highlightEditorField({ locale, keyPath });
+  }
 };

@@ -23,10 +23,13 @@ vi.mock('$lib/services/contents/collection/files', () => ({
 }));
 
 vi.mock('$lib/services/assets', () => ({
+  getAssetByInternalPath: vi.fn(),
+}));
+
+vi.mock('$lib/services/assets/state', () => ({
   allAssets: { current: undefined },
   focusedAsset: { current: undefined },
   overlaidAsset: { current: undefined },
-  getAssetByInternalPath: vi.fn(),
 }));
 
 vi.mock('$lib/services/assets/data', () => ({
@@ -64,7 +67,7 @@ vi.mock('$lib/services/contents/collection/data', () => ({
   },
 }));
 
-vi.mock('$lib/services/contents/collection/entries', () => ({
+vi.mock('$lib/services/assets/references', () => ({
   getEntriesByAssets: vi.fn(async (targets) => targets.map(() => [])),
 }));
 
@@ -81,8 +84,13 @@ vi.mock('$lib/services/contents/draft/slugs', () => ({
   getSlugs: vi.fn(),
 }));
 
-vi.mock('$lib/services/contents/entry', () => ({
+vi.mock('$lib/services/contents/entry/collections', () => ({
   getAssociatedCollections: vi.fn(),
+}));
+
+vi.mock('$lib/services/contents/entry/readonly', () => ({
+  isEntryReadonly: vi.fn(() => false),
+  getReadonlyEntryLabel: vi.fn((entry) => `Archive › ${entry.id}`),
 }));
 
 vi.mock('@sveltia/utils/file', () => ({
@@ -391,7 +399,7 @@ describe('assets/data/move', () => {
     });
 
     it('should collect changes for associated collections', async () => {
-      const { getAssociatedCollections } = await import('$lib/services/contents/entry');
+      const { getAssociatedCollections } = await import('$lib/services/contents/entry/collections');
       const { getCollectionFilesByEntry } = await import('$lib/services/contents/collection/files');
 
       const { isCollectionIndexFile, getIndexFile } =
@@ -432,7 +440,7 @@ describe('assets/data/move', () => {
     });
 
     it('should handle collection files', async () => {
-      const { getAssociatedCollections } = await import('$lib/services/contents/entry');
+      const { getAssociatedCollections } = await import('$lib/services/contents/entry/collections');
       const { getCollectionFilesByEntry } = await import('$lib/services/contents/collection/files');
 
       const { isCollectionIndexFile } =
@@ -477,7 +485,7 @@ describe('assets/data/move', () => {
     });
 
     it('should call getIndexFile when entry is an index file (line 111 true branch)', async () => {
-      const { getAssociatedCollections } = await import('$lib/services/contents/entry');
+      const { getAssociatedCollections } = await import('$lib/services/contents/entry/collections');
       const { getCollectionFilesByEntry } = await import('$lib/services/contents/collection/files');
 
       const { isCollectionIndexFile, getIndexFile } =
@@ -532,7 +540,7 @@ describe('assets/data/move', () => {
     };
 
     it('should do nothing without assets', async () => {
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const updatingEntryMap = new Map();
 
       await collectEntryChangesFromAssets({
@@ -547,7 +555,7 @@ describe('assets/data/move', () => {
 
     it('should do nothing for assets no entry uses', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
 
       vi.mocked(getAssetPublicURL).mockReturnValue('https://example.com/assets/image.jpg');
       vi.mocked(getEntriesByAssets).mockResolvedValue([[]]);
@@ -566,7 +574,7 @@ describe('assets/data/move', () => {
 
     it('should match an asset without a public URL by the asset, even if it’s not loaded', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: { en: { content: { image: 'image.jpg' } } } };
 
@@ -594,7 +602,7 @@ describe('assets/data/move', () => {
 
     it('should rewrite the references in a copy of each entry, falling back to the folder paths', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: { en: { content: { image: '/images/image.jpg' } } } };
 
@@ -632,7 +640,7 @@ describe('assets/data/move', () => {
 
     it('should derive the new URL from the moved asset the way the current URL is derived', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: {} };
 
@@ -668,7 +676,7 @@ describe('assets/data/move', () => {
 
     it('should look every asset up at once and copy an entry using several of them once', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: {} };
       const other = { id: 'entry2', locales: {} };
@@ -715,7 +723,7 @@ describe('assets/data/move', () => {
 
     it('should swap the file name in a reference relative to the entry when renaming', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const entry = { id: 'entry1', locales: {} };
 
       const asset = {
@@ -746,7 +754,7 @@ describe('assets/data/move', () => {
 
     it('should fall back to the folder paths when an entry-relative asset changes folders', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: {} };
 
@@ -774,7 +782,7 @@ describe('assets/data/move', () => {
 
     it('should fall back to the global folder without a public path', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: {} };
 
@@ -806,9 +814,8 @@ describe('assets/data/move', () => {
     });
 
     it('should update stores after moving assets', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
-
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const { assetUpdatesToast } = await import('$lib/services/assets/data');
       const mockAsset1 = { path: 'old1.jpg' };
       const mockAsset2 = { path: 'old2.jpg' };
@@ -859,7 +866,7 @@ describe('assets/data/move', () => {
     });
 
     it('should handle focused asset not in movedAssets', async () => {
-      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const mockAsset = { path: 'different.jpg' };
       const mockMovedAsset = { path: 'moved.jpg' };
       const movedAssets = [{ asset: mockMovedAsset, path: 'new.jpg' }];
@@ -874,9 +881,8 @@ describe('assets/data/move', () => {
     });
 
     it('should handle focused asset found in allAssets', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
-
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const mockMovedAsset = { path: 'old.jpg' };
       const mockNewAsset = { path: 'new.jpg' };
       const movedAssets = [{ asset: mockMovedAsset, path: 'new.jpg' }];
@@ -893,9 +899,8 @@ describe('assets/data/move', () => {
     });
 
     it('should handle focused asset not found in allAssets', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
-
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const mockMovedAsset = { path: 'old.jpg' };
       const movedAssets = [{ asset: mockMovedAsset, path: 'new.jpg' }];
 
@@ -910,9 +915,8 @@ describe('assets/data/move', () => {
     });
 
     it('should handle overlaid asset not found in allAssets', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
-
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const mockMovedAsset = { path: 'old.jpg' };
       const mockFocusedAsset = { path: 'focused.jpg' };
       const movedAssets = [{ asset: mockMovedAsset, path: 'new.jpg' }];
@@ -928,9 +932,8 @@ describe('assets/data/move', () => {
     });
 
     it('should handle overlaid asset found in allAssets', async () => {
-      const { focusedAsset, getAssetByInternalPath, overlaidAsset } =
-        await import('$lib/services/assets');
-
+      const { getAssetByInternalPath } = await import('$lib/services/assets');
+      const { focusedAsset, overlaidAsset } = await import('$lib/services/assets/state');
       const mockMovedAsset = { path: 'old.jpg' };
       const mockNewAsset = { path: 'new.jpg' };
       const movedAssets = [{ asset: mockMovedAsset, path: 'new.jpg' }];
@@ -1007,9 +1010,9 @@ describe('assets/data/move', () => {
       const { getPathInfo } = await import('@sveltia/utils/file');
       const { saveChanges } = await import('$lib/services/backends/save');
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
-      const { getEntriesByAssets } = await import('$lib/services/contents/collection/entries');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
       const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
-      const { getAssociatedCollections } = await import('$lib/services/contents/entry');
+      const { getAssociatedCollections } = await import('$lib/services/contents/entry/collections');
       const { globalAssetFolder } = await import('$lib/services/assets/folders');
       const entry = { id: 'entry1', locales: {} };
 
@@ -1038,6 +1041,30 @@ describe('assets/data/move', () => {
       expect(getAssociatedCollections).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'entry1' }),
       );
+    });
+
+    it('should refuse to move an asset a read-only entry uses', async () => {
+      const { getPathInfo } = await import('@sveltia/utils/file');
+      const { saveChanges } = await import('$lib/services/backends/save');
+      const { getAssetPublicURL } = await import('$lib/services/assets/info');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
+      const { isEntryReadonly } = await import('$lib/services/contents/entry/readonly');
+      const { globalAssetFolder } = await import('$lib/services/assets/folders');
+      const entry = { id: 'entry1', locales: {} };
+      const asset = { path: 'old/a.jpg', sha: 'a', file: new File(['a'], 'a.jpg'), folder: {} };
+
+      globalAssetFolder.current = { publicPath: '/images' };
+      cmsConfig.current = /** @type {any} */ ({});
+      vi.mocked(getPathInfo).mockReturnValue({ basename: 'a.jpg' });
+      vi.mocked(getAssetPublicURL).mockImplementation((_asset) => `/${_asset.path}`);
+      vi.mocked(getEntriesByAssets).mockResolvedValue([[entry]]);
+      vi.mocked(isEntryReadonly).mockReturnValueOnce(true);
+
+      await expect(moveAssets('rename', [{ asset, path: 'old/b.jpg' }])).rejects.toThrow(
+        'cannot_move_referenced_asset',
+      );
+      expect(isEntryReadonly).toHaveBeenCalledWith(entry);
+      expect(saveChanges).not.toHaveBeenCalled();
     });
 
     it('should handle asset with existing file', async () => {

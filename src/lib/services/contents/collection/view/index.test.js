@@ -2,6 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { lockedBranch } from '$lib/services/backends/branch-access';
+import { cmsConfig } from '$lib/services/config/state';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
 import { getCollectionFilesByEntry } from '$lib/services/contents/collection/files';
 import { filterEntries, parseFilterConfig } from '$lib/services/contents/collection/view/filter';
@@ -84,6 +86,10 @@ vi.mock('$lib/services/contents', () => ({
 vi.mock('$lib/services/contents/collection', () => ({
   selectedCollection: _selectedCollection,
   getCollection: vi.fn(),
+}));
+
+vi.mock('$lib/services/contents/collection/predicates', () => ({
+  isArrayFileCollection: vi.fn((collection) => !!collection?._file?.arrayFile),
   // Used by the nested collection helpers, which the entry list runs through
   isEntryCollection: vi.fn(
     (collection) => typeof collection?.folder === 'string' && !Array.isArray(collection?.files),
@@ -1047,6 +1053,7 @@ describe('collection/view/index', () => {
 
       expect(collectionState.current).toEqual({
         isEntryCollection: false,
+        readonly: false,
         canCreate: false,
         canDelete: false,
         canReorder: false,
@@ -1065,6 +1072,7 @@ describe('collection/view/index', () => {
 
       expect(collectionState.current).toEqual({
         isEntryCollection: false,
+        readonly: false,
         canCreate: false,
         canDelete: false,
         canReorder: false,
@@ -1110,6 +1118,21 @@ describe('collection/view/index', () => {
       expect(collectionState.current.canReorder).toBe(true);
     });
 
+    test('allows reordering for a collection storing the entries in one file', async () => {
+      _selectedCollection.current = /** @type {any} */ ({
+        name: 'members',
+        _type: 'entry',
+        _file: { arrayFile: true },
+      });
+      await wait();
+
+      vi.mocked(getEntriesByCollection).mockReturnValue([]);
+      _allEntries.current = [];
+      await wait();
+
+      expect(collectionState.current.canReorder).toBe(true);
+    });
+
     test('blocks reordering for an Open Authoring contributor', async () => {
       _selectedCollection.current = /** @type {any} */ ({
         name: 'posts',
@@ -1127,6 +1150,67 @@ describe('collection/view/index', () => {
       expect(collectionState.current.canReorder).toBe(false);
 
       forkedRepository.current = undefined;
+    });
+
+    test('blocks reordering when the user can’t push to the branch', async () => {
+      _selectedCollection.current = /** @type {any} */ ({
+        name: 'posts',
+        _type: 'entry',
+        reorder: true,
+        publish_mode: 'editorial_workflow',
+      });
+      await wait();
+
+      vi.mocked(getEntriesByCollection).mockReturnValue([]);
+      _allEntries.current = [];
+      await wait();
+      lockedBranch.current = 'main';
+
+      // The collection itself isn’t read-only, as it goes through Editorial Workflow, but
+      // reordering commits straight to the configured branch
+      expect(collectionState.current.canCreate).toBe(true);
+      expect(collectionState.current.canReorder).toBe(false);
+
+      lockedBranch.current = undefined;
+    });
+
+    test('blocks creating, deleting and reordering in a read-only collection', async () => {
+      _selectedCollection.current = /** @type {any} */ ({
+        name: 'posts',
+        _type: 'entry',
+        reorder: true,
+        readonly: true,
+      });
+      await wait();
+
+      vi.mocked(getEntriesByCollection).mockReturnValue([]);
+      _allEntries.current = [];
+      await wait();
+
+      const state = collectionState.current;
+
+      expect(state.readonly).toBe(true);
+      // `canCreate` still reflects the `create` option, while `creationDisabled` has the final say
+      expect(state.canCreate).toBe(true);
+      expect(state.creationDisabled).toBe(true);
+      expect(state.canDelete).toBe(false);
+      expect(state.canReorder).toBe(false);
+    });
+
+    test('treats every collection as read-only when the whole CMS is', async () => {
+      cmsConfig.current = /** @type {any} */ ({ readonly: true });
+      _selectedCollection.current = /** @type {any} */ ({ name: 'pages', _type: 'file' });
+      await wait();
+
+      expect(collectionState.current.readonly).toBe(true);
+
+      _selectedCollection.current = /** @type {any} */ ({ name: 'posts', _type: 'entry' });
+      await wait();
+
+      expect(collectionState.current.readonly).toBe(true);
+      expect(collectionState.current.creationDisabled).toBe(true);
+
+      cmsConfig.current = undefined;
     });
 
     test('defaults canCreate and canDelete to true when not set', async () => {
@@ -1281,6 +1365,25 @@ describe('collection/view/index', () => {
       await wait();
 
       expect(collectionState.current.creationDisabled).toBe(true);
+    });
+
+    test('canCreate is false when limit is 0', async () => {
+      const mockEntries = /** @type {any[]} */ ([{ id: '1', slug: 'a' }]);
+
+      vi.mocked(getEntriesByCollection).mockReturnValue(mockEntries);
+      _allEntries.current = mockEntries;
+      await wait();
+      _selectedCollection.current = /** @type {any} */ ({
+        name: 'posts',
+        _type: 'entry',
+        limit: 0,
+      });
+      await wait();
+
+      const state = collectionState.current;
+
+      expect(state.canCreate).toBe(false);
+      expect(state.creationDisabled).toBe(true);
     });
 
     test('creationDisabled is true when remaining is exactly 0 (quota reached)', async () => {

@@ -1,8 +1,8 @@
 import { getPathInfo } from '@sveltia/utils/file';
 import { stripSlashes } from '@sveltia/utils/string';
 
-import { isEntryCollection } from '$lib/services/contents/collection';
-import { EXTENSION_FORMAT_MAP, MARKDOWN_EXTENSIONS } from '$lib/services/contents/file';
+import { isEntryCollection } from '$lib/services/contents/collection/predicates';
+import { EXTENSION_FORMAT_MAP, MARKDOWN_EXTENSIONS } from '$lib/services/contents/file/constants';
 import { createRawState } from '$lib/services/utils/state.svelte';
 
 /**

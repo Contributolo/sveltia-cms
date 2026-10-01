@@ -1,3 +1,4 @@
+import { lockedBranch, mergeLockedBranch } from '$lib/services/backends/branch-access';
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
 import {
   createLocalizedError,
@@ -7,6 +8,8 @@ import {
   applyDefaultBranch,
   REPOSITORY_INFO_PLACEHOLDER,
 } from '$lib/services/backends/git/shared/repository';
+import { encodePath } from '$lib/services/backends/git/shared/url';
+import { user } from '$lib/services/user/account.svelte';
 
 /**
  * @import { RepositoryBaseURLs, RepositoryInfo } from '$lib/types/private';
@@ -19,8 +22,9 @@ import {
 export const repository = { ...REPOSITORY_INFO_PLACEHOLDER };
 
 /**
- * Cache for repository information to avoid multiple API calls.
- * @type {Record<string, any> | null}
+ * Cache for repository information to avoid multiple API calls. The information includes the
+ * signed-in user’s permissions, so it’s kept along with the ID of the user it was fetched for.
+ * @type {{ userId: number | undefined, info: Record<string, any> } | null}
  */
 let repositoryInfoCache = null;
 
@@ -52,17 +56,24 @@ export const getBaseURLs = (repoURL, branch) => ({
  */
 export const getRepositoryInfo = async () => {
   const { owner, repo } = repository;
+  const userId = user.account?.id;
 
-  repositoryInfoCache ??= await /** @type {Promise<Record<string, any>>} */ (
-    fetchAPI(`/repos/${owner}/${repo}`)
-  );
+  // Another user may have signed in on the same page, e.g. after a read-only account was refused,
+  // and their permissions are not the previous user’s
+  if (repositoryInfoCache && repositoryInfoCache.userId === userId) {
+    return repositoryInfoCache.info;
+  }
 
-  return repositoryInfoCache;
+  const info = /** @type {Record<string, any>} */ (await fetchAPI(`/repos/${owner}/${repo}`));
+
+  repositoryInfoCache = { userId, info };
+
+  return info;
 };
 
 /**
- * Check if the user has access to the current repository.
- * @throws {Error} If the user is not a collaborator of the repository.
+ * Check if the user has write access to the current repository, like Netlify/Decap CMS requires.
+ * @throws {Error} If the user can’t push to the repository.
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGet
  */
 export const checkRepositoryAccess = async () => {
@@ -71,7 +82,7 @@ export const checkRepositoryAccess = async () => {
   try {
     const { permissions } = await getRepositoryInfo();
 
-    if (!permissions?.pull) {
+    if (!permissions?.push) {
       throw createLocalizedError(NOT_COLLABORATOR_ERROR_MESSAGE, 'repository_no_access', { repo });
     }
   } catch (error) {
@@ -83,6 +94,36 @@ export const checkRepositoryAccess = async () => {
       repo,
     });
   }
+};
+
+/**
+ * Check if the user can push to and merge into the configured branch, and record it in
+ * {@link lockedBranch} and {@link mergeLockedBranch}. Write access is enough to sign in, but a
+ * protected branch may only allow some users to push or merge, in which case everything that would
+ * fail is made read-only or hidden up front. A failed request leaves the branch writable, as
+ * Gitea/Forgejo still refuses a push or merge the user isn’t allowed to make.
+ * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGetBranch
+ */
+export const checkBranchAccess = async () => {
+  const { owner, repo, branch } = repository;
+  let canPush = true;
+  let canMerge = true;
+
+  if (branch) {
+    try {
+      const result = /** @type {{ user_can_push?: boolean, user_can_merge?: boolean }} */ (
+        await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePath(branch)}`)
+      );
+
+      canPush = result.user_can_push !== false;
+      canMerge = result.user_can_merge !== false;
+    } catch {
+      // Keep the branch writable, as said above
+    }
+  }
+
+  lockedBranch.current = canPush ? undefined : branch;
+  mergeLockedBranch.current = canMerge ? undefined : branch;
 };
 
 /**

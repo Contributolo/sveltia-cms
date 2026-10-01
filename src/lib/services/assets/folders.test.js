@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { customComponentRegistry } from '$lib/services/api/registries';
+import { lockedBranch } from '$lib/services/backends/branch-access';
+import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
 import {
   allAssetFolders,
+  assetsLocked,
   canCreateAsset,
   getAssetFolder,
   getAssetFoldersByPath,
   globalAssetFolder,
+  hasReadonlyAsset,
   selectedAssetFolder,
   targetAssetFolder,
 } from './folders';
@@ -292,6 +296,28 @@ describe('assets/folders', () => {
       } finally {
         customComponentRegistry.delete('custom-editor');
       }
+    });
+
+    it('should match the collection when the component name and index file flag are undefined', () => {
+      const pagesFolder = {
+        collectionName: 'pages',
+        fileName: undefined,
+        typedKeyPath: 'gallery',
+        isIndexFile: false,
+        internalPath: 'content/pages/gallery',
+        publicPath: '/pages/gallery',
+        entryRelative: false,
+        hasTemplateTags: false,
+      };
+
+      allAssetFolders.current = [...allAssetFolders.current, pagesFolder];
+
+      // `getAssetLibraryFolderMap()` passes every key, with or without a value
+      const cond = { componentName: undefined, typedKeyPath: 'gallery', isIndexFile: undefined };
+
+      expect(getAssetFolder({ ...cond, collectionName: 'pages' })).toEqual(pagesFolder);
+      expect(getAssetFolder({ ...cond, collectionName: 'posts' })?.collectionName).toBe('posts');
+      expect(getAssetFolder({ ...cond, collectionName: 'blog' })).toBeUndefined();
     });
 
     it('should normalize typed key paths before matching', () => {
@@ -1980,6 +2006,42 @@ describe('assets/folders', () => {
     });
   });
 
+  describe('assetsLocked', () => {
+    afterEach(() => {
+      forkedRepository.current = undefined;
+      lockedBranch.current = undefined;
+    });
+
+    it('should be false when the user can change the media library', () => {
+      expect(assetsLocked.current).toBe(false);
+    });
+
+    it('should be true for an Open Authoring contributor', () => {
+      forkedRepository.current = { owner: 'mona', repo: 'site' };
+
+      expect(assetsLocked.current).toBe(true);
+    });
+
+    it('should be true when the user can’t push to the branch', () => {
+      lockedBranch.current = 'main';
+
+      expect(assetsLocked.current).toBe(true);
+    });
+  });
+
+  describe('hasReadonlyAsset', () => {
+    it('should tell whether any asset is in a read-only folder', () => {
+      const editable = { path: 'a.png', folder: { internalPath: 'images' } };
+      const readonly = { path: 'b.png', folder: { internalPath: 'logos', readonly: true } };
+
+      expect(hasReadonlyAsset([])).toBe(false);
+      expect(hasReadonlyAsset([/** @type {any} */ (editable)])).toBe(false);
+      expect(hasReadonlyAsset([/** @type {any} */ (editable), /** @type {any} */ (readonly)])).toBe(
+        true,
+      );
+    });
+  });
+
   describe('canCreateAsset', () => {
     it('should return true for valid folder', () => {
       const folder = {
@@ -1995,6 +2057,19 @@ describe('assets/folders', () => {
 
     it('should return false when folder is undefined', () => {
       expect(canCreateAsset(undefined)).toBe(false);
+    });
+
+    it('should return false when the folder is read-only', () => {
+      const folder = {
+        collectionName: 'posts',
+        internalPath: 'content/posts/images',
+        publicPath: '/images',
+        entryRelative: false,
+        hasTemplateTags: false,
+        readonly: true,
+      };
+
+      expect(canCreateAsset(folder)).toBe(false);
     });
 
     it('should return false when entryRelative is true', () => {

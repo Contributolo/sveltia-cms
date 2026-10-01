@@ -335,8 +335,10 @@ const generateSchema = async () => {
   });
 
   const schemaString = JSON.stringify(schema)
-    // Remove unnecessary escaped line breaks in `markdownDescription` originally present in JSDoc
-    .replace(/\\n/g, ' ')
+    // Remove unnecessary escaped line breaks in `markdownDescription` originally present in JSDoc,
+    // leaving a literal `\n` written in the description alone: it’s encoded as an escaped backslash
+    // followed by `n`, which would otherwise lose the `n` and leave a bad escape sequence behind
+    .replace(/(?<!\\)((?:\\\\)*)\\n/g, '$1 ')
     // Use the proper boolean `deprecated` property instead of a string and append a separate
     // message property. `deprecationMessage` is a VS Code schema extension
     .replace(/"deprecated":"(.+?)"/g, '"deprecated":true,"deprecationMessage":"$1"');
@@ -373,6 +375,8 @@ const RESOLVED_REACT_SHIM_MODULE_ID = `\0${REACT_SHIM_MODULE_ID}`;
  */
 const shimReact = () => ({
   name: 'shim-react',
+  // Run before Vite’s own resolver, which would otherwise resolve the package to its files
+  enforce: 'pre',
   // eslint-disable-next-line jsdoc/require-jsdoc
   resolveId: (id) => (id === 'react' ? RESOLVED_REACT_SHIM_MODULE_ID : null),
   // eslint-disable-next-line jsdoc/require-jsdoc

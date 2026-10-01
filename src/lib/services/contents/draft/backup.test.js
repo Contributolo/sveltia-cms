@@ -445,6 +445,7 @@ describe('draft/backup', () => {
        */
       const proxify = (value) => new Proxy(value, {});
       const file = new File(['x'], 'image.png', { type: 'image/png' });
+      const randomValues = new Map([['undefined:uuid_short', 'abc123']]);
 
       const draft = proxify({
         collectionName: 'posts',
@@ -458,6 +459,17 @@ describe('draft/backup', () => {
             file,
             folder: proxify({ internalPath: 'img' }),
             replace: false,
+            subfolderPath: 'products',
+          }),
+          'blob:http://localhost/def': proxify({
+            file,
+            folder: undefined,
+            replace: false,
+            nameTemplate: proxify({
+              template: '{{slug}}-{{uuid_short}}',
+              randomValues,
+              dateTimeParts: proxify({ year: '2026' }),
+            }),
           }),
         }),
         interacted: true,
@@ -486,7 +498,23 @@ describe('draft/backup', () => {
         file,
         folder: { internalPath: 'img' },
         replace: false,
+        // Picked while browsing a subfolder in the asset picker, so it’s saved there on restore
+        subfolderPath: 'products',
       });
+      // The file name template is kept, along with its random values in a `Map`
+      expect(backup.files['blob:http://localhost/def']).toEqual({
+        file,
+        folder: undefined,
+        replace: false,
+        nameTemplate: {
+          template: '{{slug}}-{{uuid_short}}',
+          randomValues: new Map([['undefined:uuid_short', 'abc123']]),
+          dateTimeParts: { year: '2026' },
+        },
+      });
+      expect(backup.files['blob:http://localhost/def'].nameTemplate.randomValues).not.toBe(
+        randomValues,
+      );
     });
 
     it('should keep a file without a folder as is', async () => {
@@ -533,6 +561,48 @@ describe('draft/backup', () => {
         currentValues: { en: { title: 'My Post' } },
         files: {},
         interacted,
+      };
+
+      await saveBackup(draft);
+
+      expect(mockBackupDB.put).not.toHaveBeenCalled();
+    });
+
+    it('should not save backup for a read-only entry', async () => {
+      mockPrefs.useDraftBackup = true;
+      vi.mocked(isDraftModified).mockReturnValue(true);
+
+      const draft = {
+        collection: { name: 'posts', readonly: true },
+        collectionName: 'posts',
+        fileName: undefined,
+        originalEntry: { slug: 'my-post' },
+        currentLocales: { en: true },
+        currentSlugs: { en: 'my-post' },
+        currentValues: { en: { title: 'My Post' } },
+        files: {},
+        interacted: true,
+      };
+
+      await saveBackup(draft);
+
+      expect(mockBackupDB.put).not.toHaveBeenCalled();
+    });
+
+    it('should not save backup for an entry stored in a file with the other entries', async () => {
+      mockPrefs.useDraftBackup = true;
+      vi.mocked(isDraftModified).mockReturnValue(true);
+
+      // The slug is the position in the array, which another entry can take after a reorder
+      const draft = {
+        collectionName: 'members',
+        fileName: undefined,
+        originalEntry: { slug: '2', arrayIndex: 2 },
+        currentLocales: { _default: true },
+        currentSlugs: { _default: '2' },
+        currentValues: { _default: { name: 'Bob' } },
+        files: {},
+        interacted: true,
       };
 
       await saveBackup(draft);
@@ -1079,6 +1149,26 @@ describe('draft/backup', () => {
       mockPrefs.useDraftBackup = false;
 
       await restoreBackupIfNeeded({ draft: createRestoreDraft() });
+
+      expect(mockBackupDB.get).not.toHaveBeenCalled();
+    });
+
+    it('should leave the backup alone for a read-only entry', async () => {
+      mockPrefs.useDraftBackup = true;
+
+      await restoreBackupIfNeeded({
+        draft: createRestoreDraft({ collection: { name: 'posts', readonly: true } }),
+      });
+
+      expect(mockBackupDB.get).not.toHaveBeenCalled();
+    });
+
+    it('should not restore to an entry stored in a file with the other entries', async () => {
+      mockPrefs.useDraftBackup = true;
+
+      await restoreBackupIfNeeded({
+        draft: createRestoreDraft({ originalEntry: { slug: '2', arrayIndex: 2 } }),
+      });
 
       expect(mockBackupDB.get).not.toHaveBeenCalled();
     });

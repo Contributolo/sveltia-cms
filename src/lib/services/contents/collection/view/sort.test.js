@@ -20,6 +20,9 @@ vi.mock('$lib/services/contents/collection/view/sort-keys', () => ({
 
 vi.mock('$lib/services/contents/entry/fields', () => ({
   getField: vi.fn(),
+}));
+
+vi.mock('$lib/services/contents/entry/values', () => ({
   getPropertyValue: vi.fn(),
 }));
 
@@ -27,7 +30,7 @@ vi.mock('$lib/services/contents/entry/summary', () => ({
   getEntrySummary: vi.fn(),
 }));
 
-vi.mock('$lib/services/contents/fields/date-time/helpers', () => ({
+vi.mock('$lib/services/contents/fields/date-time/parse', () => ({
   getDate: vi.fn(),
 }));
 
@@ -39,9 +42,10 @@ const { getIndexFile, isCollectionIndexFile } =
   await import('$lib/services/contents/collection/entries/index-file');
 
 const { getSortKeyType } = await import('$lib/services/contents/collection/view/sort-keys');
-const { getField, getPropertyValue } = await import('$lib/services/contents/entry/fields');
+const { getField } = await import('$lib/services/contents/entry/fields');
+const { getPropertyValue } = await import('$lib/services/contents/entry/values');
 const { getEntrySummary } = await import('$lib/services/contents/entry/summary');
-const { getDate } = await import('$lib/services/contents/fields/date-time/helpers');
+const { getDate } = await import('$lib/services/contents/fields/date-time/parse');
 const { removeMarkdownSyntax } = await import('$lib/services/utils/markdown');
 
 describe('MARKDOWN_FIELD_KEYS', () => {
@@ -1471,6 +1475,26 @@ describe('getSortKeyGetter', () => {
       locale: 'en',
       useTemplate: true,
     });
+  });
+
+  test('should return the position in the array for the _manual key of an array file collection', () => {
+    const getter = getSortKeyGetter({
+      key: '_manual',
+      type: Number,
+      collection: {
+        ...mockCollection,
+        _type: 'entry',
+        _file: { ...mockCollection._file, format: 'json', arrayFile: true },
+      },
+      locale: 'en',
+      collectionName: 'posts',
+      dateFieldConfig: undefined,
+      isMarkdownField: false,
+    });
+
+    expect(getter({ ...mockEntry, arrayIndex: 3 })).toBe(3);
+    expect(getter(mockEntry)).toBe(0);
+    expect(vi.mocked(getPropertyValue)).not.toHaveBeenCalled();
   });
 
   test('should return a numeric timestamp for a datetime field', () => {

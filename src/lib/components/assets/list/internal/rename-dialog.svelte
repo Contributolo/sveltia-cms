@@ -1,11 +1,14 @@
 <script>
+  import { _ } from '@sveltia/i18n';
   import { getPathInfo } from '@sveltia/utils/file';
 
   import RenameDialog from '$lib/components/assets/list/rename-dialog.svelte';
   import { goto, parseLocation } from '$lib/services/app/navigation';
-  import { getAssetsByDirName, renamingAsset } from '$lib/services/assets';
+  import { getAssetsByDirName } from '$lib/services/assets';
   import { moveAssets } from '$lib/services/assets/data/move';
   import { getAssetUsedEntries } from '$lib/services/assets/details';
+  import { renamingAsset } from '$lib/services/assets/state';
+  import { getReadonlyEntryLabel, isEntryReadonly } from '$lib/services/contents/entry/readonly';
 
   /**
    * @import { Entry } from '$lib/types/private';
@@ -16,6 +19,18 @@
   let usedEntries = $state([]);
 
   const asset = $derived(renamingAsset.current);
+  // A read-only entry using the asset can’t be updated along with the rename, so the rename is
+  // refused up front rather than when it’s about to be committed
+  const readonlyEntries = $derived(usedEntries.filter((entry) => isEntryReadonly(entry)));
+  const blockedMessage = $derived(
+    readonlyEntries.length
+      ? _('cannot_move_referenced_asset', {
+          values: {
+            entries: readonlyEntries.map((entry) => getReadonlyEntryLabel(entry)).join(', '),
+          },
+        })
+      : undefined,
+  );
   const { dirname = '', basename = '' } = $derived(getPathInfo(asset?.path ?? ''));
   const otherNames = $derived(
     asset
@@ -61,6 +76,7 @@
   name={basename}
   {otherNames}
   usedEntryCount={usedEntries.length}
+  {blockedMessage}
   onRename={renameAsset}
   onClose={() => {
     renamingAsset.current = undefined;

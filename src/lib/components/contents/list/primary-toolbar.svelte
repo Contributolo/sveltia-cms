@@ -14,6 +14,7 @@
   import DeleteEntriesDialog from '$lib/components/contents/shared/delete-entries-dialog.svelte';
   import CreateEntryButton from '$lib/components/contents/toolbar/create-entry-button.svelte';
   import { goBack } from '$lib/services/app/navigation';
+  import { getReadonlyMessage } from '$lib/services/config/readonly';
   import { getCollectionLabel, selectedCollection } from '$lib/services/contents/collection';
   import { selectedEntries } from '$lib/services/contents/collection/entries';
   import {
@@ -41,6 +42,7 @@
   const description = $derived(selectedCollection.current?.description);
   const {
     isEntryCollection,
+    readonly,
     canCreate,
     canDelete,
     canReorder,
@@ -58,6 +60,30 @@
 </script>
 
 {#if selectedCollection.current}
+  {#if readonly}
+    <Infobar
+      dismissible={false}
+      --sui-infobar-border-width="0 0 1px"
+      --sui-infobar-message-justify-content="center"
+    >
+      {getReadonlyMessage('collection', { collection: selectedCollection.current })}
+    </Infobar>
+  {:else if isEntryCollection && (creationDisabled || nearingQuota)}
+    <!-- Only when not read-only, as the read-only message already says nothing can be created -->
+    <Infobar
+      dismissible={false}
+      --sui-infobar-border-width="0 0 1px"
+      --sui-infobar-message-justify-content="center"
+    >
+      {#if !canCreate}
+        {_('creating_entries_disabled_by_admin')}
+      {:else if creationDisabled}
+        {_('creating_entries_disabled_by_quota', { values: { quota } })}
+      {:else}
+        {_('creating_entries_nearing_quota', { values: { quota, remaining } })}
+      {/if}
+    </Infobar>
+  {/if}
   <Toolbar variant="primary" ariaLabel={_('collection')}>
     {#if env.isSmallScreen}
       <BackButton
@@ -117,21 +143,6 @@
       </FloatingActionButtonWrapper>
     {/if}
   </Toolbar>
-  {#if isEntryCollection && (creationDisabled || nearingQuota)}
-    <Infobar
-      dismissible={false}
-      --sui-infobar-border-width="1px 0"
-      --sui-infobar-message-justify-content="center"
-    >
-      {#if !canCreate}
-        {_('creating_entries_disabled_by_admin')}
-      {:else if creationDisabled}
-        {_('creating_entries_disabled_by_quota', { values: { quota } })}
-      {:else}
-        {_('creating_entries_nearing_quota', { values: { quota, remaining } })}
-      {/if}
-    </Infobar>
-  {/if}
 {/if}
 
 <DeleteEntriesDialog bind:open={showDeleteDialog} />

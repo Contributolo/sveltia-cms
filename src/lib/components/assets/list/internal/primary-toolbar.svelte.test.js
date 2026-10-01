@@ -3,10 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vit
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
-import { focusedAsset, selectedAssets } from '$lib/services/assets';
 import { deleteAssets } from '$lib/services/assets/data/delete';
 import { globalAssetFolder, selectedAssetFolder } from '$lib/services/assets/folders';
+import { focusedAsset, selectedAssets } from '$lib/services/assets/state';
 import { selectedSubfolderPath } from '$lib/services/assets/subfolders';
+import { lockedBranch } from '$lib/services/backends/branch-access';
 import { env } from '$lib/services/user/env.svelte';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 import { createMockAsset, createMockImageFile, initTestConfig, setAssets } from '$lib/test/config';
@@ -34,6 +35,7 @@ describe('PrimaryToolbar', () => {
     selectedAssetFolder.current = undefined;
     selectedSubfolderPath.current = '';
     forkedRepository.current = undefined;
+    lockedBranch.current = undefined;
     focusedAsset.current = undefined;
     selectedAssets.current = [];
   });
@@ -121,6 +123,58 @@ describe('PrimaryToolbar', () => {
       .element(page.getByRole('button', { name: 'Delete Selected Asset' }))
       .toBeDisabled();
     await expect.element(page.getByRole('button', { name: 'Copy' })).toBeEnabled();
+  });
+
+  test('explains a read-only folder, and disables uploading and deleting', async () => {
+    selectedAssetFolder.current = /** @type {any} */ ({
+      collectionName: undefined,
+      internalPath: 'static/uploads',
+      publicPath: '/uploads',
+      entryRelative: false,
+      hasTemplateTags: false,
+      readonly: true,
+    });
+    // The asset is in the folder it was listed with
+    firstAsset.folder.readonly = true;
+
+    try {
+      await render(PrimaryToolbar);
+      focusedAsset.current = firstAsset;
+
+      await expect
+        .element(page.getByRole('status'))
+        .toHaveTextContent(
+          'info Information This folder is read-only. You can view its assets but cannot make ' +
+            'any changes.',
+        );
+      await expect.element(page.getByRole('button', { name: 'Upload New Assets' })).toBeDisabled();
+      await expect.element(page.getByRole('button', { name: 'Copy' })).toBeEnabled();
+      await expect
+        .element(page.getByRole('button', { name: 'Delete Selected Asset' }))
+        .toBeDisabled();
+    } finally {
+      delete firstAsset.folder.readonly;
+    }
+  });
+
+  test('explains a branch the user can’t push to, and disables uploading and deleting', async () => {
+    selectedAssetFolder.current = globalAssetFolder.current;
+    lockedBranch.current = 'main';
+
+    await render(PrimaryToolbar);
+    focusedAsset.current = firstAsset;
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent(
+        'info Information You don’t have permission to push to the “\u2068main\u2069” branch. ' +
+          'You can view this content but cannot make any changes.',
+      );
+    await expect.element(page.getByRole('button', { name: 'Upload New Assets' })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Copy' })).toBeEnabled();
+    await expect
+      .element(page.getByRole('button', { name: 'Delete Selected Asset' }))
+      .toBeDisabled();
   });
 
   test('hides the upload button on a small screen while contributing via a fork', async () => {

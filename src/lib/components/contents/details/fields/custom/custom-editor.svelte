@@ -41,6 +41,7 @@
   import { getContext, onMount } from 'svelte';
 
   import AssetPicker from '$lib/components/contents/details/fields/custom/asset-picker.svelte';
+  import { assetURLUpdates } from '$lib/services/api/asset-proxy';
   import { fieldStateContext } from '$lib/services/api/field-state';
   import { immutableLoaded, loadImmutable } from '$lib/services/api/immutable';
   import { getReactDom, loadReactDom, reactDomLoaded } from '$lib/services/api/react-dom';
@@ -105,8 +106,12 @@
   let container = $state();
   /** @type {Root | undefined} */
   let reactRoot = $state();
-  /** @type {any | undefined} */
-  let componentInstance = $state();
+  /**
+   * Control instance, or the handle a function control exposes with `useImperativeHandle()`. Not
+   * proxied, as it belongs to React.
+   * @type {any | undefined}
+   */
+  let componentInstance = $state.raw();
   /** @type {AssetPicker | undefined} */
   let assetPicker = $state();
   /**
@@ -258,15 +263,24 @@
     // through a cache shared between controls when the props are built, so they have to be tracked
     // here
     void getValueMapSnapshot(entryDraft.current, locale, valueStoreKey);
+    // Render again once an asset the control got with `getAsset()` has a blob URL
+    void assetURLUpdates.current;
 
     // Render the component once the container and the library are ready, and update it when
     // currentValue changes externally (e.g., via revert or copy)
     if (immutableLoaded.current && reactDomLoaded.current && container && resolvedControl) {
       renderComponent();
     }
+  });
 
-    // Trigger async validation when value changes (if the component has `isValid` method). The
-    // result is cached; `awaitCustomFieldValidations()` lets a save attempt wait for it.
+  // Trigger async validation when any field in the locale changes (if the component has `isValid`
+  // method), as the method can check the value against other fields. The result is cached;
+  // `awaitCustomFieldValidations()` lets a save attempt wait for it. This is a separate effect, so
+  // that a function control exposing a new handle on every render doesn’t make the control render
+  // again and again
+  $effect(() => {
+    void getValueMapSnapshot(entryDraft.current, locale, valueStoreKey);
+
     if (typeof componentInstance?.isValid === 'function') {
       triggerCustomFieldValidation({ locale, keyPath, value: currentValue, fieldConfig });
     }

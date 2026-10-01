@@ -2,17 +2,16 @@ import { unique } from '@sveltia/utils/array';
 import { getPathInfo } from '@sveltia/utils/file';
 import { escapeRegExp } from '@sveltia/utils/string';
 
-import { allAssets, getAssetByPath, isRelativePath } from '$lib/services/assets';
+import { getAssetByPath, isRelativePath } from '$lib/services/assets';
 import { getAssetFolder, getAssetFoldersByPath } from '$lib/services/assets/folders';
-import {
-  getMediaFieldSource,
-  getMediaFieldURL,
-  revokeBlobURLIfNeeded,
-} from '$lib/services/assets/info';
+import { revokeBlobURLIfNeeded } from '$lib/services/assets/info';
 import { canCreateThumbnail } from '$lib/services/assets/kinds';
+import { getMediaFieldSource, getMediaFieldURL } from '$lib/services/assets/media-field';
+import { allAssets } from '$lib/services/assets/state';
 import { getCollection } from '$lib/services/contents/collection';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
+import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
 import { fillEntryPathTemplate } from '$lib/services/contents/entry';
 import { getField } from '$lib/services/contents/entry/fields';
 import { MEDIA_FIELD_TYPES } from '$lib/services/contents/fields';
@@ -406,8 +405,11 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
  * @param {string} args.collectionName Name of a collection that the entry belongs to.
  * @param {string} [args.fileName] Collection file name. File/singleton collection only.
  * @returns {Asset[]} Assets, or an empty list unless the collection stores them with the entry.
+ * The entries of a collection storing all of them in one file share the folder of the file, and an
+ * asset there can be used by any of them, so none of the assets belongs to one entry alone.
  */
 export const getEntryRelativeAssets = ({ entry, collectionName, fileName }) =>
-  getAssetFolder({ collectionName, fileName })?.entryRelative
+  getAssetFolder({ collectionName, fileName })?.entryRelative &&
+  !isArrayFileCollection(getCollection(collectionName))
     ? getAssociatedAssets({ entry, collectionName, fileName, relative: true })
     : [];

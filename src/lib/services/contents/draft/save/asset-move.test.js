@@ -2,9 +2,9 @@
 
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { allAssets } from '$lib/services/assets';
 import { getAssetFolder } from '$lib/services/assets/folders';
 import { getAssetBlob } from '$lib/services/assets/info';
+import { allAssets } from '$lib/services/assets/state';
 import { buildEntryAssetMoveChanges } from '$lib/services/contents/draft/save/asset-move';
 
 vi.mock('$lib/services/assets', () => ({ allAssets: { current: undefined } }));
@@ -193,6 +193,7 @@ describe('buildEntryAssetMoveChanges()', () => {
       collection: {
         ...collection,
         folder: 'content/pages',
+        fields: [],
         nested: { subfolders: true },
         meta: { path: { index_file: '_index' } },
         _file: { subPath: undefined },

@@ -1,5 +1,6 @@
 <script>
   import { _, locale as appLocale } from '@sveltia/i18n';
+  import { Infobar } from '@sveltia/ui';
 
   import DeleteAssetsButton from '$lib/components/assets/list/delete-assets-button.svelte';
   import DownloadAssetsButton from '$lib/components/assets/list/download-assets-button.svelte';
@@ -10,21 +11,24 @@
   import PreviewAssetButton from '$lib/components/assets/list/preview-asset-button.svelte';
   import PrimaryToolbar from '$lib/components/assets/list/primary-toolbar.svelte';
   import { goBack, goto } from '$lib/services/app/navigation';
-  import { focusedAsset, selectedOrFocusedAssets } from '$lib/services/assets';
   import { planAssetDeletion } from '$lib/services/assets/data/cascade';
   import { deleteAssets } from '$lib/services/assets/data/delete';
   import {
+    assetsLocked,
     canCreateAsset,
+    hasReadonlyAsset,
     selectedAssetFolder,
     targetAssetFolder,
   } from '$lib/services/assets/folders';
   import { getAssetBlob } from '$lib/services/assets/info';
   import { canPreviewAsset } from '$lib/services/assets/kinds';
+  import { focusedAsset, selectedOrFocusedAssets } from '$lib/services/assets/state';
   import { selectedSubfolderPath } from '$lib/services/assets/subfolders';
   import { getFolderLabelByCollection, listedAssets } from '$lib/services/assets/view';
+  import { lockedBranch } from '$lib/services/backends/branch-access';
+  import { getReadonlyMessage } from '$lib/services/config/readonly';
   import { env } from '$lib/services/user/env.svelte';
   import { createPath } from '$lib/services/utils/file';
-  import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
   const folder = $derived(selectedAssetFolder.current);
   // `appLocale.current` is a key, because `getFolderLabelByCollection` can return a localized label
@@ -38,12 +42,16 @@
   const asset = $derived(focusedAsset.current);
 
   const assets = $derived(selectedOrFocusedAssets.current);
+  // The folder is read-only with the `readonly` option, or all the assets are because the user
+  // can’t push to the configured branch
+  const readonly = $derived(!!folder?.readonly || !!lockedBranch.current);
 
   // Uploading to the media library commits straight to the configured branch rather than going
-  // through review, so it’s not something an Open Authoring contributor can do. An asset attached
-  // to an entry is committed with that entry, so it’s unaffected
+  // through review, so it’s not something an Open Authoring contributor or a user who can’t push to
+  // the branch can do. An asset attached to an entry is committed with that entry, so it’s
+  // unaffected
   const uploadDisabled = $derived(
-    openAuthoring.current || !canCreateAsset(targetAssetFolder.current),
+    assetsLocked.current || !canCreateAsset(targetAssetFolder.current),
   );
 
   /**
@@ -66,6 +74,15 @@
   };
 </script>
 
+{#if readonly}
+  <Infobar
+    dismissible={false}
+    --sui-infobar-border-width="0 0 1px"
+    --sui-infobar-message-justify-content="center"
+  >
+    {getReadonlyMessage('asset_folder', { folder })}
+  </Infobar>
+{/if}
 <PrimaryToolbar rootLabel={folderLabel} {subfolderNames} onBrowse={browseAncestor}>
   {#snippet actions()}
     <PreviewAssetButton
@@ -76,11 +93,12 @@
     <DownloadAssetsButton {assets} getName={(a) => a.name} getBlob={getAssetBlob} />
     <!--
         Deleting a file from the media library commits straight to the configured branch rather
-        than going through review, so it’s not something an Open Authoring contributor can do
+        than going through review, so it’s not something an Open Authoring contributor or a user
+        who can’t push to the branch can do
       -->
     <DeleteAssetsButton
       {assets}
-      disabled={openAuthoring.current}
+      disabled={assetsLocked.current || hasReadonlyAsset(assets)}
       deleteAssets={(_assets) => {
         // Don’t wait for the commit; the list is updated optimistically
         deleteAssets(_assets);

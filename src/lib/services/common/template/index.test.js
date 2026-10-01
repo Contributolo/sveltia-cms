@@ -5,7 +5,7 @@ import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
 
 import { processNestedTemplates } from './nested';
 
-import { fillTemplate, hasTemplateTags } from '.';
+import { fillTemplate } from '.';
 
 /**
  * @import { InternalEntryCollection, InternalFileCollection } from '$lib/types/private';
@@ -178,6 +178,24 @@ describe('fillTemplate()', async () => {
 
     expect(fillTemplate('{{title}}', { collection, content: {} })).toMatch(/[0-9a-f]{12}/);
     expect(fillTemplate('{{name}}', { collection, content: {} })).toMatch(/[0-9a-f]{12}/);
+  });
+
+  test('look up the field config of a `fields.`-prefixed tag for a filter', async () => {
+    await setupCmsConfig();
+
+    const { getField } = await import('$lib/services/contents/entry/fields');
+
+    vi.mocked(getField).mockClear();
+
+    expect(
+      fillTemplate("{{fields.published | date('YYYY-MM-DD')}}", {
+        collection,
+        content: { published: '2024-01-23' },
+      }),
+    ).toEqual('2024-01-23');
+
+    // The prefix must be stripped, or the field’s options such as `picker_utc` would be lost
+    expect(getField).toHaveBeenCalledWith(expect.objectContaining({ keyPath: 'published' }));
   });
 
   test('apply filter', async () => {
@@ -622,6 +640,64 @@ describe('fillTemplate()', async () => {
 
     expect(result.length).toBeLessThanOrEqual(30);
     expect(result).not.toMatch(/-$/);
+  });
+
+  test('remove a custom sanitize replacement left at the end by truncation', async () => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: {
+        backend: { name: 'github' },
+        media_folder: 'static/images/uploads',
+        collections: [collection],
+        _siteURL: '',
+        _baseURL: '',
+        slug: {
+          encoding: 'unicode',
+          clean_accents: false,
+          sanitize_replacement: '_',
+          maxlength: 6,
+        },
+      },
+    };
+
+    expect(
+      fillTemplate('{{title}}', {
+        collection: { ...collection, slug_length: undefined },
+        content: { title: 'Hello World' },
+      }),
+    ).toBe('hello');
+  });
+
+  test('remove a trailing hyphen after truncation without the slug options', async () => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: { backend: { name: 'github' }, collections: [collection] },
+    };
+
+    expect(
+      fillTemplate('{{title}}', {
+        collection: { ...collection, slug_length: 6 },
+        content: { title: 'Hello World' },
+      }),
+    ).toBe('hello');
+  });
+
+  test('keep the end of a truncated slug with an empty sanitize replacement', async () => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: {
+        backend: { name: 'github' },
+        collections: [collection],
+        slug: { sanitize_replacement: '', maxlength: 6 },
+      },
+    };
+
+    expect(
+      fillTemplate('{{title}}-{{title}}', {
+        collection: { ...collection, slug_length: undefined },
+        content: { title: 'Hello' },
+      }),
+    ).toBe('hello-');
   });
 
   test('legacy slug_length overrides config maxlength option', async () => {
@@ -1384,162 +1460,12 @@ describe('fillTemplate()', async () => {
   });
 });
 
-describe('hasTemplateTags()', () => {
-  test('should return true for simple template tag', () => {
-    expect(hasTemplateTags('{{title}}')).toBe(true);
-    expect(hasTemplateTags('{{slug}}')).toBe(true);
-    expect(hasTemplateTags('{{year}}')).toBe(true);
-  });
-
-  test('should return true for template tag with content prefix', () => {
-    expect(hasTemplateTags('prefix-{{title}}')).toBe(true);
-    expect(hasTemplateTags('blog-{{slug}}')).toBe(true);
-    expect(hasTemplateTags('Hello {{name}}')).toBe(true);
-  });
-
-  test('should return true for template tag with content suffix', () => {
-    expect(hasTemplateTags('{{title}}-suffix')).toBe(true);
-    expect(hasTemplateTags('{{slug}}/index')).toBe(true);
-    expect(hasTemplateTags('{{year}}-post')).toBe(true);
-  });
-
-  test('should return true for multiple template tags', () => {
-    expect(hasTemplateTags('{{year}}-{{month}}-{{day}}')).toBe(true);
-    expect(hasTemplateTags('{{category}}/{{slug}}')).toBe(true);
-    expect(hasTemplateTags('{{fields.title}}-{{uuid}}')).toBe(true);
-  });
-
-  test('should return true for template tag with nested content', () => {
-    expect(hasTemplateTags('{{fields.title}}')).toBe(true);
-    expect(hasTemplateTags('{{fields.author | default("fallback")}}')).toBe(true);
-    expect(hasTemplateTags("{{title | date('YYYY-MM-DD')}}")).toBe(true);
-  });
-
-  test('should return false for string without template tags', () => {
-    expect(hasTemplateTags('just a plain string')).toBe(false);
-    expect(hasTemplateTags('no-templates-here')).toBe(false);
-    expect(hasTemplateTags('Hello World')).toBe(false);
-  });
-
-  test('should return false for empty string', () => {
-    expect(hasTemplateTags('')).toBe(false);
-  });
-
-  test('should return false for whitespace only', () => {
-    expect(hasTemplateTags('   ')).toBe(false);
-    expect(hasTemplateTags('\t')).toBe(false);
-    expect(hasTemplateTags('\n')).toBe(false);
-  });
-
-  test('should return false for incomplete template tags', () => {
-    expect(hasTemplateTags('{{title')).toBe(false);
-    expect(hasTemplateTags('title}}')).toBe(false);
-    expect(hasTemplateTags('{title}')).toBe(false);
-  });
-
-  test('should return false for empty braces', () => {
-    expect(hasTemplateTags('{{}}')).toBe(false);
-    expect(hasTemplateTags('prefix-{{}}')).toBe(false);
-  });
-
-  test('should handle the negative lookahead case correctly', () => {
-    expect(hasTemplateTags("{{fields.slug | default('{{fields.title}}')}}")).toBe(true);
-    expect(hasTemplateTags("test')")).toBe(false);
-  });
-
-  test('should handle special characters in template tags', () => {
-    expect(hasTemplateTags('{{slug-with-dash}}')).toBe(true);
-    expect(hasTemplateTags('{{slug_with_underscore}}')).toBe(true);
-    expect(hasTemplateTags('{{slug.with.dots}}')).toBe(true);
-  });
-
-  test('should handle spaces inside template tags', () => {
-    expect(hasTemplateTags('{{ title }}')).toBe(true);
-    expect(hasTemplateTags('{{  slug  }}')).toBe(true);
-    expect(hasTemplateTags('{{ fields.author }}')).toBe(true);
-  });
-
-  test('should return true for paths with template tags', () => {
-    expect(hasTemplateTags('content/{{year}}/{{month}}/post.md')).toBe(true);
-    expect(hasTemplateTags('{{dirname}}/{{filename}}.{{extension}}')).toBe(true);
-  });
-
-  test('should return true for template tags with transformations', () => {
-    expect(hasTemplateTags('{{title | upper}}')).toBe(true);
-    expect(hasTemplateTags("{{published | date('MMM D, YYYY')}}")).toBe(true);
-    expect(hasTemplateTags('{{name | truncate(20)}}')).toBe(true);
-    expect(hasTemplateTags("{{author | default('Unknown')}}")).toBe(true);
-  });
-
-  test('should return false for single braces', () => {
-    expect(hasTemplateTags('{title}')).toBe(false);
-    expect(hasTemplateTags('{slug}')).toBe(false);
-  });
-
-  test('should return false for mismatched braces', () => {
-    expect(hasTemplateTags('{{title}')).toBe(false);
-    expect(hasTemplateTags('{slug}}')).toBe(false);
-  });
-
-  test('should handle mixed content with and without tags', () => {
-    expect(hasTemplateTags('static-{{dynamic}}-static')).toBe(true);
-    expect(hasTemplateTags('2024-{{month}}-{{day}}')).toBe(true);
-  });
-
-  test('should return true for UUID tags', () => {
-    expect(hasTemplateTags('{{uuid}}')).toBe(true);
-    expect(hasTemplateTags('{{uuid_short}}')).toBe(true);
-    expect(hasTemplateTags('{{uuid_shorter}}')).toBe(true);
-  });
-
-  test('should return true for datetime tags', () => {
-    expect(hasTemplateTags('{{year}}')).toBe(true);
-    expect(hasTemplateTags('{{month}}')).toBe(true);
-    expect(hasTemplateTags('{{day}}')).toBe(true);
-    expect(hasTemplateTags('{{hour}}')).toBe(true);
-    expect(hasTemplateTags('{{minute}}')).toBe(true);
-    expect(hasTemplateTags('{{second}}')).toBe(true);
-  });
-
-  test('should return true for file path tags', () => {
-    expect(hasTemplateTags('{{dirname}}')).toBe(true);
-    expect(hasTemplateTags('{{filename}}')).toBe(true);
-    expect(hasTemplateTags('{{extension}}')).toBe(true);
-  });
-
-  test('should return true for locale tag', () => {
-    expect(hasTemplateTags('{{locale}}')).toBe(true);
-  });
-
-  test('should return false for literal brace patterns', () => {
-    expect(hasTemplateTags('{{{')).toBe(false);
-    expect(hasTemplateTags('}}}')).toBe(false);
-    expect(hasTemplateTags('{{}}')).toBe(false);
-  });
-
-  test('should handle very long template tags', () => {
-    const longTag = `{{${'a'.repeat(1000)}}}`;
-
-    expect(hasTemplateTags(longTag)).toBe(true);
-  });
-
-  test('should handle regex special characters in surrounding text', () => {
-    expect(hasTemplateTags('file.name-{{slug}}.txt')).toBe(true);
-    expect(hasTemplateTags('path/to/{{title}}/index')).toBe(true);
-    expect(hasTemplateTags('[{{slug}}]')).toBe(true);
-  });
-
-  test('should work with newlines and special whitespace', () => {
-    expect(hasTemplateTags('line1\n{{title}}\nline2')).toBe(true);
-    expect(hasTemplateTags('tab\t{{slug}}\ttab')).toBe(true);
-  });
-});
-
 describe('fillTemplate() for a nested collection', () => {
   /** @type {any} */
   const collection = {
     name: 'pages',
     folder: 'content/pages',
+    fields: [],
     _type: 'entry',
     _file: { basePath: 'content/pages' },
     nested: { depth: 100 },

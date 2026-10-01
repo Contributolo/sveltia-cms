@@ -1,8 +1,8 @@
 import { isObject } from '@sveltia/utils/object';
 import { flatten } from 'flat';
 
-import { createEntryMap } from '$lib/services/api/helpers';
 import { loadImmutable } from '$lib/services/api/immutable';
+import { createEntryMap } from '$lib/services/api/preview-data';
 import { eventHookRegistry } from '$lib/services/api/registries';
 import { getAssociatedAssets } from '$lib/services/contents/entry/assets';
 import { user } from '$lib/services/user/account.svelte';
@@ -60,7 +60,11 @@ export const callEventHooks = async ({
   collectionFile,
   isNew = false,
 }) => {
-  const { login = '', name = '' } = /** @type {User} */ (user.account);
+  const { login: _login, name: _name } = /** @type {User} */ (user.account);
+  // Not destructuring defaults, which only replace `undefined`: a GitHub user without a display
+  // name has a `null` name
+  const login = _login ?? '';
+  const name = _name ?? '';
   const collectionName = collection.name;
   const fileName = collectionFile?.name;
 

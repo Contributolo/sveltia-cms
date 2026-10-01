@@ -3,8 +3,8 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
-import { editingAsset, renamingAsset, uploadingAssets } from '$lib/services/assets';
 import { getAssetDetails } from '$lib/services/assets/details';
+import { editingAsset, renamingAsset, uploadingAssets } from '$lib/services/assets/state';
 import { showUploadAssetsDialog } from '$lib/services/assets/view';
 import { backendName } from '$lib/services/backends';
 import { repository } from '$lib/services/backends/git/github/repository';
@@ -109,6 +109,18 @@ describe('EditOptionsButton', () => {
     forkedRepository.current = /** @type {any} */ ({ owner: 'me', repo: 'site' });
 
     await render(EditOptionsButton, { asset: textAsset });
+    await openMenu();
+
+    await expect.element(page.getByRole('menuitem', { name: 'Edit Asset' })).toBeDisabled();
+    await expect.element(page.getByRole('menuitem', { name: 'Rename Asset' })).toBeDisabled();
+    await expect.element(page.getByRole('menuitem', { name: 'Replace Asset' })).toBeDisabled();
+    await expect.element(page.getByRole('menuitem', { name: 'View on Live Site' })).toBeEnabled();
+  });
+
+  test('disables the changes to an asset in a read-only folder', async () => {
+    await render(EditOptionsButton, {
+      asset: { ...textAsset, folder: { ...textAsset.folder, readonly: true } },
+    });
     await openMenu();
 
     await expect.element(page.getByRole('menuitem', { name: 'Edit Asset' })).toBeDisabled();

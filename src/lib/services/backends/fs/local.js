@@ -1,5 +1,7 @@
-import { allBackendServices } from '$lib/services/backends';
-import { loadFiles, readFile, saveChanges } from '$lib/services/backends/fs/shared/files';
+import { readFile } from '$lib/services/backends/fs/shared/handles';
+import { loadFiles } from '$lib/services/backends/fs/shared/load';
+import { saveChanges } from '$lib/services/backends/fs/shared/save';
+import { gitBackendServices } from '$lib/services/backends/git/services';
 import { cmsConfig } from '$lib/services/config';
 import { getRepositoryDatabase } from '$lib/services/utils/database';
 
@@ -128,7 +130,7 @@ export const getRootDirHandle = async ({ forceReload = false, showPicker = true 
 const init = () => {
   const { name: service } = /** @type {InternalCmsConfig} */ (cmsConfig.current).backend;
 
-  remoteRepository = allBackendServices[service]?.init?.();
+  remoteRepository = gitBackendServices[service]?.init?.();
 
   rootDirHandleDB = getRepositoryDatabase(remoteRepository, 'file-system-handles') ?? null;
   assetHashDB = getRepositoryDatabase(remoteRepository, 'asset-hashes') ?? null;

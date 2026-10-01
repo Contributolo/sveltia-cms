@@ -5,6 +5,7 @@ import {
   getDefaultAssetFolder,
   getTargetFolderPath,
   getUnsavedFileDisplayPath,
+  getUnsavedFileName,
   hasSameAsset,
   isAssetInSelectedFolder,
   listAssets,
@@ -16,8 +17,11 @@ vi.mock('@sveltia/utils/crypto');
 vi.mock('@sveltia/utils/file');
 vi.mock('fast-deep-equal');
 vi.mock('$lib/services/assets', () => ({
-  allAssets: { current: /** @type {import('$lib/types/private').Asset[]} */ ([]) },
   fillInternalPathTemplate: vi.fn(),
+}));
+
+vi.mock('$lib/services/assets/state', () => ({
+  allAssets: { current: /** @type {import('$lib/types/private').Asset[]} */ ([]) },
 }));
 vi.mock('$lib/services/assets/folders', () => ({
   allAssetFolders: {
@@ -27,6 +31,9 @@ vi.mock('$lib/services/assets/folders', () => ({
   getAssetFolder: vi.fn(),
 }));
 
+vi.mock('$lib/services/assets/name', () => ({
+  getPendingFileName: vi.fn(() => 'filled.png'),
+}));
 vi.mock('$lib/services/contents/draft/slugs', () => ({
   getSlugs: vi.fn(),
 }));
@@ -40,8 +47,10 @@ const { allAssetFolders } = await import('$lib/services/assets/folders');
 const { getHash } = await import('@sveltia/utils/crypto');
 const { getPathInfo } = await import('@sveltia/utils/file');
 const { default: equal } = await import('fast-deep-equal');
-const { allAssets, fillInternalPathTemplate } = await import('$lib/services/assets');
+const { fillInternalPathTemplate } = await import('$lib/services/assets');
+const { allAssets } = await import('$lib/services/assets/state');
 const { getSlugs } = await import('$lib/services/contents/draft/slugs');
+const { getPendingFileName } = await import('$lib/services/assets/name');
 const { getAssetFolderPaths } = await import('$lib/services/contents/draft/save/assets');
 
 const { getPathInfo: getActualPathInfo } = /** @type {any} */ (
@@ -889,6 +898,50 @@ describe('contents/fields/file/helpers', () => {
         });
 
         expect(result).toBe('content/posts/images/-');
+      });
+    });
+  });
+
+  describe('getUnsavedFileName', () => {
+    const file = new File([''], 'photo.png');
+
+    it('should return `undefined` if the draft doesn’t hold the file', () => {
+      const draft = /** @type {any} */ ({ files: {} });
+
+      expect(getUnsavedFileName({ draft, blobURL: 'blob:missing' })).toBeUndefined();
+      expect(getPendingFileName).not.toHaveBeenCalled();
+    });
+
+    it('should not generate the slug for a file without a name template', () => {
+      const item = { file, folder: undefined, replace: false };
+      const draft = /** @type {any} */ ({ files: { 'blob:test': item } });
+
+      expect(getUnsavedFileName({ draft, blobURL: 'blob:test' })).toBe('filled.png');
+      expect(getSlugs).not.toHaveBeenCalled();
+      expect(getPendingFileName).toHaveBeenCalledWith({ draft, item, defaultLocaleSlug: '' });
+    });
+
+    it('should fill the name template with the default locale’s slug', () => {
+      const item = {
+        file,
+        folder: undefined,
+        replace: false,
+        nameTemplate: { template: '{{slug}}', randomValues: new Map(), dateTimeParts: {} },
+      };
+
+      const draft = /** @type {any} */ ({ files: { 'blob:test': item } });
+
+      vi.mocked(getSlugs).mockReturnValue({
+        defaultLocaleSlug: 'my-post',
+        localizedSlugs: undefined,
+        canonicalSlug: undefined,
+      });
+
+      expect(getUnsavedFileName({ draft, blobURL: 'blob:test' })).toBe('filled.png');
+      expect(getPendingFileName).toHaveBeenCalledWith({
+        draft,
+        item,
+        defaultLocaleSlug: 'my-post',
       });
     });
   });

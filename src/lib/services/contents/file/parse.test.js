@@ -544,6 +544,35 @@ describe('Test parseFrontMatter()', () => {
     expect(result.body).toBe('Content without front matter data.');
   });
 
+  test('handles front matter with no line between the delimiters', async () => {
+    const { getFrontMatterDelimiters } = await import('$lib/services/contents/file/config');
+
+    /** @type {any} */ (getFrontMatterDelimiters).mockReturnValue(['---', '---']);
+
+    const mockCollection = /** @type {any} */ ({
+      name: 'test-collection',
+      _file: { format: 'frontmatter', fmDelimiters: ['---', '---'] },
+    });
+
+    const args = {
+      collection: mockCollection,
+      format: /** @type {const} */ ('yaml-frontmatter'),
+    };
+
+    // Jekyll’s empty front matter
+    expect(parseFrontMatter({ ...args, text: '---\n---\n\nHello' })).toEqual({ body: 'Hello' });
+    expect(parseFrontMatter({ ...args, text: '---\n---' })).toEqual({ body: undefined });
+    // An empty head line yields the same result
+    expect(parseFrontMatter({ ...args, text: '---\n\n---' })).toEqual({ body: undefined });
+    // TOML and JSON front matter
+    expect(
+      parseFrontMatter({ ...args, format: 'toml-frontmatter', text: '---\n---\n\nHello' }),
+    ).toEqual({ body: 'Hello' });
+    expect(
+      parseFrontMatter({ ...args, format: 'json-frontmatter', text: '---\n---\n\nHello' }),
+    ).toEqual({ body: 'Hello' });
+  });
+
   test('handles content with only front matter', async () => {
     const { getFrontMatterDelimiters } = await import('$lib/services/contents/file/config');
 
@@ -1143,6 +1172,21 @@ describe('Test parseEntryFile()', () => {
     await expect(parseEntryFile(entry)).rejects.toThrow(
       /could not be parsed due to an unknown format/,
     );
+  });
+
+  test('throws a clear error for a custom format registered without a parser', async () => {
+    customFileFormatRegistry.set('csv', { formatter: vi.fn(), extension: 'csv' });
+    getCollection.mockReturnValue({ _file: { format: 'csv' } });
+    getCollectionFile.mockReturnValue({ _file: { format: 'csv' } });
+
+    try {
+      await expect(parseEntryFile({ ...entryBase, text: 'a,b' })).rejects.toThrow(
+        '/test/file.md could not be parsed, as no `fromFile` method was registered for the ' +
+          'custom “csv” format with `CMS.registerCustomFormat()`',
+      );
+    } finally {
+      customFileFormatRegistry.delete('csv');
+    }
   });
 
   test('parses frontmatter with inline body (bodyField.inline = true)', async () => {

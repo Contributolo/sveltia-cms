@@ -2,8 +2,8 @@ import { _ } from '@sveltia/i18n';
 import equal from 'fast-deep-equal';
 import { untrack } from 'svelte';
 
-import { publishedAssets, selectedAssets, uploadingAssets } from '$lib/services/assets';
 import { selectedAssetFolder } from '$lib/services/assets/folders';
+import { publishedAssets, selectedAssets, uploadingAssets } from '$lib/services/assets/state';
 import { browsedDirPath, getDirName, getSubfolders } from '$lib/services/assets/subfolders';
 import { filterAssets } from '$lib/services/assets/view/filter';
 import { groupAssets } from '$lib/services/assets/view/group';
@@ -124,19 +124,6 @@ export const listedSubfolders = createDerivedState(() => {
 });
 
 /**
- * Map from asset path to the asset’s row index in the list, used by list rows to resolve their
- * `aria-rowindex` in O(1). The subfolders come first, so the index of an asset in
- * {@link listedAssets} is offset by their count. Rows are appended by an infinite scroller and
- * never unmounted, so once a large folder has been scrolled through, an `indexOf()` per row would
- * make every subsequent list update O(n²).
- */
-export const listedAssetIndexMap = createDerivedState(() => {
-  const offset = listedSubfolders.current.length;
-
-  return new Map(listedAssets.current.map((asset, index) => [asset.path, index + offset]));
-});
-
-/**
  * Find the assets listed right before and after the given one, for the previous/next navigation in
  * the details overlay. The list is the one the user sees, so the neighbors follow the current
  * sorting, filtering and grouping.
@@ -207,6 +194,24 @@ export const assetGroups = createDerivedState(() => {
   }
 
   return previousAssetGroups;
+});
+
+/**
+ * Map from asset path to the asset’s row index in the list, used by list rows to resolve their
+ * `aria-rowindex` in O(1). The index is counted across the groups rather than within each one, as
+ * the rows of every group make up one grid, and follows the current sorting and filtering. The
+ * subfolders come first, so they offset the index. Rows are appended by an infinite scroller and
+ * never unmounted, so once a large folder has been scrolled through, an `indexOf()` per row would
+ * make every subsequent list update O(n²).
+ */
+export const listedAssetIndexMap = createDerivedState(() => {
+  const offset = listedSubfolders.current.length;
+
+  return new Map(
+    Object.values(assetGroups.current)
+      .flat(1)
+      .map((asset, index) => [asset.path, index + offset]),
+  );
 });
 
 createRootEffect(() => {

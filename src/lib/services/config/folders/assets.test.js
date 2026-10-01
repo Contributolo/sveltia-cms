@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addFolderIfNeeded,
   getAllAssetFolders,
+  getCollectionBaseFolder,
   hasTags,
   iterateFiles,
   normalizeAssetFolder,
@@ -14,12 +15,12 @@ vi.mock('$lib/services/contents/collection', () => ({
   getValidCollections: vi.fn(),
 }));
 
-vi.mock('$lib/services/contents/collection/files', () => ({
+vi.mock('$lib/services/contents/collection/predicates', () => ({
   getValidCollectionFiles: vi.fn(),
 }));
 
 const { getValidCollections } = await import('$lib/services/contents/collection');
-const { getValidCollectionFiles } = await import('$lib/services/contents/collection/files');
+const { getValidCollectionFiles } = await import('$lib/services/contents/collection/predicates');
 
 describe('config/folders/assets', () => {
   beforeEach(() => {
@@ -29,6 +30,35 @@ describe('config/folders/assets', () => {
   });
 
   describe('getAllAssetFolders', () => {
+    it('resolves a relative media folder against the file storing all the entries', () => {
+      const collections = [
+        {
+          name: 'members',
+          file: 'data/team/members.json',
+          media_folder: 'photos',
+          public_folder: '/photos',
+        },
+      ];
+
+      vi.mocked(getValidCollections).mockReturnValue(/** @type {any} */ (collections));
+
+      const config = {
+        backend: { name: 'git-gateway' },
+        media_folder: 'static/images',
+        public_folder: '/images',
+        collections,
+      };
+
+      // @ts-ignore - simplified config for testing
+      const result = getAllAssetFolders(config);
+
+      expect(result.find(({ collectionName }) => collectionName === 'members')).toMatchObject({
+        internalPath: 'data/team',
+        internalSubPath: 'photos',
+        entryRelative: true,
+      });
+    });
+
     it('records the locale folder names on entry-relative folders only', () => {
       const collections = [
         // Entry-relative: the assets sit beside the entry, so they can be below a locale folder
@@ -737,6 +767,83 @@ describe('config/folders/assets', () => {
         icon: undefined,
         isAssetCollection: false,
       });
+    });
+
+    it('marks the folders of read-only collections, files and asset collections', () => {
+      const collections = [
+        { name: 'posts', folder: 'content/posts', media_folder: '/static/posts', readonly: true },
+        { name: 'pages', folder: 'content/pages', media_folder: '/static/pages' },
+        {
+          name: 'settings',
+          files: [
+            { name: 'site', file: 'data/site.yml', media_folder: '/static/site', readonly: true },
+            { name: 'menu', file: 'data/menu.yml', media_folder: '/static/menu' },
+          ],
+        },
+      ];
+
+      const singletons = [
+        { name: 'home', file: 'data/home.yml', media_folder: '/static/home', readonly: true },
+      ];
+
+      vi.mocked(getValidCollections).mockReturnValue(/** @type {any} */ (collections));
+      vi.mocked(getValidCollectionFiles).mockImplementation((files) => /** @type {any} */ (files));
+
+      const config = {
+        backend: { name: 'git-gateway' },
+        media_folder: 'static/images',
+        public_folder: '/images',
+        collections,
+        singletons,
+        asset_collections: [
+          { name: 'logos', media_folder: 'static/logos', readonly: true },
+          { name: 'icons', media_folder: 'static/icons' },
+        ],
+      };
+
+      // @ts-ignore - simplified config for testing
+      const result = getAllAssetFolders(config);
+
+      expect(
+        Object.fromEntries(
+          result.map(({ collectionName, fileName, readonly }) => [
+            [collectionName ?? '-', fileName ?? '-'].join(':'),
+            !!readonly,
+          ]),
+        ),
+      ).toEqual({
+        '-:-': false,
+        'posts:-': true,
+        'pages:-': false,
+        'settings:site': true,
+        'settings:menu': false,
+        '_singletons:home': true,
+        'assets:logos:-': true,
+        'assets:icons:-': false,
+      });
+    });
+
+    it('marks every folder when the whole CMS is read-only', () => {
+      const collections = [
+        { name: 'pages', folder: 'content/pages', media_folder: '/static/pages' },
+      ];
+
+      vi.mocked(getValidCollections).mockReturnValue(/** @type {any} */ (collections));
+
+      const config = {
+        backend: { name: 'git-gateway' },
+        media_folder: 'static/images',
+        public_folder: '/images',
+        collections,
+        readonly: true,
+      };
+
+      // @ts-ignore - simplified config for testing
+      const result = getAllAssetFolders(config);
+
+      // All Assets, the global folder and the collection folder
+      expect(result).toHaveLength(3);
+      expect(result.every(({ readonly }) => readonly === true)).toBe(true);
     });
 
     it('should handle field-level media folders', () => {
@@ -1464,6 +1571,31 @@ describe('config/folders/assets', () => {
         icon: undefined,
         isAssetCollection: true,
       });
+    });
+  });
+
+  describe('getCollectionBaseFolder', () => {
+    it('should return the folder of an entry collection', () => {
+      // @ts-ignore - simplified collection for testing
+      expect(getCollectionBaseFolder({ name: 'posts', folder: 'content/posts' })).toBe(
+        'content/posts',
+      );
+    });
+
+    it('should return the folder of the file storing all the entries', () => {
+      // @ts-ignore - simplified collection for testing
+      expect(getCollectionBaseFolder({ name: 'members', file: 'data/team/members.json' })).toBe(
+        'data/team',
+      );
+    });
+
+    it('should return undefined for a file collection or a singleton collection', () => {
+      // @ts-ignore - simplified collection for testing
+      expect(getCollectionBaseFolder({ name: 'settings', files: [] })).toBeUndefined();
+      // @ts-ignore - simplified collection for testing
+      expect(getCollectionBaseFolder({ name: 'posts', folder: undefined })).toBeUndefined();
+      // @ts-ignore - simplified collection for testing
+      expect(getCollectionBaseFolder({ name: 'members', file: 123 })).toBeUndefined();
     });
   });
 

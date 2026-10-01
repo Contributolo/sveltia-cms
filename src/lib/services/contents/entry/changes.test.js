@@ -4,15 +4,22 @@ import { IndexedDB } from '@sveltia/utils/storage';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { backend } from '$lib/services/backends';
+import { getArrayItemTarget } from '$lib/services/contents/draft/save/changes';
 import {
   buildEntryUpdateChanges,
   createSyntheticDraft,
   resolveCacheDB,
 } from '$lib/services/contents/entry/changes';
+import { formatEntryFile } from '$lib/services/contents/file/format';
 
 vi.mock('$lib/services/backends', () => ({ backend: { current: null } }));
 
 vi.mock('$lib/services/contents/draft/save/changes', () => ({
+  getArrayItemTarget: vi.fn((entry) =>
+    entry.arrayIndex === undefined
+      ? {}
+      : { arrayItem: { index: entry.arrayIndex, locales: entry.locales } },
+  ),
   getPreviousSha: vi.fn(async ({ previousPath }) =>
     previousPath ? `sha:${previousPath}` : undefined,
   ),
@@ -107,6 +114,31 @@ describe('buildEntryUpdateChanges()', () => {
     ]);
   });
 
+  test('targets the item of an entry stored in an array file', async () => {
+    const collection = {
+      name: 'members',
+      _file: { format: 'json', arrayFile: true },
+      _i18n: { i18nEnabled: false, defaultLocale: '_default' },
+    };
+
+    const entry = {
+      id: 'a',
+      slug: 'a',
+      arrayIndex: 2,
+      locales: { _default: { slug: 'a', path: 'data/members.json', content: { title: 'New' } } },
+    };
+
+    const [change] = await buildEntryUpdateChanges({ collection, entry, draft: {} });
+
+    // The item is looked up by `getArrayItemTarget()`, which reads the entry in the store
+    expect(getArrayItemTarget).toHaveBeenCalledWith(entry);
+    expect(change).toMatchObject({
+      action: 'update',
+      path: 'data/members.json',
+      arrayItem: { index: 2, locales: entry.locales },
+    });
+  });
+
   test('produces one change per locale for multi-file i18n', async () => {
     const collection = {
       name: 'posts',
@@ -127,6 +159,58 @@ describe('buildEntryUpdateChanges()', () => {
 
     expect(changes).toHaveLength(2);
     expect(changes.map(({ path }) => path)).toEqual(['en/a.md', 'fr/a.md']);
+  });
+
+  test('passes the field comments for a single-file entry', async () => {
+    const collection = {
+      name: 'posts',
+      _file,
+      _i18n: {
+        i18nEnabled: true,
+        allLocales: ['en', 'fr'],
+        defaultLocale: 'en',
+        structureMap: { i18nSingleFile: true },
+      },
+    };
+
+    const entry = {
+      slug: 'a',
+      locales: { en: { slug: 'a', path: 'content/a.md', content: { title: 'A' } } },
+    };
+
+    const draft = { fields: [{ name: 'title', comment: 'Title' }] };
+
+    await buildEntryUpdateChanges({ collection, entry, draft });
+
+    expect(vi.mocked(formatEntryFile).mock.calls[0][0].comments).toEqual({
+      'en.title': 'Title',
+      'fr.title': 'Title',
+    });
+  });
+
+  test('passes the field comments for each file of a multi-file entry', async () => {
+    const collection = {
+      name: 'posts',
+      _file,
+      _i18n: { i18nEnabled: true, allLocales: ['en', 'fr'], defaultLocale: 'en' },
+    };
+
+    const entry = {
+      slug: 'a',
+      locales: {
+        en: { slug: 'a', path: 'en/a.md', content: { title: 'A' } },
+        fr: { slug: 'a', path: 'fr/a.md', content: { title: 'B' } },
+      },
+    };
+
+    const draft = { fields: [{ name: 'title', comment: 'Title' }] };
+
+    await buildEntryUpdateChanges({ collection, entry, draft });
+
+    expect(vi.mocked(formatEntryFile).mock.calls.map(([{ comments }]) => comments)).toEqual([
+      { title: 'Title' },
+      { title: 'Title' },
+    ]);
   });
 
   test('uses the collection file’s own configuration', async () => {

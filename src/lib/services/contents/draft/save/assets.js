@@ -2,23 +2,20 @@ import { getPathInfo } from '@sveltia/utils/file';
 import equal from 'fast-deep-equal';
 
 import { getAssetsByDirName } from '$lib/services/assets';
+import { formatFileName } from '$lib/services/assets/file-name';
 import { getAssetKind } from '$lib/services/assets/kinds';
+import { getPendingFileName } from '$lib/services/assets/name';
 import { fillTemplate } from '$lib/services/common/template';
 import { getSharedEntryFileName } from '$lib/services/contents/collection/nested';
 import { createEntryPath } from '$lib/services/contents/draft/save/entry-path';
 import { getFillSlugOptions } from '$lib/services/contents/draft/slugs';
-import {
-  createPath,
-  encodeFilePath,
-  formatFileName,
-  getGitHash,
-  resolvePath,
-} from '$lib/services/utils/file';
+import { createPath, encodeFilePath, getGitHash, resolvePath } from '$lib/services/utils/file';
 
 /**
  * @import {
  * Asset,
  * AssetFolderInfo,
+ * AssetNameTemplate,
  * EntryDraft,
  * FileChange,
  * FillTemplateOptions,
@@ -334,6 +331,7 @@ export const getAssetSavingInfo = ({
  * @param {AssetFolderInfo} args.folder Asset folder associated with the new file.
  * @param {string} [args.subfolderPath] Subfolder below the folder the file is saved to.
  * @param {boolean} args.replace Whether to replace an existing file.
+ * @param {AssetNameTemplate} [args.nameTemplate] Template to name the file with.
  * @param {string} args.blobURL Blob URL of the file.
  * @param {EntryDraft} args.draft Entry draft.
  * @param {InternalLocaleCode} [args.locale] Locale the file is being added to. See
@@ -351,6 +349,7 @@ export const replaceBlobURL = async ({
   folder,
   subfolderPath,
   replace,
+  nameTemplate,
   blobURL,
   draft,
   locale,
@@ -391,8 +390,10 @@ export const replaceBlobURL = async ({
     // `image.png`, may already be headed for this folder in the same save. It’s not in the asset
     // store yet, so take its name into account too, or one file would overwrite the other. The
     // code below runs without awaiting anything, so concurrent calls can’t pick the same name
+    const item = { file, folder, replace, nameTemplate };
+
     fileName = formatFileName(
-      file.name,
+      getPendingFileName({ draft, item, defaultLocaleSlug }),
       replace
         ? {}
         : {
@@ -403,7 +404,19 @@ export const replaceBlobURL = async ({
           },
     );
 
-    const update = replace && assetNamesInSameFolder.includes(fileName);
+    // A replacing file overwrites the existing asset whose name only differs in case, e.g.
+    // `Photo.jpg` and `photo.jpg`, rather than being added next to it, as the two would clash on a
+    // case-insensitive file system
+    const replacedName = replace
+      ? assetNamesInSameFolder.find((name) => name.toLowerCase() === fileName.toLowerCase())
+      : undefined;
+
+    const update = !!replacedName;
+
+    if (replacedName) {
+      fileName = replacedName;
+    }
+
     const assetPath = resolvedInternalPath ? `${resolvedInternalPath}/${fileName}` : fileName;
 
     changes.push({

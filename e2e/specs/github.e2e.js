@@ -34,6 +34,29 @@ test('signs in with the stored session and lists the entries', async ({ cms, pag
   ).toBeVisible();
 });
 
+test('refuses a user who can only read the repository', async ({ cms, github, page }) => {
+  github.canWrite = false;
+
+  await cms.open();
+  await expect(page.getByRole('alert')).toContainText(
+    /You don’t have access to the .*e2e-site.* repository/,
+  );
+});
+
+test('makes the content read-only when the user can’t push to the branch', async ({
+  cms,
+  github,
+  page,
+}) => {
+  github.branchRule = { viewerCanPush: false };
+
+  await cms.open();
+  await expect(
+    page.getByText(/You don’t have permission to push to the .*main.* branch/),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Create New Entry' })).toBeDisabled();
+});
+
 test('commits a change to the branch', async ({ cms, github, page }) => {
   const { oid: headBefore } = github.head;
 

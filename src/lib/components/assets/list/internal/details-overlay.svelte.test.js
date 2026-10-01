@@ -2,9 +2,9 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
-import { overlaidAsset } from '$lib/services/assets';
 import { deleteAssets } from '$lib/services/assets/data/delete';
 import { globalAssetFolder, selectedAssetFolder } from '$lib/services/assets/folders';
+import { overlaidAsset } from '$lib/services/assets/state';
 import { selectedSubfolderPath } from '$lib/services/assets/subfolders';
 import { showAssetOverlay } from '$lib/services/assets/view';
 import { currentView } from '$lib/services/assets/view/settings';
@@ -188,6 +188,15 @@ describe('DetailsOverlay', () => {
     } finally {
       click.mockRestore();
     }
+  });
+
+  test('can’t delete an asset in a read-only folder', async () => {
+    overlaidAsset.current = { ...zipAsset, folder: { ...zipAsset.folder, readonly: true } };
+
+    await render(DetailsOverlay);
+
+    await expect.element(page.getByRole('button', { name: 'Delete Asset' })).toBeDisabled();
+    await expect.element(page.getByRole('button', { name: 'Download' })).toBeEnabled();
   });
 
   test('goes back to the folder', async () => {

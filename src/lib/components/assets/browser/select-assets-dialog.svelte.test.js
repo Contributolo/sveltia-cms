@@ -274,6 +274,25 @@ describe('SelectAssetsDialog', () => {
       expect(dialog.getByRole('listbox', { name: 'Folders' }).elements()).toHaveLength(0);
     });
 
+    test('creates no folder within a read-only folder', async () => {
+      await renderDialog({
+        assetLibraryFolderMap: {
+          global: { folder: { ...globalAssetFolder.current, readonly: true }, enabled: true },
+        },
+      });
+
+      const dialog = page.getByRole('dialog', { name: 'Select Image' });
+
+      await waitForGrid(2);
+      await dialog
+        .getByRole('listbox', { name: 'Folders' })
+        .getByRole('option', { name: '2024' })
+        .click();
+      await waitForGrid(1);
+
+      await expect.element(dialog.getByRole('button', { name: 'New Folder' })).toBeDisabled();
+    });
+
     test('creates a folder where the user is, and uploads there', async () => {
       vi.mocked(createSubfolder).mockResolvedValue(undefined);
 
@@ -317,6 +336,27 @@ describe('SelectAssetsDialog', () => {
       await vi.waitFor(() =>
         expect(onSelect).toHaveBeenCalledWith([
           { file, folder: globalAssetFolder.current, subfolderPath: '2024', replace: false },
+        ]),
+      );
+    });
+
+    test('only asks to replace a file in the directory the dropped file goes to', async () => {
+      const { onSelect } = await renderDialog();
+      const dialog = page.getByRole('dialog', { name: 'Select Image' });
+
+      await waitForGrid(2);
+
+      // `d.png` is in a subfolder, not in the folder root the file goes to
+      const file = await createMockImageFile({ name: 'd.png', width: 5 });
+
+      dropFiles([file]);
+      await waitForGrid(3);
+      expect(duplicates.showDialog).toBe(false);
+      await dialog.getByRole('button', { name: 'Insert' }).click();
+
+      await vi.waitFor(() =>
+        expect(onSelect).toHaveBeenCalledWith([
+          { file, folder: globalAssetFolder.current, subfolderPath: '', replace: false },
         ]),
       );
     });
@@ -738,6 +778,51 @@ describe('SelectAssetsDialog', () => {
     );
     // The very same `File` object is passed on, not a clone that would have to be read again
     expect(onSelect.mock.calls[0][0][0].file).toBe(file);
+  });
+
+  test('releases the URLs of dropped files when closed, but not the draft’s', async () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL');
+
+    try {
+      // An unsaved file already picked for the entry, whose blob URL is the field value
+      const pending = await createMockImageFile({ name: 'pending.png' });
+      const draftURL = URL.createObjectURL(pending);
+
+      const { onClose } = await renderDialog({
+        draft: {
+          originalEntry: undefined,
+          files: { [draftURL]: { file: pending, folder: globalAssetFolder.current } },
+        },
+      });
+
+      const dialog = page.getByRole('dialog');
+
+      await waitForGrid(3);
+
+      const file = await createMockImageFile({ name: 'new.png', width: 5 });
+
+      dropFiles([file]);
+      await waitForGrid(4);
+
+      const droppedURL =
+        createObjectURL.mock.results[
+          createObjectURL.mock.calls.findIndex(([blob]) => blob === file)
+        ]?.value;
+
+      expect(droppedURL).toMatch(/^blob:/);
+
+      // The tiles are removed along with the dialog, and the draft’s URL has to survive that
+      // @see https://github.com/sveltia/sveltia-cms/issues/1030
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+      await expect.poll(() => revokeObjectURL.mock.calls.flat()).toContain(droppedURL);
+      await sleep(100);
+      expect(revokeObjectURL.mock.calls.flat()).not.toContain(draftURL);
+    } finally {
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+    }
   });
 
   test('asks whether to replace a dropped file that already exists', async () => {

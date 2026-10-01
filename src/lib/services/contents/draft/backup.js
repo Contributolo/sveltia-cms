@@ -5,6 +5,7 @@ import { IndexedDB } from '@sveltia/utils/storage';
 import { createDisplayBlobURL } from '$lib/services/assets/info';
 import { backend } from '$lib/services/backends';
 import { cmsConfigVersion } from '$lib/services/config';
+import { isDraftReadonly } from '$lib/services/config/readonly';
 import { getOrderFieldKey } from '$lib/services/contents/collection/entries/reorder/config';
 import { isDraftModified, suspendAutoDuplication } from '$lib/services/contents/draft';
 import { createProxy } from '$lib/services/contents/draft/create/proxy.svelte';
@@ -95,13 +96,27 @@ export const getBackup = async (collectionName, slug = '') => {
 export const getBackupSlug = ({ fileName, originalEntry }) => fileName ?? originalEntry?.slug ?? '';
 
 /**
+ * Check if the given draft is for an existing entry stored in a file with the other entries of the
+ * collection. Its slug is its position in the array, which another entry can take after a reorder
+ * or a deletion, so a backup stored under it could be restored to the wrong entry.
+ * @param {EntryDraft} draft Draft.
+ * @returns {boolean} Result.
+ */
+const isArrayItemDraft = ({ originalEntry }) => originalEntry?.arrayIndex !== undefined;
+
+/**
  * Backup the entry draft to IndexedDB.
  * @param {EntryDraft} draft Draft.
  */
 export const saveBackup = async (draft) => {
   // Skip if the user hasn’t manually interacted with the editor, so that only programmatic changes,
   // e.g. Lexical markdown reformatting, don’t trigger a backup
-  if (!(prefs.useDraftBackup ?? true) || !draft.interacted) {
+  if (
+    !(prefs.useDraftBackup ?? true) ||
+    !draft.interacted ||
+    isDraftReadonly(draft) ||
+    isArrayItemDraft(draft)
+  ) {
     return;
   }
 
@@ -129,14 +144,27 @@ export const saveBackup = async (draft) => {
       currentSlugs: /** @type {LocaleSlugMap} */ (toRaw(currentSlugs)),
       currentValues: /** @type {LocaleContentMap} */ (toRaw(currentValues)),
       files: Object.fromEntries(
-        Object.entries(files).map(([blobURL, { file, folder, replace }]) => [
-          blobURL,
-          {
-            file,
-            folder: folder ? /** @type {AssetFolderInfo} */ (toRaw(folder)) : folder,
-            replace,
-          },
-        ]),
+        Object.entries(files).map(
+          ([blobURL, { file, folder, replace, subfolderPath, nameTemplate }]) => [
+            blobURL,
+            {
+              file,
+              folder: folder ? /** @type {AssetFolderInfo} */ (toRaw(folder)) : folder,
+              replace,
+              subfolderPath,
+              // The random values are kept in a `Map`, which a JSON round trip would lose
+              ...(nameTemplate
+                ? {
+                    nameTemplate: {
+                      ...nameTemplate,
+                      randomValues: new Map(nameTemplate.randomValues),
+                      dateTimeParts: { ...nameTemplate.dateTimeParts },
+                    },
+                  }
+                : {}),
+            },
+          ],
+        ),
       ),
       // The entries hold `File` objects among their changes, so a JSON round trip won’t do
       pendingEntries: getSnapshot(pendingEntries),
@@ -288,7 +316,8 @@ export const restoreBackup = async ({ backup, draft }) => {
  * @param {EntryDraft} args.draft Entry draft to restore the backup to.
  */
 export const restoreBackupIfNeeded = async ({ draft }) => {
-  if (!(prefs.useDraftBackup ?? true)) {
+  // A read-only entry can’t be changed, so leave any backup alone until it can be edited again
+  if (!(prefs.useDraftBackup ?? true) || isDraftReadonly(draft) || isArrayItemDraft(draft)) {
     return;
   }
 

@@ -1,3 +1,4 @@
+import { isReactComponent } from '$lib/services/api/react';
 import { customFieldTypeRegistry } from '$lib/services/api/registries';
 import { BUILTIN_FIELD_TYPES } from '$lib/services/contents/fields';
 import { getFieldConfigMap, getPreviewData } from '$lib/services/contents/fields/custom/helpers';
@@ -20,7 +21,7 @@ import { getFieldConfigMap, getPreviewData } from '$lib/services/contents/fields
  * @returns {CustomFieldControl | undefined} Resolved control component or undefined.
  */
 export const resolveControl = (ctrl) => {
-  if (typeof ctrl === 'function') {
+  if (isReactComponent(ctrl)) {
     return ctrl;
   }
 
@@ -28,7 +29,7 @@ export const resolveControl = (ctrl) => {
     const customFieldType = customFieldTypeRegistry.get(ctrl);
 
     if (customFieldType?.control) {
-      if (typeof customFieldType.control === 'function') {
+      if (isReactComponent(customFieldType.control)) {
         return customFieldType.control;
       }
 
@@ -57,7 +58,8 @@ export const resolveControl = (ctrl) => {
  * given the latest content. The `addFile` prop lets a control hand a file to the CMS, so that it’s
  * uploaded along with the entry; the blob URL it resolves to is meant to be stored in the value.
  * The `pickFile` prop opens the Select Assets dialog, so that a control can let the user pick an
- * existing asset the way a built-in File/Image field does.
+ * existing asset the way a built-in File/Image field does. The `getAsset` prop resolves a stored
+ * path to a URL the control can display, just like the prop of the same name a preview receives.
  * @param {object} args Arguments.
  * @param {string | null | undefined} args.fieldId Field ID.
  * @param {string | null | undefined} args.fieldClassName Class name for the wrapper element.
@@ -85,14 +87,19 @@ export const buildControlProps = ({
   addFile,
   pickFile,
   handleRef,
-}) => ({
-  value: currentValue,
-  field: getFieldConfigMap(fieldConfig),
-  forID: fieldId ?? '',
-  classNameWrapper: fieldClassName ?? '',
-  entry: draft ? getPreviewData({ draft, locale }).entryMap : undefined,
-  onChange,
-  addFile,
-  pickFile,
-  ref: handleRef,
-});
+}) => {
+  const previewData = draft ? getPreviewData({ draft, locale }) : undefined;
+
+  return {
+    value: currentValue,
+    field: getFieldConfigMap(fieldConfig),
+    forID: fieldId ?? '',
+    classNameWrapper: fieldClassName ?? '',
+    entry: previewData?.entryMap,
+    getAsset: previewData?.getAsset,
+    onChange,
+    addFile,
+    pickFile,
+    ref: handleRef,
+  };
+};

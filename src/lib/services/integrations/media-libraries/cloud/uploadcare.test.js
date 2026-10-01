@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { formatFileName } from '$lib/services/assets/file-name';
 import { cmsConfig } from '$lib/services/config/state';
-import { formatFileName } from '$lib/services/utils/file';
 
 import uploadcareService, {
   deleteFiles,
@@ -25,7 +25,7 @@ vi.mock('@sveltia/utils/misc', () => ({
   sleep: vi.fn(),
 }));
 
-vi.mock('$lib/services/utils/file', () => ({
+vi.mock('$lib/services/assets/file-name', () => ({
   formatFileName: vi.fn((name) => name),
 }));
 
@@ -111,6 +111,35 @@ describe('integrations/media-libraries/cloud/uploadcare', () => {
       const key = getPublicKey();
 
       expect(key).toBeUndefined();
+    });
+  });
+
+  describe('getPublicKey with a field configuration', () => {
+    it('should inherit the site-level public key', () => {
+      const fieldConfig = /** @type {any} */ ({
+        widget: 'file',
+        media_libraries: { uploadcare: { settings: { autoFilename: true } } },
+      });
+
+      expect(getPublicKey(fieldConfig)).toBe(mockPublicKey);
+    });
+
+    it('should prefer the field-level public key', () => {
+      const fieldConfig = /** @type {any} */ ({
+        widget: 'file',
+        media_libraries: { uploadcare: { config: { publicKey: 'field-key' } } },
+      });
+
+      expect(getPublicKey(fieldConfig)).toBe('field-key');
+    });
+
+    it('should return undefined when the field disables Uploadcare', () => {
+      const fieldConfig = /** @type {any} */ ({
+        widget: 'file',
+        media_libraries: { uploadcare: false },
+      });
+
+      expect(getPublicKey(fieldConfig)).toBeUndefined();
     });
   });
 
@@ -205,6 +234,17 @@ describe('integrations/media-libraries/cloud/uploadcare', () => {
                 },
               },
             },
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it('should inherit the site-level public key when the field-level config has none', () => {
+      expect(
+        isEnabled(
+          /** @type {any} */ ({
+            widget: 'file',
+            media_libraries: { uploadcare: { config: { multiple: true } } },
           }),
         ),
       ).toBe(true);
@@ -341,6 +381,43 @@ describe('integrations/media-libraries/cloud/uploadcare', () => {
         size: 12345,
         kind: 'image',
       });
+    });
+
+    it('should keep the site-level settings the field-level options don’t override', () => {
+      cmsConfig.current = /** @type {any} */ ({
+        media_libraries: {
+          uploadcare: {
+            config: { publicKey: mockPublicKey },
+            settings: { autoFilename: true, defaultOperations: '/resize/800x/' },
+          },
+        },
+      });
+
+      const fieldConfig = /** @type {any} */ ({
+        widget: 'image',
+        media_libraries: { uploadcare: { settings: { autoFilename: false } } },
+      });
+
+      const [result] = parseResults(
+        [
+          {
+            uuid: 'abc123',
+            original_filename: 'image.jpg',
+            original_file_url: 'https://ucarecdn.com/abc123/image.jpg',
+            size: 12345,
+            mime_type: 'image/jpeg',
+            is_image: true,
+            is_ready: true,
+            content_info: null,
+            datetime_uploaded: '2025-01-01T00:00:00.000Z',
+            datetime_stored: '2025-01-01T00:00:00.000Z',
+            datetime_removed: null,
+          },
+        ],
+        { fieldConfig },
+      );
+
+      expect(result.downloadURL).toBe('https://ucarecdn.com/abc123/-/resize/800x/');
     });
 
     it('should parse video files correctly', () => {

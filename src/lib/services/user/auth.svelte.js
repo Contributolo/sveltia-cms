@@ -4,11 +4,13 @@ import { LocalStorage } from '@sveltia/utils/storage';
 
 import { goto, parseLocation } from '$lib/services/app/navigation';
 import { backend, backendName, selectBackend } from '$lib/services/backends';
+import { lockedBranch, mergeLockedBranch } from '$lib/services/backends/branch-access';
 import { NOT_COLLABORATOR_ERROR_MESSAGE } from '$lib/services/backends/git/shared/errors';
 import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
 import { startRemoteChangePolling, stopRemoteChangePolling } from '$lib/services/backends/poll';
 import { cmsConfig } from '$lib/services/config';
 import { dataLoaded } from '$lib/services/contents';
+import { arrayFileItems } from '$lib/services/contents/file/process';
 import { resetDeployments } from '$lib/services/deployments';
 import { resetPageLiveness } from '$lib/services/deployments/ping';
 import { initDeployments } from '$lib/services/deployments/resolve';
@@ -22,6 +24,11 @@ import {
 } from '$lib/services/workflow';
 import { resetDeployingEntries } from '$lib/services/workflow/deploy';
 import { loadUnpublishedEntries, startLoadingPullRequests } from '$lib/services/workflow/load';
+import {
+  forkedRepository,
+  forkPermissionRequest,
+  openAuthoringInitialized,
+} from '$lib/services/workflow/open-authoring';
 
 /**
  * @import { BackendService, InternalCmsConfig, User } from '$lib/types/private';
@@ -404,10 +411,18 @@ export const signOut = async () => {
 
   selectBackend(undefined);
   dataLoaded.current = false;
+  // The items of the files storing all the entries of a collection belong to this repository
+  arrayFileItems.clear();
   repositoryHead.current = '';
+  lockedBranch.current = undefined;
+  mergeLockedBranch.current = undefined;
   unpublishedEntries.current = [];
   unpublishedEntriesLoaded.current = false;
   publishingBranches.current = [];
+  // The fork belongs to the signed-out user, so the next user needs Open Authoring set up again
+  forkPermissionRequest.current?.respond(false);
+  forkedRepository.current = undefined;
+  openAuthoringInitialized.current = false;
   resetDeployingEntries();
   resetDeployments();
   resetPageLiveness();
