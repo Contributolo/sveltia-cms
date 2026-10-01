@@ -509,6 +509,18 @@ creating_entries_nearing_quota: |
     *   one {{ Diese Sammlung nähert sich ihrer Obergrenze von {$quota} Einträgen. Es kann nur noch {$remaining} weiterer Eintrag angelegt werden. }}
     *   *   {{ Diese Sammlung nähert sich ihrer Obergrenze von {$quota} Einträgen. Es können nur noch {$remaining} weitere Einträge angelegt werden. }}
 
+# Read-only restrictions set with the `readonly` option: advisory messages
+readonly_cms: Das CMS ist schreibgeschützt. Inhalte und Medien können angesehen, aber nicht geändert werden.
+readonly_collection: Diese Sammlung ist schreibgeschützt. Ihre Inhalte können angesehen, aber nicht geändert werden.
+readonly_entry: Dieser Eintrag ist schreibgeschützt. Er kann angesehen, aber nicht geändert werden.
+readonly_asset_folder: Dieser Ordner ist schreibgeschützt. Seine Medien können angesehen, aber nicht geändert werden.
+readonly_branch: Für den Branch „{$branch}“ fehlt die Schreibberechtigung. Diese Inhalte können angesehen, aber nicht geändert werden.
+readonly_reference: Der Eintrag ist schreibgeschützt, daher kann der Verweis nicht entfernt werden.
+# {$entries} is a comma-separated list of entries, each shown as “Collection › Entry”
+cannot_rename_referenced_entry: 'Dieser Eintrag kann nicht umbenannt werden, weil die folgenden schreibgeschützten Einträge über seinen aktuellen Namen auf ihn verweisen: {$entries}.'
+# {$entries} is a comma-separated list of entries, each shown as “Collection › Entry”
+cannot_move_referenced_asset: 'Dieses Medium kann nicht verschoben oder umbenannt werden, weil die folgenden schreibgeschützten Einträge es verwenden: {$entries}.'
+
 # Navigation: back links and list labels
 back_to_collection: Zurück zur Sammlung
 collection_list: Liste der Sammlungen
@@ -1398,10 +1410,18 @@ save_conflict:
   overwrite_warning: Wird jetzt gespeichert, gehen diese Änderungen verloren.
   # Follows `deleted`
   recreate_warning: Wird jetzt gespeichert, wird der Eintrag neu angelegt.
+  # Follows `modified_by`, `modified` or `deleted` for an entry stored in the same file as the other
+  # entries of the collection, which can’t be saved over the change
+  reload_warning: Da der Eintrag zusammen mit anderen Einträgen in einer Datei gespeichert ist, kann diese Änderung nicht überschrieben werden. Die Bearbeitung abbrechen, den Eintrag erneut aus der Liste öffnen und die Änderungen dann vornehmen.
   # OK button label
   save_anyway: Trotzdem speichern
   # Error shown when the repository was updated between the check above and the commit itself
   branch_moved: Das Repository wurde während des Speicherns von jemand anderem aktualisiert. Bitte erneut versuchen.
+  # Error shown when saving would change an item in a file storing all the entries of a collection,
+  # which someone else has changed or moved since it was loaded
+  array_item_changed: Ein Eintrag in derselben Datei wurde von jemand anderem geändert. Bitte erneut versuchen.
+  # {$path} is the file path
+  array_file_invalid: Die Datei {$path} kann nicht aktualisiert werden, da sie keine gültige Liste von Einträgen enthält.
 
 # Notice shown in the entry editor when someone else has changed or deleted the entry in the
 # repository while the user has it open. The change itself is described with the `save_conflict`
@@ -1789,12 +1809,22 @@ config:
     invalid_asset_collection_name: Der Name der Mediensammlung `{$name}` ist ungültig. Er darf keine Sonderzeichen enthalten.
     # {$name} is the duplicate asset collection name
     duplicate_asset_collection_name: Namen von Mediensammlungen müssen eindeutig sein, aber `{$name}` wird mehrfach verwendet.
-    # Don’t localize `folder`, `files`, and `divider`
-    invalid_collection_no_options: Für die Sammlung muss entweder die Option `folder`, `files` oder `divider` definiert sein.
-    # Don’t localize `folder`, `files`, and `divider`
-    invalid_collection_multiple_options: Die Sammlung darf die Optionen `folder`, `files` und `divider` nicht gemeinsam enthalten.
+    # Don’t localize `folder`, `file`, `files`, and `divider`
+    invalid_collection_no_options: Für die Sammlung muss entweder die Option `folder`, `file`, `files` oder `divider` definiert sein.
+    # Don’t localize `folder`, `file`, `files`, and `divider`
+    invalid_collection_multiple_options: Die Sammlung darf nur eine der Optionen `folder`, `file`, `files` und `divider` enthalten.
     # {$extension} is the file extension and {$format} is the configured content format
     file_format_mismatch: Die Endung `{$extension}` passt nicht zum Format `{$format}`.
+    # {$file} is the file path from the configuration; Don’t localize `file` and `locale`. The curly
+    # brackets are escaped with backslashes for MessageFormat 2
+    invalid_collection_data_file: Die Option `file` `{$file}` ist ungültig. Sie muss der Pfad zu einer JSON-Datei sein, ohne den Platzhalter `\{\{locale\}\}`.
+    # {$prop} is the option name; Don’t localize `file`
+    unsupported_collection_data_file_option: Die Option `{$prop}` wird in einer Sammlung mit der Option `file` nicht unterstützt.
+    # Don’t localize `file`, `publish_mode` and `simple`
+    collection_data_file_workflow: Der Redaktions-Workflow, einschließlich Open Authoring, wird in einer Sammlung mit der Option `file` nicht unterstützt. Setzen Sie die Option `publish_mode` der Sammlung auf `simple`.
+    # {$prop} is the option name; Don’t localize `file` and `slug`. The curly brackets are escaped
+    # with backslashes for MessageFormat 2
+    collection_data_file_slug_tag: Die Option `{$prop}` darf in einer Sammlung mit der Option `file` das Tag `\{\{slug\}\}` nicht enthalten, da der Slug eines Eintrags dort seine Position ist, die sich ändert, wenn Einträge neu angeordnet oder gelöscht werden. Verwenden Sie stattdessen ein Feld mit eindeutigem Wert.
     # {$slug} is the invalid slug template from the configuration; Don’t localize `path` and `slug`
     invalid_slug_slash: Die Slug-Vorlage `{$slug}` ist ungültig, da sie keine Schrägstriche enthalten darf. Um Einträge in Unterordnern zu organisieren, verwenden Sie die Option `path` statt `slug`.
     # {$name} is the field name from the configuration; Don’t localize `identifier_field`
@@ -1923,6 +1953,11 @@ config:
     # Don’t localize `file`
     relation_field_missing_file_name: Für eine Relation zu einer Dateisammlung muss die Option `file` definiert sein.
     relation_field_invalid_value_field: Das referenzierte Wertfeld `{$field}` ist ungültig oder nicht definiert.
+    # {$collection} is the referenced collection name; Don’t localize `file`, `value_field` and `slug`.
+    # The curly brackets are escaped with backslashes for MessageFormat 2
+    relation_field_array_file_slug: Die Relation zur Sammlung `{$collection}` kann den Wert `\{\{slug\}\}` nicht speichern, da der Slug eines Eintrags in einer Sammlung mit der Option `file` seine Position ist, die sich ändert, wenn Einträge neu angeordnet oder gelöscht werden. Setzen Sie die Option `value_field` stattdessen auf ein Feld mit eindeutigem Wert.
+    # {$collection} is the referenced collection name; Don’t localize `file`
+    relation_field_array_file_workflow: Eine Sammlung mit der Option `file` kann keine Relation zur Sammlung `{$collection}` haben, die den Redaktions-Workflow verwendet, da die Verweise auf einen dort umbenannten oder gelöschten Eintrag in der Datei nicht aktualisiert werden können.
     relation_field_invalid_display_field: Das referenzierte Anzeigefeld `{$field}` ist ungültig oder nicht definiert.
     relation_field_invalid_search_field: Das referenzierte Suchfeld `{$field}` ist ungültig oder nicht definiert.
     relation_field_invalid_filter_field: Das referenzierte Filterfeld `{$field}` ist ungültig oder nicht definiert.
