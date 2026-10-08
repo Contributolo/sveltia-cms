@@ -3,22 +3,15 @@ import { untrack } from 'svelte';
 
 import { backend } from '$lib/services/backends';
 import { lockedBranch } from '$lib/services/backends/branch-access';
-import { getGroupingKey } from '$lib/services/common/view';
+import { getConditionKey, getGroupingKey, getViewConditions } from '$lib/services/common/view';
 import { isReadonly } from '$lib/services/config/readonly';
 import { allEntries } from '$lib/services/contents';
 import { selectedCollection } from '$lib/services/contents/collection';
-import {
-  countCollectionEntries,
-  getEntriesByCollection,
-  selectedEntries,
-} from '$lib/services/contents/collection/entries';
+import { getEntriesByCollection, selectedEntries } from '$lib/services/contents/collection/entries';
+import { countQuotaEntries } from '$lib/services/contents/collection/entries/count';
+import { isManuallyOrdered } from '$lib/services/contents/collection/entries/reorder/config';
 import { getCollectionFilesByEntry } from '$lib/services/contents/collection/files';
-import {
-  filterNestedEntries,
-  isNestedCollection,
-  nestedFilterPath,
-} from '$lib/services/contents/collection/nested';
-import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
+import { filterNestedEntries, nestedFilterPath } from '$lib/services/contents/collection/nested';
 import { usesCurrentTime } from '$lib/services/contents/collection/view/conditions';
 import { filterEntries, parseFilterConfig } from '$lib/services/contents/collection/view/filter';
 import {
@@ -45,7 +38,12 @@ import { swapUnpublishedEntries, unpublishedEntries } from '$lib/services/workfl
 import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
 /**
- * @import { Entry, EntryListView, InternalEntryCollection } from '$lib/types/private';
+ * @import {
+ * Entry,
+ * EntryListView,
+ * GroupingConditions,
+ * InternalEntryCollection,
+ * } from '$lib/types/private';
  */
 
 /**
@@ -256,23 +254,14 @@ export const collectionState = createDerivedState(() => {
     // storing all the entries in one file can always be reordered
     const canReorder =
       !readonly &&
-      (!!_selectedCollection.reorder || isArrayFileCollection(_selectedCollection)) &&
+      isManuallyOrdered(_selectedCollection) &&
       !openAuthoring.current &&
       !lockedBranch.current;
 
     const quota = _selectedCollection?.limit ?? Infinity;
-
-    // In a nested collection, `listedEntries` only holds the folder being browsed, while the
-    // quota applies to the whole collection. Hugo’s special index file is the collection’s own
-    // page rather than one of the entries in it, so it doesn’t take up a slot — and leaving it in
-    // would make the quota disagree with the count shown next to the collection in the sidebar
-    const entryCount = countCollectionEntries(
-      _selectedCollection.name,
-      isNestedCollection(_selectedCollection)
-        ? getEntriesByCollection(_selectedCollection.name)
-        : listedEntries.current,
-    );
-
+    // The quota applies to the whole collection, including the entries that only exist in a pull
+    // request, so it agrees with the count shown next to the collection in the sidebar
+    const entryCount = countQuotaEntries(_selectedCollection.name);
     const remaining = quota < Infinity ? quota - entryCount : Infinity;
 
     return {
@@ -367,8 +356,34 @@ const restoreView = (collection, _allEntries) => {
     isCommitDateAvailable: _allEntries.some((entry) => !!entry.commitDate),
   });
 
+  // The commit metadata may arrive after the entries, so a saved sort key depending on it is
+  // validated as if it were there, rather than dropped while it’s on its way
+  const { keys: sortKeys } = getSortConfig({
+    collection,
+    isCommitAuthorAvailable: true,
+    isCommitDateAvailable: true,
+  });
+
   const { default: defaultFilter } = parseFilterConfig(viewFilters);
-  const { default: defaultGroup } = parseGroupConfig(viewGroups);
+  const { options: groupOptions, default: defaultGroup } = parseGroupConfig(viewGroups);
+
+  // Drop a saved sort key or group that has been removed from the configuration since the view was
+  // saved, so the defaults apply instead. A stale group would otherwise stay applied while the menu
+  // no longer offers a way to undo it. Stale filters are ignored by `filterEntries()` instead
+  if (view.sort?.key !== undefined && !sortKeys.includes(view.sort.key)) {
+    delete view.sort;
+  }
+
+  if (
+    view.group &&
+    !groupOptions.some(
+      (option) =>
+        getConditionKey(getViewConditions(option)) ===
+        getConditionKey(/** @type {GroupingConditions} */ (view.group)),
+    )
+  ) {
+    delete view.group;
+  }
 
   if (view.sort === undefined && defaultSort) {
     view.sort = defaultSort;

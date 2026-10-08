@@ -93,6 +93,68 @@ describe('RichTextEditor', () => {
     await expect.poll(() => props.currentValue).toBe('Hello, world!');
   });
 
+  test('shows an HTML value as rich text, and stores the edited content as HTML', async () => {
+    const { props } = await renderEditor('<h2>Title</h2><p>Some <strong>bold</strong> text.</p>', {
+      format: 'html',
+    });
+
+    const editor = page.getByRole('textbox');
+
+    await expect.poll(() => editor.element().querySelector('h2')?.textContent).toBe('Title');
+    expect(editor.element().querySelector('strong')).toHaveTextContent('bold');
+
+    // Replacing the whole content keeps the block type of the first block
+    await editor.fill('Hello, world!');
+    await expect.poll(() => props.currentValue).toBe('<h2>Hello, world!</h2>');
+  });
+
+  test('offers only the components with HTML syntax in the HTML format', async () => {
+    customComponentRegistry.set('youtube', {
+      id: 'youtube',
+      label: 'YouTube',
+      trigger: 'button',
+      fields: [{ name: 'id', label: 'ID' }],
+      pattern: /^youtube (\S+)$/,
+      // eslint-disable-next-line jsdoc/require-jsdoc
+      toBlock: ({ id }) => `youtube ${id}`,
+    });
+
+    try {
+      await renderEditor('<p>Hello</p>', { format: 'html' });
+      await expect.element(page.getByRole('button', { name: /Image/ })).toBeVisible();
+      expect(page.getByRole('button', { name: /YouTube/ }).elements()).toHaveLength(0);
+    } finally {
+      customComponentRegistry.delete('youtube');
+    }
+  });
+
+  test('reads and writes images as HTML in the HTML format', async () => {
+    const { props } = await renderEditor(
+      '<p>Hello <a href="/about"><img src="/a.png" alt="A &amp; B"></a></p>',
+      { format: 'html' },
+    );
+
+    const editor = page.getByRole('textbox');
+
+    // The linked image is shown as a component, not as a link
+    await expect
+      .poll(() => editor.element().querySelector('[data-key-path-prefix]'))
+      .not.toBeNull();
+    expect(editor.element().querySelector('a')).toBeNull();
+
+    // An image from another site is inserted as HTML, keeping the existing one
+    const dataTransfer = new DataTransfer();
+
+    dataTransfer.setData('text/html', '<img src="https://example.com/photo.png" alt="Photo">');
+    editor
+      .element()
+      .dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+    await expect
+      .poll(() => props.currentValue)
+      .toContain('<img src="https://example.com/photo.png" alt="Photo">');
+    expect(props.currentValue).toContain('<a href="/about"><img src="/a.png" alt="A &amp; B"></a>');
+  });
+
   test('follows an external change to the value', async () => {
     const { props } = await renderEditor('Hello');
 

@@ -1,8 +1,13 @@
 /* eslint-disable no-await-in-loop */
 
-import { decodeBase64, getPathInfo } from '@sveltia/utils/file';
+import { decodeBase64 } from '@sveltia/utils/file';
 
 import { fetchLastCommit } from '$lib/services/backends/git/gitea/commits';
+import {
+  getWorkflowRepository,
+  initOpenAuthoring,
+  isOpenAuthoringConfigured,
+} from '$lib/services/backends/git/gitea/fork';
 import { checkInstanceVersion, instance } from '$lib/services/backends/git/gitea/instance';
 import {
   checkBranchAccess,
@@ -13,8 +18,10 @@ import {
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { fetchAndParseFiles } from '$lib/services/backends/git/shared/fetch';
+import { toFileListItems } from '$lib/services/backends/git/shared/tree';
 import { encodePath } from '$lib/services/backends/git/shared/url';
 import { dataLoadedProgress } from '$lib/services/contents';
+import { forkedRepository, openAuthoringInitialized } from '$lib/services/workflow/open-authoring';
 
 /**
  * @import {
@@ -90,9 +97,7 @@ export const fetchFileList = async (lastHash) => {
     }
   }
 
-  return gitEntries
-    .filter(({ type }) => type === 'blob')
-    .map(({ path, sha, size }) => ({ path, sha, size, name: getPathInfo(path).basename }));
+  return toFileListItems(gitEntries);
 };
 
 /**
@@ -137,17 +142,24 @@ export const parseFileContents = async (fetchingFiles, results) => {
  * endpoints leave the content of an oversized blob empty, and keeping that would wipe the file the
  * next time the entry is saved.
  * @param {string} path File path.
+ * @param {string} [ref] Workflow branch to read the file from. Default: the branch configured in
+ * the site configuration. A workflow branch lives in the contributor’s fork with Open Authoring,
+ * so that’s where a file on one is read from.
  * @returns {Promise<string>} File content.
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGetRawFile
  * @see https://github.com/go-gitea/gitea/issues/14432
  */
-const fetchRawFile = async (path) => {
-  const { owner, repo, branch = '' } = repository;
+export const fetchRawFile = async (path, ref) => {
+  // A workflow branch lives in the contributor’s fork with Open Authoring, so that’s where a file
+  // on one is read from
+  const { owner, repo } = ref ? getWorkflowRepository() : repository;
+  const { branch = '' } = repository;
 
   return /** @type {Promise<string>} */ (
-    fetchAPI(`/repos/${owner}/${repo}/raw/${encodePath(path)}?ref=${encodeURIComponent(branch)}`, {
-      responseType: 'text',
-    })
+    fetchAPI(
+      `/repos/${owner}/${repo}/raw/${encodePath(path)}?ref=${encodeURIComponent(ref ?? branch)}`,
+      { responseType: 'text' },
+    )
   );
 };
 
@@ -294,24 +306,49 @@ export const fetchFileContents = async (fetchingFiles) => {
 /**
  * Check that the instance is supported and that the user can read the repository. Neither check is
  * needed until the file contents are requested, so they run alongside the branch and commit
- * requests rather than ahead of them.
+ * requests rather than ahead of them, and alongside each other. An unsupported instance is
+ * reported first, though, as it may also be why the repository can’t be read.
  */
 const checkAccess = async () => {
+  const repositoryAccessPromise = checkRepositoryAccess();
+
+  // The rejection is handled below, once the version has been checked
+  repositoryAccessPromise.catch(() => undefined);
+
   await checkInstanceVersion();
-  await checkRepositoryAccess();
+  await repositoryAccessPromise;
 };
 
 /**
  * Fetch file list from the backend service, download/parse all the entry files, then cache them in
  * the {@link allEntries} and {@link allAssets} stores.
+ * @param {object} [options] Options.
+ * @param {{ hash: string, message: string }} [options.lastCommit] Last commit on the branch, if the
+ * caller has just fetched it, so it isn’t fetched again.
  */
-export const fetchFiles = async () => {
+export const fetchFiles = async ({ lastCommit } = {}) => {
+  // With Open Authoring, a user without write access is a contributor rather than a stranger, so
+  // they’re given a fork to work in instead of being turned away. Setting the fork up may involve
+  // the user, so it has to finish before the data is fetched, unlike a plain access check
+  const openAuthoring = isOpenAuthoringConfigured();
+
+  // Once only: a later call brings the stores up to date with the repository, and setting the fork
+  // up again would reset the fork state while a workflow commit may be relying on it
+  if (openAuthoring && !openAuthoringInitialized.current) {
+    // The set-up asks the instance for what only a supported version offers, so the version is
+    // checked first here rather than alongside the repository, as {@link checkAccess} does
+    await checkInstanceVersion();
+    await initOpenAuthoring();
+  }
+
   await fetchAndParseFiles({
     repository,
-    checkAccess,
-    checkBranchAccess,
+    checkAccess: openAuthoring ? undefined : checkAccess,
+    // A contributor’s changes go to their fork, so the branch they can’t push to doesn’t matter
+    checkBranchAccess: forkedRepository.current ? undefined : checkBranchAccess,
     fetchDefaultBranchName,
     fetchLastCommit,
+    lastCommit,
     fetchFileList,
     fetchFileContents,
   });
@@ -324,11 +361,14 @@ export const fetchFiles = async () => {
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGetRawFileOrLFS
  */
 export const fetchBlob = async (asset) => {
-  const { owner, repo, branch } = repository;
   const { path } = asset;
+  // An asset attached to an unpublished entry only exists on the workflow branch, so that’s where
+  // it has to be read from — in the contributor’s fork with Open Authoring
+  const { owner, repo } = asset.workflow ? getWorkflowRepository() : repository;
+  const ref = asset.workflow?.branch ?? repository.branch;
 
   return /** @type {Promise<Blob>} */ (
-    fetchAPI(`/repos/${owner}/${repo}/media/${encodePath(String(branch))}/${encodePath(path)}`, {
+    fetchAPI(`/repos/${owner}/${repo}/media/${encodePath(String(ref))}/${encodePath(path)}`, {
       responseType: 'blob',
     })
   );

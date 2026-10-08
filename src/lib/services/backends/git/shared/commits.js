@@ -1,4 +1,5 @@
-import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
+import { mapConcurrently } from '$lib/services/backends/git/shared/concurrency';
+import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
 import { cmsConfig } from '$lib/services/config';
 import { getCollectionLabel } from '$lib/services/contents/collection';
 import { user } from '$lib/services/user/account.svelte';
@@ -146,6 +147,27 @@ export const dedupeFileCommits = (commits) => {
 };
 
 /**
+ * Throw an error telling the user that the branch has moved, if its head is no longer the one a
+ * refused commit was based on. This tells a commit refused over a moved head from any other
+ * failure, so the user is told what happened and to try again, which picks up the other change
+ * first. The head is looked up rather than the wording of the error relied upon. A failed lookup
+ * returns quietly, leaving the original error to be reported.
+ * @param {string} expectedHead SHA of the head commit the refused commit was based on.
+ * @param {() => Promise<{ hash: string }>} fetchLastCommit Function to fetch the branch’s head.
+ * @throws {Error} When the branch has moved.
+ */
+export const assertBranchNotMoved = async (expectedHead, fetchLastCommit) => {
+  const head = await fetchLastCommit().catch(() => undefined);
+
+  if (head && head.hash !== expectedHead) {
+    throw createLocalizedError(
+      'The branch has moved since the site data was loaded.',
+      'save_conflict.branch_moved',
+    );
+  }
+};
+
+/**
  * Fetch the commit history of each of the given files with a separate request, keeping only a few
  * requests in flight at a time so a long list doesn’t trigger a Too Many Requests error, then merge
  * the histories into one list.
@@ -157,13 +179,7 @@ export const dedupeFileCommits = (commits) => {
  * @returns {Promise<FileCommit[]>} Unique commits, newest first.
  */
 export const fetchPerPathCommits = async (paths, fetchHistory, parseCommit) => {
-  /** @type {any[][]} */
-  const results = [];
-
-  // Store the results by index so they come out in the same order as the paths
-  await runConcurrently([...paths.entries()], async ([index, path]) => {
-    results[index] = await fetchHistory(path);
-  });
+  const results = await mapConcurrently(paths, fetchHistory);
 
   return dedupeFileCommits(results.flat().map(parseCommit));
 };

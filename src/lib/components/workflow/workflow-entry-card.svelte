@@ -12,7 +12,7 @@
   import PreviewLinkButton from '$lib/components/contents/details/preview-link-button.svelte';
   import EntryThumbnail from '$lib/components/contents/shared/entry-thumbnail.svelte';
   import DeployStatusBadge from '$lib/components/workflow/deploy-status-badge.svelte';
-  import { goto } from '$lib/services/app/navigation';
+  import { encodeRoutePath, goto } from '$lib/services/app/navigation';
   import { isReadonly } from '$lib/services/config/readonly';
   import { getCollection, getCollectionLabel } from '$lib/services/contents/collection';
   import {
@@ -21,8 +21,7 @@
   } from '$lib/services/contents/collection/files';
   import { getEntrySummary } from '$lib/services/contents/entry/summary';
   import { deployments, productionSHA } from '$lib/services/deployments';
-  import { canMergePullRequest, checkPublishedVersion } from '$lib/services/workflow';
-  import { openAuthoring } from '$lib/services/workflow/open-authoring';
+  import { checkPublishedVersion, isPublishAllowed } from '$lib/services/workflow';
 
   /**
    * @import { UnpublishedEntry } from '$lib/types/private';
@@ -87,18 +86,8 @@
   const collectionLabel = $derived(
     appLocale.current && collection ? getCollectionLabel(collection, { useSingular: true }) : '',
   );
-  // The entry can only be published from the last column, and the collection’s `publish` option can
-  // hide the control altogether. An Open Authoring contributor can’t merge a pull request on the
-  // configured repository, and neither can a user who can push to the entry’s branch but not merge
-  // into the configured branch, so they never get the control
-  const canPublish = $derived(
-    !deploying &&
-      !readonly &&
-      !openAuthoring.current &&
-      canMergePullRequest(pullRequest) &&
-      (status === 'pending_publish' || deletion) &&
-      collection?.publish !== false,
-  );
+  // The entry can only be published from the last column, and only by a user who can merge it
+  const canPublish = $derived(!deploying && !readonly && isPublishAllowed(entry, collection));
   // Deleting an entry that has a published version only throws away the pending changes.
   // The entry can be published from another view, so the check depends on `allEntries`
   const publishedVersionExists = $derived(checkPublishedVersion(entry));
@@ -147,7 +136,7 @@ a merged or read-only one -->
     disabled={gone}
     onclick={() => {
       // A collection file is addressed by its name, while its `subPath` is the whole file path
-      goto(`/collections/${collectionName}/entries/${fileName ?? entry.subPath}`, {
+      goto(encodeRoutePath(`/collections/${collectionName}/entries/${fileName ?? entry.subPath}`), {
         transitionType: 'forwards',
       });
     }}

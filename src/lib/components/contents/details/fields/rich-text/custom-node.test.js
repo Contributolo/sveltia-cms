@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCustomNodeClass } from '$lib/components/contents/details/fields/rich-text/custom-node';
+import { getNoAsset } from '$lib/services/contents/fields/rich-text/previews';
 
 // Set up DOM globals for tests
 const makeMockElement = (tagName) => ({
@@ -158,11 +159,12 @@ vi.mock('svelte', () => ({
   unmount: vi.fn(),
 }));
 
-vi.mock('$lib/components/contents/details/fields/rich-text/component.svelte', () => ({
+vi.mock('$lib/components/contents/details/fields/rich-text/editor-component.svelte', () => ({
   default: vi.fn(),
 }));
 
-vi.mock('$lib/services/contents/fields/rich-text/components/utils', () => ({
+vi.mock('$lib/services/contents/fields/rich-text/components/utils', async (importOriginal) => ({
+  ...(await importOriginal()),
   isMultiLinePattern: vi.fn((pattern) => pattern.multiline || pattern.dotAll),
   normalizeProps: vi.fn((props) => props),
 }));
@@ -406,6 +408,23 @@ describe('createCustomNodeClass', () => {
       expect(CustomNode).toBeDefined();
       expect(CustomNode.getType()).toBe('image-component');
     });
+
+    it('should pass an asset getter to a Netlify/Decap CMS-style preview', () => {
+      const toPreview = vi.fn(
+        /**
+         * Convert properties to preview format like Decap CMS’s built-in image component.
+         * @param {Record<string, any>} props Properties.
+         * @param {(path: string) => any} getAsset Asset getter.
+         * @returns {string} Preview HTML.
+         */
+        ({ src }, getAsset) => `<img src="${getAsset(src) || ''}" alt="">`,
+      );
+
+      createCustomNodeClass({ ...mockComponentDef, id: 'decap-image', toPreview });
+
+      expect(toPreview).toHaveBeenCalledWith({}, getNoAsset, undefined);
+      expect(toPreview).toHaveReturnedWith('<img src="" alt="">');
+    });
   });
 
   describe('CustomNode instance methods', () => {
@@ -492,6 +511,69 @@ describe('createCustomNodeClass', () => {
 
       expect(importDOM).toBeDefined();
       expect(importDOM.article).toBeDefined();
+    });
+
+    it('should leave the tag unknown when preview throws on empty props', () => {
+      const component = {
+        ...mockComponentDef,
+        /**
+         * Convert properties to preview format, which needs a value.
+         * @param {Record<string, any>} props Properties.
+         * @returns {string} Preview HTML.
+         */
+        toPreview: (props) => `<span>${props.title.toUpperCase()}</span>`,
+        /**
+         * Convert properties to block format.
+         * @returns {string} Block string.
+         */
+        toBlock: () => '<section>Block content</section>',
+      };
+
+      const CustomNode = createCustomNodeClass(component);
+
+      // Like a component without a preview, the block isn’t looked at
+      expect(CustomNode.importDOM()).toEqual({});
+    });
+
+    it('should leave the tag unknown when block throws on empty props', () => {
+      const component = {
+        ...mockComponentDef,
+        /**
+         * Convert properties to preview format.
+         * @returns {string} Preview string.
+         */
+        toPreview: () => 'Plain text',
+        /**
+         * Convert properties to block format, which needs a value.
+         * @param {Record<string, any>} props Properties.
+         * @returns {string} Block string.
+         */
+        toBlock: (props) => `<section>${props.title.trim()}</section>`,
+      };
+
+      const CustomNode = createCustomNodeClass(component);
+
+      expect(CustomNode.importDOM()).toEqual({});
+    });
+
+    it('should not throw when both preview and block throw on empty props', () => {
+      const component = {
+        ...mockComponentDef,
+        /**
+         * Convert properties to preview format, which needs a value.
+         * @param {Record<string, any>} props Properties.
+         * @returns {string} Preview HTML.
+         */
+        toPreview: (props) => props.title.toUpperCase(),
+        /**
+         * Convert properties to block format, which needs a value.
+         * @param {Record<string, any>} props Properties.
+         * @returns {string} Block string.
+         */
+        toBlock: (props) => props.title.trim(),
+      };
+
+      expect(() => createCustomNodeClass(component)).not.toThrow();
     });
 
     it('should handle when both preview and block return non-tag strings', () => {
@@ -643,142 +725,134 @@ describe('createCustomNodeClass', () => {
     });
   });
 
-  describe('Linked image conversion', () => {
-    it('should handle linked-image component conversion', () => {
-      const linkedImageComponentDef = {
-        id: 'linked-image',
-        label: 'Linked Image',
-        fields: [
-          { name: 'src', label: 'Image', widget: 'image' },
-          { name: 'alt', label: 'Alt', widget: 'string' },
-          { name: 'title', label: 'Title', widget: 'string' },
-          { name: 'link', label: 'Link', widget: 'string' },
-        ],
-        pattern: /!\[(.+?)\]\((.+?)\)/,
-        /**
-         * Convert properties to block format.
-         * @param {Record<string, any>} props Properties.
-         * @returns {string} Block string.
-         */
-        toBlock: (props) => `![${props.alt}](${props.src})`,
-        /**
-         * Convert properties to preview format.
-         * @param {Record<string, any>} props Properties.
-         * @returns {string} Preview HTML.
-         */
-        toPreview: (props) => `<img src="${props.src}" alt="${props.alt}">`,
-        /**
-         * Extract properties from match array.
-         * @param {RegExpMatchArray} match Regex match array.
-         * @returns {Record<string, any>} Properties.
-         */
-        fromBlock: (match) => ({ alt: match[1], src: match[2] }),
-      };
+  describe('HTML syntax', () => {
+    const htmlComponentDef = {
+      id: 'figure',
+      label: 'Figure',
+      fields: [
+        { name: 'src', label: 'Image', widget: 'image' },
+        { name: 'caption', label: 'Caption', widget: 'string' },
+      ],
+      pattern: /^<!-- figure (?<src>\S+) (?<caption>.+) -->$/ms,
+      toBlock: ({ src = '', caption = '' }) => `<!-- figure ${src} ${caption} -->`,
+      toPreview: vi.fn(() => '<div>preview</div>'),
+      htmlSelector: 'figure.photo, p > img',
+      fromBlockHTML: (element) =>
+        element.dataset.skip ? undefined : { src: element.src, caption: element.caption ?? '' },
+      toBlockHTML: ({ src = '', caption = '' }) =>
+        `<figure class="photo"><img src="${src}"><figcaption>${caption}</figcaption></figure>`,
+    };
 
-      const CustomNode = createCustomNodeClass(linkedImageComponentDef);
-      const importDOM = CustomNode.importDOM();
+    /**
+     * Create a mock element that matches the given selectors.
+     * @param {string[]} selectors Selectors the element matches.
+     * @param {Record<string, any>} [props] Other properties.
+     * @returns {any} Element.
+     */
+    const mockElement = (selectors, props = {}) => ({
+      matches: vi.fn((selector) => selectors.includes(selector)),
+      dataset: {},
+      ...props,
+    });
 
-      expect(importDOM.a).toBeDefined();
+    it('should export the HTML written with toBlockHTML', () => {
+      const template = { innerHTML: '', content: { nodeType: 11 } };
 
-      const mockAnchor = {
-        href: 'https://example.com',
-        firstChild: {
-          nodeName: 'IMG',
-          src: 'image.jpg',
-          alt: 'Test image',
-          title: 'Image title',
-        },
-      };
+      document.createElement.mockImplementationOnce(() => template);
 
-      const conversion = importDOM.a(mockAnchor);
+      const CustomNode = createCustomNodeClass(htmlComponentDef);
+      const { element } = new CustomNode({ src: 'a.png', caption: 'A' }).exportDOM();
 
-      expect(conversion).not.toBeNull();
+      expect(document.createElement).toHaveBeenCalledWith('template');
+      expect(template.innerHTML).toBe(
+        '<figure class="photo"><img src="a.png"><figcaption>A</figcaption></figure>',
+      );
+      expect(element).toBe(template.content);
+    });
+
+    it('should export an element returned by toBlockHTML as is', () => {
+      const figure = { localName: 'figure' };
+      const CustomNode = createCustomNodeClass({ ...htmlComponentDef, toBlockHTML: () => figure });
+
+      document.createElement.mockClear();
+
+      expect(new CustomNode({ src: 'a.png' }).exportDOM()).toEqual({ element: figure });
+      expect(document.createElement).not.toHaveBeenCalled();
+    });
+
+    it('should export nothing for a toBlockHTML output other than a string or an element', () => {
+      [undefined, null, false].forEach((output) => {
+        const template = { innerHTML: 'x', content: {} };
+
+        document.createElement.mockImplementationOnce(() => template);
+
+        const CustomNode = createCustomNodeClass({
+          ...htmlComponentDef,
+          id: `figure-${output}`,
+          toBlockHTML: () => output,
+        });
+
+        expect(new CustomNode().exportDOM()).toEqual({ element: template.content });
+        expect(template.innerHTML).toBe('');
+      });
+    });
+
+    it('should export empty props with toBlockHTML', () => {
+      const template = { innerHTML: '', content: {} };
+
+      document.createElement.mockImplementationOnce(() => template);
+
+      const CustomNode = createCustomNodeClass(htmlComponentDef);
+
+      new CustomNode().exportDOM();
+
+      expect(template.innerHTML).toBe(
+        '<figure class="photo"><img src=""><figcaption></figcaption></figure>',
+      );
+    });
+
+    it('should import the element types the selector names', () => {
+      const CustomNode = createCustomNodeClass(htmlComponentDef);
+      const conversionMap = CustomNode.importDOM();
+
+      expect(Object.keys(conversionMap)).toEqual(['figure', 'img']);
+      // The tag isn’t guessed from the preview
+      expect(htmlComponentDef.toPreview).not.toHaveBeenCalled();
+
+      const figure = mockElement(['figure.photo, p > img'], { src: 'a.png', caption: 'A' });
+      const conversion = conversionMap.figure(figure);
+
+      expect(figure.matches).toHaveBeenCalledWith('figure.photo, p > img');
       expect(conversion?.priority).toBe(4);
 
-      const result = conversion?.conversion();
+      const { node, after } = conversion.conversion();
 
-      expect(result?.node).toBeInstanceOf(CustomNode);
-      expect(result?.node.__props).toEqual({
-        src: 'image.jpg',
-        alt: 'Test image',
-        title: 'Image title',
-        link: 'https://example.com',
-      });
-      expect(typeof result?.after).toBe('function');
-      expect(result?.after?.()).toEqual([]);
+      expect(node).toBeInstanceOf(CustomNode);
+      expect(node.__props).toEqual({ src: 'a.png', caption: 'A' });
+      // The content of the element is part of the component
+      expect(after()).toEqual([]);
     });
 
-    it('should return null for linked-image when firstChild is not an img', () => {
-      const linkedImageComponentDef = {
-        id: 'linked-image',
-        label: 'Linked Image',
-        fields: [],
-        pattern: /!\[(.+?)\]\((.+?)\)/,
-        /**
-         * Convert properties to block format.
-         * @returns {string} Block string.
-         */
-        toBlock: () => '',
-        /**
-         * Convert properties to preview format.
-         * @returns {string} Preview HTML.
-         */
-        toPreview: () => '',
-        /**
-         * Extract properties from match array.
-         * @returns {Record<string, any>} Properties.
-         */
-        fromBlock: () => ({}),
-      };
+    it('should skip an element the selector doesn’t match', () => {
+      const CustomNode = createCustomNodeClass(htmlComponentDef);
+      const conversionMap = CustomNode.importDOM();
 
-      const CustomNode = createCustomNodeClass(linkedImageComponentDef);
-      const importDOM = CustomNode.importDOM();
-
-      const mockAnchor = {
-        href: 'https://example.com',
-        firstChild: {
-          nodeName: 'SPAN',
-        },
-      };
-
-      const conversion = importDOM.a(mockAnchor);
-
-      expect(conversion).toBeNull();
+      expect(conversionMap.figure(mockElement([]))).toBeNull();
     });
 
-    it('should return null for linked-image when firstChild is undefined', () => {
-      const linkedImageComponentDef = {
-        id: 'linked-image',
-        label: 'Linked Image',
-        fields: [],
-        pattern: /!\[(.+?)\]\((.+?)\)/,
-        /**
-         * Convert properties to block format.
-         * @returns {string} Block string.
-         */
-        toBlock: () => '',
-        /**
-         * Convert properties to preview format.
-         * @returns {string} Preview HTML.
-         */
-        toPreview: () => '',
-        /**
-         * Extract properties from match array.
-         * @returns {Record<string, any>} Properties.
-         */
-        fromBlock: () => ({}),
-      };
+    it('should skip an element fromBlockHTML rejects', () => {
+      const CustomNode = createCustomNodeClass(htmlComponentDef);
+      const conversionMap = CustomNode.importDOM();
 
-      const CustomNode = createCustomNodeClass(linkedImageComponentDef);
-      const importDOM = CustomNode.importDOM();
+      expect(
+        conversionMap.img(mockElement(['figure.photo, p > img'], { dataset: { skip: '1' } })),
+      ).toBeNull();
+    });
 
-      const mockAnchor = {
-        href: 'https://example.com',
-      };
+    it('should guess the element from the preview without the HTML options', () => {
+      const CustomNode = createCustomNodeClass({ ...htmlComponentDef, htmlSelector: undefined });
 
-      const conversion = importDOM.a(mockAnchor);
-
-      expect(conversion).toBeNull();
+      expect(Object.keys(CustomNode.importDOM())).toEqual(['div']);
     });
   });
 
@@ -1693,45 +1767,6 @@ describe('createCustomNodeClass', () => {
       const CustomNode = createCustomNodeClass(componentDef);
 
       expect(CustomNode).toBeDefined();
-    });
-
-    it('should handle linked-image importDOM with non-img child node', () => {
-      // Test line 106: return null when firstChild is not an img
-      const componentDef = {
-        id: 'linked-image',
-        label: 'Linked Image',
-        fields: [
-          { name: 'src', label: 'Source', widget: 'image' },
-          { name: 'alt', label: 'Alt Text', required: false },
-          { name: 'title', label: 'Title', required: false },
-          { name: 'link', label: 'Link', required: false },
-        ],
-        pattern: /linked-image/,
-        toPreview: () => '<img src="test.jpg" alt="test" />',
-        toBlock: () => '![test](test.jpg)',
-      };
-
-      const CustomNode = createCustomNodeClass(componentDef);
-      const conversionMap = CustomNode.importDOM();
-
-      // Should have 'a' conversion for linked-image component
-      expect(conversionMap).toHaveProperty('a');
-
-      // Create a mock anchor node with non-img first child
-      const mockNode = {
-        nodeName: 'A',
-        firstChild: {
-          nodeName: 'SPAN', // Not an img
-          toLowerCase: () => 'span',
-        },
-      };
-
-      // The 'a' handler should return null for non-img children
-      const handler = conversionMap.a;
-      // @ts-expect-error - Testing internal behavior
-      const result = handler(mockNode);
-
-      expect(result).toBeNull();
     });
   });
 });

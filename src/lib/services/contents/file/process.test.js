@@ -187,6 +187,16 @@ describe('Test getSlug()', () => {
     ).toBe('my-post-2023');
   });
 
+  test('matches an unclosed placeholder after literal text as literal text only once', () => {
+    // The literal text before an unclosed `{{` used to be added to the pattern twice
+    expect(
+      getSlug({
+        subPath: 'my-post/x{{y',
+        subPathTemplate: '{{slug}}/x{{y',
+      }),
+    ).toBe('my-post');
+  });
+
   test('handles slug extraction when regex match succeeds', () => {
     // Test the successful branch where slug is extracted from regex match
     expect(
@@ -296,6 +306,29 @@ describe('Test parseFileContent()', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBe(mockError);
     expect(consoleSpy).toHaveBeenCalledWith(mockError);
+
+    consoleSpy.mockRestore();
+  });
+
+  test('doesn’t parse a file whose content couldn’t be read as an empty file', async () => {
+    const file = /** @type {BaseEntryListItem} */ ({
+      name: 'large.md',
+      path: 'posts/large.md',
+      text: undefined,
+      sha: 'abc123',
+      size: 100,
+      type: 'entry',
+      folder: { collectionName: 'posts' },
+    });
+
+    const errors = /** @type {Error[]} */ ([]);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await parseFileContent(file, errors);
+
+    expect(result).toBeUndefined();
+    expect(parseEntryFile).not.toHaveBeenCalled();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toBe('posts/large.md could not be read.');
 
     consoleSpy.mockRestore();
   });
@@ -833,7 +866,12 @@ describe('Test extractPathInfo()', () => {
       folder: { collectionName: 'data' },
     });
 
-    const result = extractPathInfo(file, 'members', undefined, 'en', false);
+    const result = extractPathInfo({
+      file,
+      fileName: 'members',
+      defaultLocale: 'en',
+      isMultiFileStructure: false,
+    });
 
     expect(result).toEqual({
       subPath: '/data/members.yml',
@@ -858,7 +896,12 @@ describe('Test extractPathInfo()', () => {
       },
     });
 
-    const result = extractPathInfo(file, 'members', undefined, 'en', true);
+    const result = extractPathInfo({
+      file,
+      fileName: 'members',
+      defaultLocale: 'en',
+      isMultiFileStructure: true,
+    });
 
     expect(result).toEqual({
       locale: 'en',
@@ -878,7 +921,13 @@ describe('Test extractPathInfo()', () => {
     });
 
     const regex = /^\/content\/posts\/(?<subPath>[^/]+?)\.md$/;
-    const result = extractPathInfo(file, undefined, regex, 'en', false);
+
+    const result = extractPathInfo({
+      file,
+      fullPathRegEx: regex,
+      defaultLocale: 'en',
+      isMultiFileStructure: false,
+    });
 
     expect(result).toEqual({
       subPath: 'my-post',
@@ -898,7 +947,13 @@ describe('Test extractPathInfo()', () => {
     });
 
     const regex = /^\/content\/posts\/(?<subPath>[^/]+?)\.(?<locale>en|fr)\.md$/;
-    const result = extractPathInfo(file, undefined, regex, 'en', true);
+
+    const result = extractPathInfo({
+      file,
+      fullPathRegEx: regex,
+      defaultLocale: 'en',
+      isMultiFileStructure: true,
+    });
 
     expect(result).toEqual({
       subPath: 'my-post',
@@ -918,7 +973,13 @@ describe('Test extractPathInfo()', () => {
     });
 
     const regex = /^\/content\/posts\/(?<subPath>[^/]+?)\.md$/;
-    const result = extractPathInfo(file, undefined, regex, 'en', false);
+
+    const result = extractPathInfo({
+      file,
+      fullPathRegEx: regex,
+      defaultLocale: 'en',
+      isMultiFileStructure: false,
+    });
 
     expect(result).toEqual({
       subPath: undefined,
@@ -937,7 +998,11 @@ describe('Test extractPathInfo()', () => {
       folder: { collectionName: 'posts' },
     });
 
-    const result = extractPathInfo(file, undefined, undefined, 'en', false);
+    const result = extractPathInfo({
+      file,
+      defaultLocale: 'en',
+      isMultiFileStructure: false,
+    });
 
     expect(result).toEqual({
       subPath: undefined,
@@ -960,7 +1025,12 @@ describe('Test extractPathInfo()', () => {
     });
 
     // With fileName and multi-file structure but no filePathMap
-    const result = extractPathInfo(file, 'members', undefined, 'en', true);
+    const result = extractPathInfo({
+      file,
+      fileName: 'members',
+      defaultLocale: 'en',
+      isMultiFileStructure: true,
+    });
 
     expect(result).toEqual({
       subPath: undefined,
@@ -986,7 +1056,12 @@ describe('Test extractPathInfo()', () => {
     });
 
     // With fileName and multi-file structure, but current path doesn't match any filePathMap entry
-    const result = extractPathInfo(file, 'members', undefined, 'en', true);
+    const result = extractPathInfo({
+      file,
+      fileName: 'members',
+      defaultLocale: 'en',
+      isMultiFileStructure: true,
+    });
 
     expect(result).toEqual({
       subPath: undefined,
@@ -1006,7 +1081,12 @@ describe('Test processNonI18nEntry()', () => {
 
     const rawContent = { title: 'My Post', body: 'Content' };
 
-    processNonI18nEntry(entry, rawContent, '/posts/my-post.md', undefined, 'my-post', undefined);
+    processNonI18nEntry({
+      entry,
+      rawContent,
+      path: '/posts/my-post.md',
+      subPath: 'my-post',
+    });
 
     expect(entry.slug).toBe('my-post');
     expect(entry.locales._default).toEqual({
@@ -1026,7 +1106,13 @@ describe('Test processNonI18nEntry()', () => {
 
     const rawContent = { members: [] };
 
-    processNonI18nEntry(entry, rawContent, '/data/members.yml', 'members', 'data', undefined);
+    processNonI18nEntry({
+      entry,
+      rawContent,
+      path: '/data/members.yml',
+      fileName: 'members',
+      subPath: 'data',
+    });
 
     expect(entry.slug).toBe('members');
   });
@@ -1046,15 +1132,13 @@ describe('Test processI18nSingleFileEntry()', () => {
       fr: { title: 'Mon Article', body: 'Contenu' },
     };
 
-    processI18nSingleFileEntry(
+    processI18nSingleFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.md',
-      undefined,
-      'my-post',
-      undefined,
-      ['en', 'fr'],
-    );
+      path: '/posts/my-post.md',
+      subPath: 'my-post',
+      allLocales: ['en', 'fr'],
+    });
 
     expect(entry.slug).toBe('my-post');
     expect(entry.locales.en).toEqual({
@@ -1082,15 +1166,13 @@ describe('Test processI18nSingleFileEntry()', () => {
       // fr locale missing
     };
 
-    processI18nSingleFileEntry(
+    processI18nSingleFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.md',
-      undefined,
-      'my-post',
-      undefined,
-      ['en', 'fr'],
-    );
+      path: '/posts/my-post.md',
+      subPath: 'my-post',
+      allLocales: ['en', 'fr'],
+    });
 
     expect(entry.locales.en).toBeDefined();
     expect(entry.locales.fr).toBeUndefined();
@@ -1100,15 +1182,13 @@ describe('Test processI18nSingleFileEntry()', () => {
     const entry = /** @type {Entry} */ ({ id: '', slug: '', subPath: 'my-post', locales: {} });
     const rawContent = { en: { title: 'My Post' }, fr: null, de: 'x' };
 
-    processI18nSingleFileEntry(
+    processI18nSingleFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.md',
-      undefined,
-      'my-post',
-      undefined,
-      ['en', 'fr', 'de'],
-    );
+      path: '/posts/my-post.md',
+      subPath: 'my-post',
+      allLocales: ['en', 'fr', 'de'],
+    });
 
     expect(Object.keys(entry.locales)).toEqual(['en']);
   });
@@ -1126,19 +1206,16 @@ describe('Test processI18nMultiFileEntry()', () => {
     const rawContent = { title: 'My Post', body: 'Content' };
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    const wasMerged = processI18nMultiFileEntry(
+    const wasMerged = processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.en.md',
-      undefined,
-      'my-post',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      undefined,
+      path: '/posts/my-post.en.md',
+      subPath: 'my-post',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     expect(wasMerged).toBe(false);
     expect(entry.id).toBe('posts/my-post');
@@ -1176,19 +1253,16 @@ describe('Test processI18nMultiFileEntry()', () => {
     const rawContent = { title: 'Mon Article', body: 'Contenu' };
     const entryMap = new Map([[existingEntry.id, existingEntry]]);
 
-    const wasMerged = processI18nMultiFileEntry(
+    const wasMerged = processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.fr.md',
-      undefined,
-      'my-post',
-      undefined,
-      'fr',
-      'en',
-      'posts',
-      undefined,
+      path: '/posts/my-post.fr.md',
+      subPath: 'my-post',
+      locale: 'fr',
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     expect(wasMerged).toBe(true);
     expect(existingEntry.locales.fr).toEqual({
@@ -1214,21 +1288,56 @@ describe('Test processI18nMultiFileEntry()', () => {
 
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.en.md',
-      undefined,
-      'my-post',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      'translationKey',
+      path: '/posts/my-post.en.md',
+      subPath: 'my-post',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
+      canonicalSlugKey: 'translationKey',
       entryMap,
-    );
+    });
 
     expect(entry.id).toBe('posts/canonical-slug');
+  });
+
+  test('links the locales of a collection file regardless of a canonical slug', () => {
+    const entryMap = /** @type {Map<string, Entry>} */ (new Map());
+    const entry = /** @type {Entry} */ ({ id: '', slug: '', subPath: 'about', locales: {} });
+
+    processI18nMultiFileEntry({
+      entry,
+      rawContent: { title: 'About', translationKey: 'about-page' },
+      path: 'content/about.en.md',
+      fileName: 'about',
+      subPath: 'about',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'pages',
+      canonicalSlugKey: 'translationKey',
+      entryMap,
+    });
+
+    const frEntry = /** @type {Entry} */ ({ id: '', slug: '', subPath: 'about', locales: {} });
+
+    const wasMerged = processI18nMultiFileEntry({
+      entry: frEntry,
+      rawContent: { title: 'À propos' },
+      path: 'content/about.fr.md',
+      fileName: 'about',
+      subPath: 'about',
+      locale: 'fr',
+      defaultLocale: 'en',
+      collectionName: 'pages',
+      canonicalSlugKey: 'translationKey',
+      entryMap,
+    });
+
+    expect(wasMerged).toBe(true);
+    expect(entry.id).toBe('pages/about');
+    expect(Object.keys(entry.locales)).toEqual(['en', 'fr']);
   });
 
   test('updates slug and subPath for default locale in existing entry', () => {
@@ -1255,19 +1364,16 @@ describe('Test processI18nMultiFileEntry()', () => {
     const rawContent = { title: 'My Post', body: 'Content' };
     const entryMap = new Map([[existingEntry.id, existingEntry]]);
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.en.md',
-      undefined,
-      'my-post',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      undefined,
+      path: '/posts/my-post.en.md',
+      subPath: 'my-post',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     expect(existingEntry.slug).toBe('my-post');
     expect(existingEntry.subPath).toBe('my-post');
@@ -1297,19 +1403,16 @@ describe('Test processI18nMultiFileEntry()', () => {
     const rawContent = { title: 'Mon Article' };
     const entryMap = new Map([[existingEntry.id, existingEntry]]);
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.fr.md',
-      undefined,
-      'my-post',
-      undefined,
-      'fr', // Non-default locale
-      'en', // Default locale
-      'posts',
-      undefined,
+      path: '/posts/my-post.fr.md',
+      subPath: 'my-post',
+      locale: 'fr', // Non-default locale
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     // slug and subPath should NOT be updated when merging non-default locale
     expect(existingEntry.slug).toBe('my-post');
@@ -1333,19 +1436,17 @@ describe('Test processI18nMultiFileEntry()', () => {
 
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.en.md',
-      undefined,
-      'my-post',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      'translationKey', // Key exists but value is not a string
+      path: '/posts/my-post.en.md',
+      subPath: 'my-post',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
+      canonicalSlugKey: 'translationKey', // Key exists but value is not a string
       entryMap,
-    );
+    });
 
     // Should use slug instead of canonicalSlug since value is not a string
     expect(entry.id).toBe('posts/my-post');
@@ -1367,19 +1468,17 @@ describe('Test processI18nMultiFileEntry()', () => {
 
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/my-post.en.md',
-      undefined,
-      'my-post',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      undefined, // canonicalSlugKey is undefined
+      path: '/posts/my-post.en.md',
+      subPath: 'my-post',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
+      canonicalSlugKey: undefined,
       entryMap,
-    );
+    });
 
     // Should use slug directly, no canonical slug
     expect(entry.id).toBe('posts/my-post');
@@ -1400,19 +1499,16 @@ describe('Test processI18nMultiFileEntry()', () => {
     const rawContent = { title: 'Mon Article' };
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    const wasMerged = processI18nMultiFileEntry(
+    const wasMerged = processI18nMultiFileEntry({
       entry,
       rawContent,
-      '/posts/mon-article.fr.md',
-      undefined,
-      'mon-article',
-      undefined,
-      'fr', // non-default locale processed first
-      'en', // default locale
-      'posts',
-      undefined,
+      path: '/posts/mon-article.fr.md',
+      subPath: 'mon-article',
+      locale: 'fr', // non-default locale processed first
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     expect(wasMerged).toBe(false);
     expect(entry.slug).toBe('mon-article');
@@ -1423,33 +1519,28 @@ describe('Test processI18nMultiFileEntry()', () => {
     const entry = /** @type {Entry} */ ({ id: '', slug: '', subPath: '', locales: {} });
     const entryMap = /** @type {Map<string, Entry>} */ (new Map());
 
-    processI18nMultiFileEntry(
+    processI18nMultiFileEntry({
       entry,
-      { title: 'Mon Article' },
-      '/posts/mon-article.fr.md',
-      undefined,
-      'mon-article',
-      undefined,
-      'fr',
-      'en',
-      'posts',
-      'translation_key',
+      rawContent: { title: 'Mon Article' },
+      path: '/posts/mon-article.fr.md',
+      subPath: 'mon-article',
+      locale: 'fr',
+      defaultLocale: 'en',
+      collectionName: 'posts',
+      canonicalSlugKey: 'translation_key',
       entryMap,
-    );
+    });
 
-    const wasMerged = processI18nMultiFileEntry(
-      /** @type {Entry} */ ({ id: '', slug: '', subPath: '', locales: {} }),
-      { title: 'My Article' },
-      '/posts/my-article.en.md',
-      undefined,
-      'my-article',
-      undefined,
-      'en',
-      'en',
-      'posts',
-      undefined,
+    const wasMerged = processI18nMultiFileEntry({
+      entry: /** @type {Entry} */ ({ id: '', slug: '', subPath: '', locales: {} }),
+      rawContent: { title: 'My Article' },
+      path: '/posts/my-article.en.md',
+      subPath: 'my-article',
+      locale: 'en',
+      defaultLocale: 'en',
+      collectionName: 'posts',
       entryMap,
-    );
+    });
 
     expect(wasMerged).toBe(false);
     // Without a canonical slug the two files aren’t linked, so this is a separate entry
@@ -1468,19 +1559,17 @@ describe('Test processI18nMultiFileEntry()', () => {
     const processFile = (subPath, locale) => {
       const entry = /** @type {Entry} */ ({ id: '', slug: '', subPath, locales: {} });
 
-      processI18nMultiFileEntry(
+      processI18nMultiFileEntry({
         entry,
-        { title: subPath },
-        `posts/${subPath}.${locale}.md`,
-        undefined,
+        rawContent: { title: subPath },
+        path: `posts/${subPath}.${locale}.md`,
         subPath,
-        '{{year}}/{{slug}}',
+        subPathTemplate: '{{year}}/{{slug}}',
         locale,
-        'en',
-        'posts',
-        undefined,
+        defaultLocale: 'en',
+        collectionName: 'posts',
         entryMap,
-      );
+      });
 
       return entry;
     };
@@ -2844,6 +2933,7 @@ describe('Test array file entries', () => {
     const file = /** @type {BaseEntryListItem} */ ({
       name: 'posts.json',
       path,
+      text: '[]',
       sha: 'abc',
       size: 10,
       type: 'entry',

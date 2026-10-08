@@ -5,8 +5,9 @@
 -->
 <script>
   import SubfolderListItem from '$lib/components/assets/list/subfolder-list-item.svelte';
-  import { goto } from '$lib/services/app/navigation';
+  import { encodeRoutePath, goto } from '$lib/services/app/navigation';
   import { assetsLocked, selectedAssetFolder } from '$lib/services/assets/folders';
+  import { isCmsFolderPath } from '$lib/services/assets/reserved';
   import { focusedAsset } from '$lib/services/assets/state';
   import {
     deletingSubfolder,
@@ -40,7 +41,7 @@
    * from the sidebar, so the page can tell it from another folder sharing its path.
    */
   const open = () => {
-    goto(`/assets/${subfolder.path}`, {
+    goto(encodeRoutePath(`/assets/${subfolder.path}`), {
       transitionType: 'forwards',
       state: { folder: selectedAssetFolder.current },
     });
@@ -69,5 +70,7 @@
   onDelete={() => {
     deletingSubfolder.current = subfolder;
   }}
-  actionsDisabled={assetsLocked.current || !!selectedAssetFolder.current?.readonly}
+  actionsDisabled={assetsLocked.current ||
+    !!selectedAssetFolder.current?.readonly ||
+    isCmsFolderPath(subfolder.path)}
 />

@@ -73,6 +73,19 @@ export const getExternalAssetPath = (service, { id }) =>
 export const canPreviewExternalAsset = ({ kind, fileName }) => canPreviewFile(kind, fileName);
 
 /**
+ * Add newly uploaded assets to the top of a list. A file uploaded under an existing name overwrites
+ * the asset on most services, so an asset with the same ID is replaced rather than listed twice.
+ * @param {ExternalAsset[]} uploaded Uploaded assets.
+ * @param {ExternalAsset[]} assets Assets listed so far.
+ * @returns {ExternalAsset[]} Merged list.
+ */
+export const mergeUploadedExternalAssets = (uploaded, assets) => {
+  const uploadedIds = new Set(uploaded.map(({ id }) => id));
+
+  return [...uploaded, ...assets.filter(({ id }) => !uploadedIds.has(id))];
+};
+
+/**
  * Cloud storage service currently selected in the Asset Library, or `undefined` when a repository
  * folder is selected instead.
  * @type {{ current: MediaLibraryService | undefined }}
@@ -167,6 +180,26 @@ export const selectedExternalAssetIdSet = createDerivedState(
  * @type {{ current: ExternalAsset | undefined }}
  */
 export const focusedExternalAsset = createRawState();
+
+/**
+ * Drop the selected and focused assets that fail the given test, e.g. once they have been deleted
+ * or are no longer listed. The selection is only replaced when an asset is actually dropped, so a
+ * caller running in an effect doesn’t invalidate it needlessly.
+ * @param {(id: string) => boolean} keep Function telling whether to keep the asset with the given
+ * ID.
+ */
+export const pruneExternalAssetSelection = (keep) => {
+  const selected = selectedExternalAssets.current;
+  const kept = selected.filter(({ id }) => keep(id));
+
+  if (kept.length !== selected.length) {
+    selectedExternalAssets.current = kept;
+  }
+
+  if (focusedExternalAsset.current && !keep(focusedExternalAsset.current.id)) {
+    focusedExternalAsset.current = undefined;
+  }
+};
 
 /**
  * Assets the toolbar actions operate on: the selected assets, or else the focused asset, if any.

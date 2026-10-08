@@ -34,10 +34,10 @@
     processResources,
     toFieldValue,
   } from '$lib/services/contents/fields/file/resources';
-  import { getAcceptedImageTypes } from '$lib/services/integrations/media-libraries/default';
+  import { getAcceptedFileTypes } from '$lib/services/integrations/media-libraries/default';
   import { isMultiple } from '$lib/services/integrations/media-libraries/multiple';
-  import { focusReorderControl } from '$lib/services/utils/drag-sorting';
   import { createDragSorter } from '$lib/services/utils/drag-sorting.svelte';
+  import { watchAsync } from '$lib/services/utils/state.svelte';
 
   /**
    * @import {
@@ -133,8 +133,11 @@
   const libraryConfig = $derived(assetOptions.libraryConfig);
   // An image field accepts HEIC photos only if they’re converted on upload
   const acceptedTypes = $derived(
-    accept ??
-      (isImageField ? getAcceptedImageTypes(libraryConfig.transformations).join(',') : undefined),
+    getAcceptedFileTypes({
+      accept,
+      image: isImageField,
+      transformations: libraryConfig.transformations,
+    }),
   );
   const assetLibraryFolderMap = $derived(assetOptions.folderMap);
   const targetFolder = $derived(assetOptions.folder);
@@ -330,10 +333,8 @@
    * Move an item to another position in the list.
    * @param {number} from Source index.
    * @param {number} to Destination index.
-   * @param {string} [action] `data-action` of the reorder control that triggered the move, so the
-   * focus can be restored to the matching control on the item once it has moved.
    */
-  const moveItem = async (from, to, action = 'reorder') => {
+  const moveItem = (from, to) => {
     const draft = entryDraft.current;
 
     // The items are gone along with the draft, so this is only a race with the editor closing
@@ -343,9 +344,6 @@
     }
 
     moveMultiValueItem({ draft, locale, valueStoreKey, keyPath, from, to });
-
-    await sleep(50);
-    focusReorderControl({ listElement: itemList, index: to, action });
   };
 
   const sorter = createDragSorter({
@@ -360,22 +358,32 @@
      */
     getListElement: () => itemList,
     onMove: moveItem,
+    /**
+     * Wait for the moved item to be rendered in its new position.
+     * @returns {Promise<void>} Promise.
+     */
+    settle: () => sleep(50),
   });
 
-  $effect(() => {
-    const draft = entryDraft.current;
+  // A read started for an earlier state of the draft can be answered after a later one, which
+  // `watchAsync` takes care of
+  watchAsync(
+    () => {
+      const draft = entryDraft.current;
 
-    // The editor is closed along with the draft, so this is only a race with the editor closing
-    /* v8 ignore next 3 */
-    if (!draft) {
-      return;
-    }
+      // The editor is closed along with the draft, so this is only a race with the editor closing
+      /* v8 ignore next 3 */
+      if (!draft) {
+        return undefined;
+      }
 
-    (async () => {
       // The draft’s files are read synchronously, so their changes are tracked as well
-      unsavedAssets = await getUnsavedAssets({ draft, targetFolderPath });
-    })();
-  });
+      return getUnsavedAssets({ draft, targetFolderPath });
+    },
+    (assets) => {
+      unsavedAssets = assets;
+    },
+  );
 </script>
 
 {#snippet uploadButton()}
@@ -431,7 +439,7 @@
                 onRemove={() => removeItem(index)}
                 onDragStart={() => sorter.onDragStart(index)}
                 onDragEnd={sorter.onDragEnd}
-                onMove={(to, action) => moveItem(index, to, action)}
+                onMove={(to, action) => sorter.move(index, to, action)}
               />
             </div>
           {/each}

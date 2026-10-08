@@ -3,6 +3,8 @@ import { getPathInfo } from '@sveltia/utils/file';
 import { escapeRegExp } from '@sveltia/utils/string';
 import sanitize from 'sanitize-filename';
 
+import { getOrCreateAsync } from '$lib/services/utils/cache';
+
 /**
  * Create a regular expression that matches the given path.
  * @param {string} path Path.
@@ -139,6 +141,17 @@ export const isEquivalentFileExtension = (a, b) => {
 export const createPath = (segments) => segments.filter(Boolean).join('/');
 
 /**
+ * Remove the given directory from the start of a path, if the path sits below it.
+ * @param {string} path Path, e.g. `images/photo.jpg`.
+ * @param {string | undefined} dir Directory path, e.g. `images`. An empty string or `undefined`
+ * leaves the path as is.
+ * @returns {string} Path relative to the directory, e.g. `photo.jpg`, or the original path if it
+ * doesn’t sit below the directory.
+ */
+export const stripPathPrefix = (path, dir) =>
+  dir && path.startsWith(`${dir}/`) ? path.slice(dir.length + 1) : path;
+
+/**
  * Sanitize a path by removing potentially dangerous path traversal segments (`.` and `..`). This
  * prevents path traversal attacks when paths are constructed from user input.
  * @param {string} path Path to sanitize, e.g. `../../../secret` or `images/../config`.
@@ -194,6 +207,16 @@ export const getBlob = (input) =>
   typeof input === 'string' ? new Blob([input], { type: 'text/plain' }) : input;
 
 /**
+ * Get the size of the given file or blob in bytes. A string is measured as UTF-8, the encoding a
+ * `Blob` created from it would use.
+ * @param {File | Blob | string} input File or Blob object, or a string representing the file
+ * content.
+ * @returns {number} Size in bytes.
+ */
+export const getByteSize = (input) =>
+  typeof input === 'string' ? new TextEncoder().encode(input).length : input.size;
+
+/**
  * Compute the Git object ID (SHA-1 hash) of the given blob.
  * @param {Blob} blob File or Blob object.
  * @returns {Promise<string>} Git object ID (SHA-1 hash) of the blob.
@@ -227,17 +250,6 @@ export const getGitHash = (input) => {
     return computeGitHash(getBlob(input));
   }
 
-  let promise = gitHashCache.get(input);
-
-  if (!promise) {
-    promise = computeGitHash(input).catch((error) => {
-      // Leave room for a retry, e.g. once the file is readable again
-      gitHashCache.delete(input);
-      throw error;
-    });
-
-    gitHashCache.set(input, promise);
-  }
-
-  return promise;
+  // A failure isn’t remembered, leaving room for a retry, e.g. once the file is readable again
+  return getOrCreateAsync(gitHashCache, input, () => computeGitHash(input));
 };

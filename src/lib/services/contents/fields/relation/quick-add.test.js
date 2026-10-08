@@ -6,8 +6,8 @@ import { getReferencedPendingEntries } from '$lib/services/contents/draft/pendin
 import { createSavingEntryData } from '$lib/services/contents/draft/save/changes';
 import { assignManualSortOrder } from '$lib/services/contents/draft/save/sort-order';
 import { getCanonicalSlug, getFillSlugOptions, getSlugs } from '$lib/services/contents/draft/slugs';
-import { getEntryOptions } from '$lib/services/contents/fields/relation/helpers';
-import { isWorkflowDraft, isWorkflowEnabled } from '$lib/services/workflow';
+import { getEntryOptions, getRefEntries } from '$lib/services/contents/fields/relation/helpers';
+import { isWorkflowDraft, isWorkflowEnabled, unpublishedEntries } from '$lib/services/workflow';
 
 import {
   createPendingEntry,
@@ -15,6 +15,7 @@ import {
   getNestedPendingEntries,
   getPendingEntrySlugs,
   getPendingRefEntries,
+  getRefEntriesWithPending,
   hasCreationRoom,
   selectPendingEntry,
 } from './quick-add';
@@ -58,11 +59,15 @@ vi.mock('$lib/services/contents/draft/slugs', () => ({
 
 vi.mock('$lib/services/contents/fields/relation/helpers', () => ({
   getEntryOptions: vi.fn(),
+  getRefEntries: vi.fn(() => []),
 }));
 
-vi.mock('$lib/services/workflow', () => ({
+// `mergeUnpublishedEntries` is a pure helper and is used as is
+vi.mock('$lib/services/workflow', async (importOriginal) => ({
+  .../** @type {object} */ (await importOriginal()),
   isWorkflowDraft: vi.fn(() => false),
   isWorkflowEnabled: vi.fn(() => false),
+  unpublishedEntries: { current: [] },
 }));
 
 /** @type {RelationField} */
@@ -155,6 +160,7 @@ describe('getCreatableCollection', () => {
 describe('hasCreationRoom', () => {
   beforeEach(() => {
     vi.mocked(getEntriesByCollection).mockReturnValue([]);
+    unpublishedEntries.current = [];
   });
 
   it('is always true without a limit', () => {
@@ -181,6 +187,30 @@ describe('hasCreationRoom', () => {
         draft: createParentDraft({ pendingEntries: [createPending('a'), createPending('b')] }),
       }),
     ).toBe(false);
+  });
+
+  it('counts a never-published draft in the collection against the limit', () => {
+    const collection = { ...tagCollection, limit: 2 };
+
+    /**
+     * Build an entry in the collection.
+     * @param {string} slug Slug.
+     * @param {object} [workflow] Workflow properties of an unpublished entry.
+     * @returns {any} Entry.
+     */
+    const entry = (slug, workflow) => ({
+      slug,
+      locales: { _default: { path: `tags/${slug}.md` } },
+      ...(workflow ? { workflow } : {}),
+    });
+
+    vi.mocked(getEntriesByCollection).mockReturnValue([entry('a')]);
+    unpublishedEntries.current = [
+      entry('b', { collectionName: 'tags' }),
+      entry('c', { collectionName: 'posts' }),
+    ];
+
+    expect(hasCreationRoom({ collection, draft: createParentDraft() })).toBe(false);
   });
 
   it('doesn’t count the collection’s index file against the limit', () => {
@@ -226,6 +256,28 @@ describe('getPendingRefEntries', () => {
   it('returns nothing without a draft', () => {
     expect(getPendingRefEntries({ draft: null, fieldConfig, refEntries: [] })).toEqual([]);
     expect(getPendingRefEntries({ draft: undefined, fieldConfig, refEntries: [] })).toEqual([]);
+  });
+});
+
+describe('getRefEntriesWithPending', () => {
+  it('appends the pending entries to the saved ones', () => {
+    const svelte = createPending('svelte');
+    const react = createPending('react');
+    const saved = { ...svelte.entry, commitDate: new Date() };
+    const draft = createParentDraft({ pendingEntries: [svelte, react] });
+
+    vi.mocked(getRefEntries).mockReturnValue([saved]);
+
+    expect(getRefEntriesWithPending({ draft, fieldConfig })).toEqual([saved, react.entry]);
+    expect(getRefEntries).toHaveBeenCalledWith(fieldConfig);
+  });
+
+  it('returns the saved entries as they are when nothing is pending', () => {
+    const refEntries = [createPending('svelte').entry];
+
+    vi.mocked(getRefEntries).mockReturnValue(refEntries);
+
+    expect(getRefEntriesWithPending({ draft: null, fieldConfig })).toBe(refEntries);
   });
 });
 
@@ -470,6 +522,33 @@ describe('selectPendingEntry', () => {
 
     expect(draft.currentValues.en).toEqual({ 'tags.0': 'svelte' });
     expect(draft.currentValues.fr).toEqual({ 'tags.0': 'svelte' });
+  });
+
+  it('localizes a locale-prefixed value for every locale of a duplicated field', () => {
+    vi.mocked(getEntryOptions).mockReturnValue([
+      { label: 'Svelte', value: 'en/svelte', searchValue: 'Svelte' },
+    ]);
+
+    const draft = createParentDraft({
+      currentValues: { en: { 'tags.0': 'en/react' }, fr: { 'tags.0': 'fr/react' } },
+    });
+
+    selectPendingEntry({
+      draft,
+      locale: 'en',
+      keyPath: 'tags',
+      valueStoreKey: 'currentValues',
+      fieldConfig: {
+        ...fieldConfig,
+        multiple: true,
+        i18n: 'duplicate',
+        value_field: '{{locale}}/{{slug}}',
+      },
+      pendingEntry,
+    });
+
+    expect(draft.currentValues.en).toEqual({ 'tags.0': 'en/react', 'tags.1': 'en/svelte' });
+    expect(draft.currentValues.fr).toEqual({ 'tags.0': 'fr/react', 'tags.1': 'fr/svelte' });
   });
 
   it('leaves a list alone when the value is there or the list is full', () => {

@@ -6,12 +6,14 @@ import {
   createPathRegEx,
   encodeFilePath,
   getBlob,
+  getByteSize,
   getGitHash,
   isEquivalentFileExtension,
   renameIfNeeded,
   resolvePath,
   sanitizeFileName,
   sanitizePath,
+  stripPathPrefix,
 } from '$lib/services/utils/file';
 
 // Mock i18n dependencies
@@ -179,6 +181,24 @@ describe('Test getBlob()', () => {
     expect(result).toBe(binaryBlob); // Should return the same Blob object
     expect(result.size).toBe(5);
     expect(result.type).toBe('application/octet-stream');
+  });
+});
+
+describe('Test getByteSize()', () => {
+  test('Measure a string as UTF-8, like a Blob created from it', () => {
+    ['', 'Hello, World!', 'Café 日本語 🎉', 'Lone \uD800 surrogate'].forEach((content) => {
+      expect(getByteSize(content)).toBe(new Blob([content]).size);
+    });
+
+    expect(getByteSize('Café')).toBe(5);
+  });
+
+  test('Return the size of a Blob or File', () => {
+    const blob = new Blob([new Uint8Array([0x00, 0x01, 0x02])]);
+    const file = new File(['日本語'], 'test.txt', { type: 'text/plain' });
+
+    expect(getByteSize(blob)).toBe(3);
+    expect(getByteSize(file)).toBe(9);
   });
 });
 
@@ -451,6 +471,24 @@ describe('Test createPath()', () => {
 
   test('should handle array with only falsy values', () => {
     expect(createPath([null, undefined, ''])).toBe('');
+  });
+});
+
+describe('Test stripPathPrefix()', () => {
+  test('removes the directory from a path below it', () => {
+    expect(stripPathPrefix('images/photo.jpg', 'images')).toBe('photo.jpg');
+    expect(stripPathPrefix('images/2024/photo.jpg', 'images')).toBe('2024/photo.jpg');
+  });
+
+  test('leaves a path that is not below the directory as is', () => {
+    expect(stripPathPrefix('images-backup/photo.jpg', 'images')).toBe('images-backup/photo.jpg');
+    expect(stripPathPrefix('images', 'images')).toBe('images');
+    expect(stripPathPrefix('other/photo.jpg', 'images')).toBe('other/photo.jpg');
+  });
+
+  test('leaves the path as is without a directory', () => {
+    expect(stripPathPrefix('/photo.jpg', '')).toBe('/photo.jpg');
+    expect(stripPathPrefix('photo.jpg', undefined)).toBe('photo.jpg');
   });
 });
 

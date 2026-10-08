@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   browsedDirPath,
+  browsingCmsFolder,
   canBrowseSubfolders,
   formatSubfolderName,
+  getAssetsInDir,
   getDirName,
   getFolderBreadcrumbItems,
   getRelativePath,
@@ -222,6 +224,21 @@ describe('assets/subfolders', () => {
     });
   });
 
+  describe('browsingCmsFolder', () => {
+    it('should tell whether the browsed folder is one the CMS is served from', () => {
+      expect(browsingCmsFolder.current).toBe(false);
+
+      _selectedAssetFolder.current = createFolder({ internalPath: 'static' });
+      expect(browsingCmsFolder.current).toBe(false);
+
+      selectedSubfolderPath.current = 'admin';
+      expect(browsingCmsFolder.current).toBe(true);
+
+      selectedSubfolderPath.current = 'admin/js';
+      expect(browsingCmsFolder.current).toBe(true);
+    });
+  });
+
   describe('browsedDirPath', () => {
     it('should be undefined when no folder is selected', () => {
       expect(browsedDirPath.current).toBeUndefined();
@@ -247,6 +264,22 @@ describe('assets/subfolders', () => {
 
       selectedSubfolderPath.current = 'uploads';
       expect(browsedDirPath.current).toBe('uploads');
+    });
+  });
+
+  describe('getAssetsInDir', () => {
+    it('should list the assets right in the directory, leaving out the ones in its subfolders', () => {
+      const assets = ['static/images/a.jpg', 'static/images/2024/b.jpg', 'static/c.jpg'].map(
+        createAsset,
+      );
+
+      expect(getAssetsInDir({ dirPath: 'static/images', assets })).toEqual([assets[0]]);
+    });
+
+    it('should list the assets at the root for an empty directory path', () => {
+      const assets = ['a.jpg', 'static/b.jpg'].map(createAsset);
+
+      expect(getAssetsInDir({ dirPath: '', assets })).toEqual([assets[0]]);
     });
   });
 
@@ -423,6 +456,12 @@ describe('assets/subfolders', () => {
     it('should accept a new name', () => {
       expect(validateSubfolderName({ name: 'summer', takenNames })).toBeUndefined();
       expect(validateSubfolderName({ name: ' summer 2024 ', takenNames })).toBeUndefined();
+    });
+
+    it('should reject the name of a folder the CMS is usually served from', () => {
+      expect(validateSubfolderName({ name: 'admin', takenNames })).toBe('reserved');
+      expect(validateSubfolderName({ name: ' CMS ', takenNames })).toBe('reserved');
+      expect(validateSubfolderName({ name: 'admins', takenNames })).toBeUndefined();
     });
 
     it('should reject an empty name', () => {

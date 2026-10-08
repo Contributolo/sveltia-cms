@@ -333,9 +333,10 @@
  * @property {() => RepositoryInfo | undefined} init Function to initialize the backend.
  * @property {(options: SignInOptions) => Promise<User | void>} signIn Function to sign in.
  * @property {() => Promise<void>} signOut Function to sign out.
- * @property {() => Promise<void>} fetchFiles Function to fetch files. Calling it again once the
- * site data has been loaded brings the stores up to date with the repository, fetching only what
- * has changed.
+ * @property {(options?: { lastCommit?: { hash: string, message: string } }) => Promise<void>}
+ * fetchFiles Function to fetch files. Calling it again once the site data has been loaded brings
+ * the stores up to date with the repository, fetching only what has changed. A Git backend takes
+ * the branch’s last commit, if the caller has just fetched it, so it isn’t fetched again.
  * @property {() => Promise<{ hash: string, message: string }>} [fetchLastCommit] Function to fetch
  * the configured branch’s head commit, to tell whether the repository has changed since the site
  * data was loaded. Git backends only.
@@ -433,6 +434,31 @@
  */
 
 /**
+ * A file changed by a pull request, as read by {@link WorkflowBackendService.fetchMergeState}.
+ * @typedef {object} WorkflowChangedFile
+ * @property {string} path File path relative to the project’s root directory.
+ * @property {'added' | 'modified' | 'removed' | 'renamed'} status How the pull request changes the
+ * file.
+ * @property {string} [previousPath] Path a renamed file had before.
+ * @property {string} [mode] Git file mode at the head commit, as an octal string, e.g. `100644`
+ * for a regular file, `120000` for a symbolic link or `160000` for a submodule. Missing for a
+ * removed file.
+ */
+
+/**
+ * State of a pull request read right before it’s merged.
+ * @typedef {object} WorkflowMergeState
+ * @property {string | undefined} headSHA Git object ID of the commit the pull request’s branch
+ * points at.
+ * @property {boolean} onConfiguredBranches Whether the pull request goes from a branch of the
+ * configured repository, rather than a fork, to the configured branch, which its base branch can be
+ * changed from on the Git service.
+ * @property {WorkflowChangedFile[]} files Files the pull request changes as of `headSHA`.
+ * @property {boolean} complete Whether `files` lists every changed file. The Git services cap the
+ * list, and a pull request over the cap can’t be checked.
+ */
+
+/**
  * Arguments for the `saveEntry` function on {@link WorkflowBackendService}.
  * @typedef {object} WorkflowSaveOptions
  * @property {FileChange[]} changes Changes to be committed on the workflow branch.
@@ -457,10 +483,24 @@
  * @property {(pullRequest: WorkflowPullRequest, status: WorkflowStatus) =>
  * Promise<WorkflowPullRequest>} updateStatus Function to update the pull request’s status label and
  * draft state.
+ * @property {(branch: string) => Promise<string | undefined>} fetchBranchHead Function to fetch
+ * the commit the workflow branch points at, or `undefined` if the branch is gone. Two editors
+ * working on the same entry share its branch, so a save compares this with the head it last
+ * committed to find out whether someone else has written to it meanwhile.
+ * @property {(pullRequest: WorkflowPullRequest) => Promise<WorkflowMergeState>} fetchMergeState
+ * Function to read the pull request afresh right before it’s merged: where it goes, the commit its
+ * branch points at, and every file it changes as of that commit. Publishing checks this against
+ * what the CMS has shown for the entry, so a change it hasn’t shown can’t be merged along with it.
+ * @property {(args: { headSHA: string, paths: string[] }) => Promise<string[]>} fetchUnchangedPaths
+ * Function to find which of the given files are the same at the given commit as on the configured
+ * branch, missing from both counting as the same. A merge leaves such a file as it is, so it can’t
+ * publish anything; an answer the service can’t vouch for leaves the file out.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} publish Function to merge the
- * pull request and delete the workflow branch. The service may leave the merge to the Git service
- * when a required check is still running, in which case it resolves once the merge has landed, and
- * rejects if it won’t — the check has failed, say — so the entry isn’t taken for published.
+ * pull request and delete the workflow branch. The merge is pinned to the pull request’s
+ * `headSHA`, so it fails if the branch has moved on since. The service may leave the merge to the
+ * Git service when a required check is still running, in which case it resolves once the merge has
+ * landed, and rejects if it won’t — the check has failed, say — so the entry isn’t taken for
+ * published.
  * @property {(pullRequest: WorkflowPullRequest) => Promise<void>} discard Function to close the
  * pull request and delete the workflow branch.
  */
@@ -577,12 +617,12 @@
  * @property {string} model Model name.
  * @property {string} systemPrompt System/instruction prompt.
  * @property {string} userMessage User message content.
- * @property {number} [temperature] Sampling temperature (0–1). Default is 0.3. GPT-6 does not
- * support this parameter, so it will be ignored for that model.
+ * @property {number} [temperature] Sampling temperature (0–1). Default is 0.3. The OpenAI and
+ * Anthropic APIs don’t get this parameter, as GPT-6 and Claude Haiku 5.5 reject it.
  * @property {number} [maxTokens] Maximum output tokens. Default is 4000.
  * @property {'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'} [reasoning]
  * Reasoning effort. Only supported by certain providers (e.g., DeepSeek, Mistral AI). Default
- * varies by provider.
+ * varies by provider. Anthropic Claude only supports `none`, which disables thinking.
  */
 
 /**
@@ -1190,6 +1230,8 @@
  * leaving the published version on the site.
  * @property {boolean} [deletionCancelled] Whether a pending removal has been called off, leaving
  * the items on the site.
+ * @property {boolean} [alreadyPublished] Whether an Open Authoring contributor’s entry turned out
+ * to have been published by a maintainer when its status was changed, which closes the editor.
  * @property {boolean} published Whether the items have been published. This is `true` only when
  * automatic deployments are enabled and triggered.
  */
@@ -1257,6 +1299,23 @@
  * @property {string} label Folder name.
  * @property {() => void} [onClick] Called when the folder is selected. Not needed for the current
  * folder, which is shown as text.
+ */
+
+/**
+ * What the folder info panel in the Asset Library describes: the listed subfolder focused with a
+ * click or the keyboard, if any, or else the folder being browsed.
+ * @typedef {object} AssetFolderSummary
+ * @property {string} name Folder name.
+ * @property {string} [path] Folder path. Omitted for a location without a path, like the All Assets
+ * folder.
+ * @property {number} [folderCount] Number of subfolders. Omitted for a location that isn’t browsed
+ * by subfolder, which lists every asset below it at once.
+ * @property {number} assetCount Number of assets.
+ */
+
+/**
+ * Direction to move in between the listed assets in the asset details overlay.
+ * @typedef {'previous' | 'next'} AssetNavigationDirection
  */
 
 /**

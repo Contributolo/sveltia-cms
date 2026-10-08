@@ -3,31 +3,55 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   createPullRequest,
   deleteBranch,
+  fetchBranchHead,
   fetchMergeRequestFileContents,
   fetchMergeRequestFileList,
+  fetchOpenMergeRequests,
   fetchPullRequests,
   parseMergeRequest,
   stripDraftPrefix,
 } from '$lib/services/backends/git/gitlab/merge-requests';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { cmsConfig } from '$lib/services/config';
+import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
 vi.mock('@sveltia/utils/misc', () => ({ sleep: vi.fn() }));
 vi.mock('$lib/services/backends/git/gitlab/commits');
+vi.mock('$lib/services/backends/git/gitlab/fork', () => ({
+  /**
+   * Resolve the project that holds the workflow branches, as the real module does.
+   * @returns {any} Fork, or the configured project.
+   */
+  getWorkflowRepository: () => forkedRepository.current ?? { owner: 'group/sub', repo: 'project' },
+  projectIds: { base: 42 },
+}));
 vi.mock('$lib/services/backends/git/gitlab/repository', () => {
   const mockRepository = { owner: 'group/sub', repo: 'project', branch: 'main' };
+  /**
+   * Get the project ID the same way the real module does.
+   * @param {any} [repoPath] Project to address. Default: the configured project.
+   * @returns {string} URL-encoded project path.
+   */
+  const getProjectId = ({ owner, repo } = mockRepository) => encodeURIComponent(`${owner}/${repo}`);
 
   return {
     repository: mockRepository,
+    getProjectId,
     /**
-     * Get the project ID the same way the real module does.
-     * @returns {string} URL-encoded project path.
+     * Get the branch path the same way the real module does.
+     * @param {string} branch Branch name.
+     * @param {any} [repoPath] Project holding the branch.
+     * @returns {string} REST API path.
      */
-    getProjectId: () => encodeURIComponent(`${mockRepository.owner}/${mockRepository.repo}`),
+    getBranchPath: (branch, repoPath) =>
+      `/projects/${getProjectId(repoPath)}/repository/branches/${encodeURIComponent(branch)}`,
   };
 });
 vi.mock('$lib/services/backends/git/shared/api');
 vi.mock('$lib/services/config', () => ({ cmsConfig: { current: undefined } }));
+vi.mock('$lib/services/workflow/open-authoring', () => ({
+  forkedRepository: { current: undefined },
+}));
 
 const PROJECT_ID = encodeURIComponent('group/sub/project');
 
@@ -42,6 +66,7 @@ const createItem = (overrides = {}) => ({
   title: 'Draft: Create Post “hello”',
   web_url: 'https://gitlab.com/group/sub/project/-/merge_requests/1',
   source_branch: 'cms/posts/hello',
+  target_branch: 'main',
   sha: 'abc123',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-02T00:00:00Z',
@@ -54,6 +79,7 @@ describe('GitLab merge requests', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     cmsConfig.current = /** @type {any} */ ({ backend: { name: 'gitlab' } });
+    forkedRepository.current = undefined;
     vi.mocked(fetchAPI).mockResolvedValue({});
     vi.mocked(fetchGraphQL).mockResolvedValue({});
   });
@@ -89,6 +115,13 @@ describe('GitLab merge requests', () => {
         author: { name: 'Me', email: '', id: 7, login: 'me' },
         files: [],
       });
+    });
+
+    test('returns undefined for a merge request to another branch', () => {
+      // One whose target branch was changed on GitLab after the CMS opened it, or one labelled
+      // by hand. Listing it would move the label on someone else’s request, and publish the entry
+      // into that other branch
+      expect(parseMergeRequest(createItem({ target_branch: 'develop' }))).toBeUndefined();
     });
 
     test('returns undefined without a CMS label', () => {
@@ -216,6 +249,7 @@ describe('GitLab merge requests', () => {
       await fetchMergeRequestFileContents(mergeRequest);
 
       expect(fetchGraphQL).toHaveBeenCalledWith(expect.stringContaining('blobs'), {
+        fullPath: 'group/sub/project',
         branch: 'cms/posts/hello',
         paths: ['content/posts/hello.md', 'static/img.png'],
       });
@@ -235,6 +269,28 @@ describe('GitLab merge requests', () => {
         size: 0,
         text: undefined,
         deleted: false,
+      });
+    });
+
+    test('reads the files at the head commit when there is one', async () => {
+      vi.mocked(fetchGraphQL).mockResolvedValue({
+        project: { repository: { blobs: { nodes: [] } } },
+      });
+
+      await fetchMergeRequestFileContents(
+        /** @type {any} */ ({
+          branch: 'cms/posts/hello',
+          headSHA: 'abc123',
+          files: [{ path: 'content/posts/hello.md', sha: '', size: 0, deleted: false }],
+        }),
+      );
+
+      // The content shown is that of the commit a publish is pinned to, even if the branch has
+      // moved on since the merge request was listed
+      expect(fetchGraphQL).toHaveBeenCalledWith(expect.stringContaining('blobs'), {
+        fullPath: 'group/sub/project',
+        branch: 'abc123',
+        paths: ['content/posts/hello.md'],
       });
     });
 
@@ -415,6 +471,48 @@ describe('GitLab merge requests', () => {
     });
   });
 
+  describe('fetchBranchHead', () => {
+    test('reads the commit the branch points at', async () => {
+      vi.mocked(fetchAPI).mockResolvedValue({ commit: { id: 'abc123' } });
+
+      await expect(fetchBranchHead('cms/posts/hello')).resolves.toBe('abc123');
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/repository/branches/cms%2Fposts%2Fhello`,
+      );
+    });
+
+    test('reads an Open Authoring branch from the fork it lives in', async () => {
+      forkedRepository.current = /** @type {any} */ ({ owner: 'contributor', repo: 'project' });
+      vi.mocked(fetchAPI).mockResolvedValue({ commit: { id: 'abc123' } });
+
+      const branch = 'cms/contributor/project/posts/hello';
+
+      await expect(fetchBranchHead(branch)).resolves.toBe('abc123');
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/contributor%2Fproject/repository/branches/${encodeURIComponent(branch)}`,
+      );
+    });
+
+    test('answers undefined for a branch that is gone', async () => {
+      // A merge request merged or closed outside the CMS leaves no branch behind
+      vi.mocked(fetchAPI).mockRejectedValue(
+        new Error('Server responded with an error', { cause: { status: 404 } }),
+      );
+
+      await expect(fetchBranchHead('cms/posts/hello')).resolves.toBeUndefined();
+    });
+
+    test('raises any other failure, rather than taking the branch for gone', async () => {
+      vi.mocked(fetchAPI).mockRejectedValue(
+        new Error('Server responded with an error', { cause: { status: 500 } }),
+      );
+
+      await expect(fetchBranchHead('cms/posts/hello')).rejects.toThrow();
+    });
+  });
+
   describe('deleteBranch', () => {
     test('deletes the branch with an encoded name', async () => {
       await deleteBranch('cms/posts/hello');
@@ -442,6 +540,70 @@ describe('GitLab merge requests', () => {
       await expect(deleteBranch('cms/posts/hello')).resolves.toBeUndefined();
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
+    });
+  });
+
+  describe('Open Authoring', () => {
+    const FORK = { owner: 'contributor', repo: 'project' };
+    const FORK_ID = encodeURIComponent('contributor/project');
+
+    beforeEach(() => {
+      forkedRepository.current = /** @type {any} */ (FORK);
+    });
+
+    test('reads the blobs from the fork', async () => {
+      vi.mocked(fetchGraphQL).mockResolvedValue({
+        project: { repository: { blobs: { nodes: [] } } },
+      });
+
+      await fetchMergeRequestFileContents(
+        /** @type {any} */ ({
+          branch: 'cms/contributor/project/posts/hello',
+          files: [{ path: 'content/posts/hello.md', deleted: false }],
+        }),
+      );
+
+      expect(fetchGraphQL).toHaveBeenCalledWith(
+        expect.stringContaining('blobs'),
+        expect.objectContaining({ fullPath: 'contributor/project' }),
+      );
+    });
+
+    test('deletes the branch from the fork', async () => {
+      await deleteBranch('cms/contributor/project/posts/hello');
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${FORK_ID}/repository/branches/cms%2Fcontributor%2Fproject%2Fposts%2Fhello`,
+        { method: 'DELETE', responseType: 'text' },
+      );
+    });
+
+    test('opens the merge request from the fork, without a label', async () => {
+      vi.mocked(fetchAPI).mockResolvedValue({
+        id: 900,
+        iid: 5,
+        web_url: 'u',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      });
+
+      await createPullRequest({
+        branch: 'cms/contributor/project/posts/hello',
+        title: 'Create Post “hello”',
+        status: 'pending_review',
+      });
+
+      expect(fetchAPI).toHaveBeenCalledWith(`/projects/${FORK_ID}/merge_requests`, {
+        method: 'POST',
+        body: expect.objectContaining({
+          title: 'Create Post “hello”',
+          target_project_id: 42,
+          allow_collaboration: true,
+        }),
+      });
+
+      // Labelling needs write access to the configured project, which a contributor lacks
+      expect(vi.mocked(fetchAPI).mock.calls[0][1]?.body).not.toHaveProperty('labels');
     });
   });
 
@@ -502,6 +664,85 @@ describe('GitLab merge requests', () => {
       });
 
       expect(result.canMerge).toBe(false);
+    });
+
+    test('keeps a title starting with a draft indicator, and reports the author', async () => {
+      vi.mocked(fetchAPI).mockResolvedValue({
+        id: 900,
+        iid: 5,
+        title: 'WIP: notes',
+        source_branch: 'cms/posts/wip',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        author: { id: 1, name: 'Alice', username: 'alice' },
+      });
+
+      const result = await createPullRequest({
+        branch: 'cms/posts/wip',
+        title: 'WIP: notes',
+        status: 'pending_review',
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          title: 'WIP: notes',
+          branch: 'cms/posts/wip',
+          status: 'pending_review',
+          author: { name: 'Alice', email: '', id: 1, login: 'alice' },
+        }),
+      );
+    });
+  });
+
+  describe('fetchOpenMergeRequests', () => {
+    /**
+     * Create a raw merge request from a branch of this project.
+     * @param {object} [overrides] Properties to override.
+     * @returns {any} Merge request.
+     */
+    const createOwnItem = (overrides = {}) =>
+      createItem({
+        iid: 7,
+        source_project_id: 1,
+        target_project_id: 1,
+        target_branch: 'main',
+        ...overrides,
+      });
+
+    test('returns the merge requests from the branch, whichever branch they go to', async () => {
+      const items = [createOwnItem(), createOwnItem({ iid: 8, target_branch: 'develop' })];
+
+      vi.mocked(fetchAPI).mockResolvedValue(items);
+
+      await expect(fetchOpenMergeRequests('cms/posts/hello')).resolves.toEqual(items);
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/merge_requests` +
+          '?state=opened&source_branch=cms%2Fposts%2Fhello&per_page=100',
+      );
+    });
+
+    test('encodes the branch name', async () => {
+      // Left as is, `#` would start a fragment and the query would be dropped, so the request would
+      // ask about every open merge request from `cms/posts/c`
+      vi.mocked(fetchAPI).mockResolvedValue([]);
+
+      await expect(fetchOpenMergeRequests('cms/posts/c#-tips')).resolves.toEqual([]);
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/merge_requests` +
+          '?state=opened&source_branch=cms%2Fposts%2Fc%23-tips&per_page=100',
+      );
+    });
+
+    test('skips a merge request from a fork', async () => {
+      // A fork can have a source branch of the same name, but its merge request isn’t this
+      // branch’s, and deleting this branch doesn’t touch it
+      vi.mocked(fetchAPI).mockResolvedValue([
+        createItem({ iid: 7, source_project_id: 2, target_project_id: 1, target_branch: 'main' }),
+      ]);
+
+      await expect(fetchOpenMergeRequests('cms/posts/hello')).resolves.toEqual([]);
     });
   });
 });

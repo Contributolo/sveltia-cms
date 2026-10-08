@@ -15,7 +15,8 @@ import { isArrayFileCollection } from '$lib/services/contents/collection/predica
 import { fillEntryPathTemplate } from '$lib/services/contents/entry';
 import { getField } from '$lib/services/contents/entry/fields';
 import { MEDIA_FIELD_TYPES } from '$lib/services/contents/fields';
-import { getOrCreate } from '$lib/services/utils/cache';
+import { getOrCreate, memoizeOnSource } from '$lib/services/utils/cache';
+import { getEntryAssetVersion } from '$lib/services/workflow/assets';
 
 /**
  * @import { Asset, Entry, InternalEntryCollection } from '$lib/types/private';
@@ -210,9 +211,8 @@ const entryIdsByFolderCache = new WeakMap();
  */
 const getEntryIdsByFolder = (collectionName) => {
   const entries = getEntriesByCollection(collectionName);
-  let index = entryIdsByFolderCache.get(entries);
 
-  if (!index) {
+  return getOrCreate(entryIdsByFolderCache, entries, () => {
     /** @type {Map<string, Set<string>>} */
     const map = new Map();
 
@@ -226,11 +226,8 @@ const getEntryIdsByFolder = (collectionName) => {
       });
     });
 
-    index = map;
-    entryIdsByFolderCache.set(entries, index);
-  }
-
-  return index;
+    return map;
+  });
 };
 
 /**
@@ -244,23 +241,9 @@ const getEntryIdsByFolder = (collectionName) => {
  * Index of `allAssets` by folder, rebuilt when the store is replaced. See
  * {@link getAssetsBelowFolder}.
  */
-const assetsByFolderCache = {
-  source: /** @type {Asset[] | undefined} */ (undefined),
-  /** @type {Map<string, IndexedAsset[]>} */
-  map: new Map(),
-};
-
-/**
- * Get the assets stored in the given folder or any of its subfolders. Every asset is indexed under
- * its own folder and each folder above it, so this is a lookup rather than a scan of the whole
- * asset library — which would otherwise be repeated for every entry being deleted at once.
- * @param {string} folderPath Folder path.
- * @returns {IndexedAsset[]} Assets, in the order of `allAssets`.
- */
-const getAssetsBelowFolder = (folderPath) => {
-  const { current: _allAssets } = allAssets;
-
-  if (_allAssets !== assetsByFolderCache.source) {
+const getAssetsByFolder = memoizeOnSource(
+  () => allAssets.current,
+  (_allAssets) => {
     /** @type {Map<string, IndexedAsset[]>} */
     const map = new Map();
 
@@ -283,12 +266,18 @@ const getAssetsBelowFolder = (folderPath) => {
       }
     });
 
-    assetsByFolderCache.source = _allAssets;
-    assetsByFolderCache.map = map;
-  }
+    return map;
+  },
+);
 
-  return assetsByFolderCache.map.get(folderPath) ?? [];
-};
+/**
+ * Get the assets stored in the given folder or any of its subfolders. Every asset is indexed under
+ * its own folder and each folder above it, so this is a lookup rather than a scan of the whole
+ * asset library — which would otherwise be repeated for every entry being deleted at once.
+ * @param {string} folderPath Folder path.
+ * @returns {IndexedAsset[]} Assets, in the order of `allAssets`.
+ */
+const getAssetsBelowFolder = (folderPath) => getAssetsByFolder().get(folderPath) ?? [];
 
 /**
  * Get a list of assets associated with the given entry.
@@ -374,7 +363,8 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
         while (dirPath.length > entryFolderPath.length) {
           const entryIds = entryIdsByFolder.get(dirPath);
 
-          if (entryIds && [...entryIds].some((id) => id !== entry.id)) {
+          // A set in the index is never empty, so it holds another entry unless it holds just this
+          if (entryIds && (entryIds.size > 1 || !entryIds.has(entry.id))) {
             return true;
           }
 
@@ -406,10 +396,19 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
  * @param {string} [args.fileName] Collection file name. File/singleton collection only.
  * @returns {Asset[]} Assets, or an empty list unless the collection stores them with the entry.
  * The entries of a collection storing all of them in one file share the folder of the file, and an
- * asset there can be used by any of them, so none of the assets belongs to one entry alone.
+ * asset there can be used by any of them, so none of the assets belongs to one entry alone. Only
+ * the versions the entry has are returned: a file another pull request put at the same path isn’t
+ * the entry’s to remove.
  */
 export const getEntryRelativeAssets = ({ entry, collectionName, fileName }) =>
   getAssetFolder({ collectionName, fileName })?.entryRelative &&
   !isArrayFileCollection(getCollection(collectionName))
-    ? getAssociatedAssets({ entry, collectionName, fileName, relative: true })
+    ? /** @type {Asset[]} */ ([
+        // Two versions of a file can map to the same asset, so the list is deduplicated again
+        ...new Set(
+          getAssociatedAssets({ entry, collectionName, fileName, relative: true })
+            .map((asset) => getEntryAssetVersion(asset, entry))
+            .filter(Boolean),
+        ),
+      ])
     : [];

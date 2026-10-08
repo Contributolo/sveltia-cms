@@ -5,6 +5,7 @@ import { repository } from '$lib/services/backends/git/github/repository';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { encodePath } from '$lib/services/backends/git/shared/url';
+import { deleteRemoteBranch } from '$lib/services/backends/git/shared/workflow';
 import { getAllStatusLabels, getStatusLabel } from '$lib/services/workflow/labels';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
@@ -90,7 +91,9 @@ const FILES_CHUNK_SIZE = 100;
 /**
  * Fetch the content of the files changed in the given pull requests, and populate the
  * {@link WorkflowFile} objects in place. Binary files, such as images, are skipped; only their blob
- * metadata is stored.
+ * metadata is stored. The files are read at the pull request’s head commit rather than its branch,
+ * so the content shown is that of the commit a publish is pinned to, even if the branch moves on
+ * while the board loads.
  * @param {WorkflowPullRequest[]} pullRequests Pull requests to complete.
  */
 export const fetchPullRequestFiles = async (pullRequests) => {
@@ -121,8 +124,8 @@ export const fetchPullRequestFiles = async (pullRequests) => {
      * @param {{ pullRequest: WorkflowPullRequest, file: WorkflowFile }} target Target.
      * @returns {string} Field selection.
      */
-    getFragment: ({ pullRequest, file }) => `
-      object(expression: ${JSON.stringify(`${pullRequest.branch}:${file.path}`)}) {
+    getFragment: ({ pullRequest: { headSHA, branch }, file }) => `
+      object(expression: ${JSON.stringify(`${headSHA ?? branch}:${file.path}`)}) {
         ... on Blob {
           oid
           byteSize
@@ -165,6 +168,38 @@ export const fetchPullRequestFiles = async (pullRequests) => {
   });
 };
 
+const FETCH_BRANCH_HEAD_QUERY = `
+  query($owner: String!, $repo: String!, $branch: String!) {
+    repository(owner: $owner, name: $repo) {
+      branchHead: ref(qualifiedName: $branch) {
+        target {
+          oid
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Fetch the commit the given workflow branch points at. Two editors working on the same entry
+ * share its branch, so this is how a save finds out that someone else has committed to it since
+ * the draft was opened. The branch is looked up in the repository it lives in, which is the
+ * contributor’s fork with Open Authoring.
+ * @param {string} branch Branch name.
+ * @returns {Promise<string | undefined>} Git object ID, or `undefined` if the branch is gone,
+ * which is what a merged or closed pull request leaves behind.
+ * @see https://docs.github.com/en/graphql/reference/objects#ref
+ */
+export const fetchBranchHead = async (branch) => {
+  const { owner, repo } = getWorkflowRepository();
+
+  const { repository: result } = /** @type {{ repository: Record<string, any> }} */ (
+    await fetchGraphQL(FETCH_BRANCH_HEAD_QUERY, { owner, repo, branch: `refs/heads/${branch}` })
+  );
+
+  return result?.branchHead?.target?.oid;
+};
+
 /**
  * Delete the given branch. Failures are ignored, as the branch may already have been deleted by the
  * repository’s automatic head branch deletion setting.
@@ -174,23 +209,12 @@ export const fetchPullRequestFiles = async (pullRequests) => {
 export const deleteBranch = async (branch) => {
   const { owner, repo } = getWorkflowRepository();
 
-  try {
-    await fetchAPI(`/repos/${owner}/${repo}/git/refs/heads/${encodePath(branch)}`, {
-      method: 'DELETE',
-      responseType: 'text',
-    });
-  } catch (/** @type {any} */ ex) {
-    // The branch is already gone, which is what was wanted. GitHub answers a missing reference with
-    // a 422 rather than a 404
-    if ([404, 422].includes(ex.cause?.status)) {
-      return;
-    }
-
-    // Leaving the branch behind is harmless, but it makes the next pull request for the same entry
-    // start from an existing branch, so make the failure visible rather than swallowing it
-    // eslint-disable-next-line no-console
-    console.warn(`Failed to delete the ${branch} branch.`, ex);
-  }
+  await deleteRemoteBranch({
+    branch,
+    path: `/repos/${owner}/${repo}/git/refs/heads/${encodePath(branch)}`,
+    // GitHub answers a missing reference with a 422 rather than a 404
+    goneStatuses: [404, 422],
+  });
 };
 
 /**

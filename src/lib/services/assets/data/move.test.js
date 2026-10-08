@@ -32,7 +32,8 @@ vi.mock('$lib/services/assets/state', () => ({
   overlaidAsset: { current: undefined },
 }));
 
-vi.mock('$lib/services/assets/data', () => ({
+vi.mock('$lib/services/assets/data', async (importOriginal) => ({
+  .../** @type {Record<string, any>} */ (await importOriginal()),
   assetUpdatesToast: {
     set: vi.fn(),
   },
@@ -600,6 +601,34 @@ describe('assets/data/move', () => {
       );
     });
 
+    it('should fall back to the asset’s own folder without a global folder', async () => {
+      const { getAssetPublicURL } = await import('$lib/services/assets/info');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
+      const { getAssetFoldersByPath } = await import('$lib/services/assets/folders');
+      const entry = { id: 'entry1', locales: {} };
+      const asset = { ...mockAsset, folder: { internalPath: 'assets', publicPath: '/media' } };
+
+      vi.mocked(getAssetPublicURL).mockReturnValue(undefined);
+      vi.mocked(getAssetFoldersByPath).mockReturnValue([]);
+      vi.mocked(getEntriesByAssets)
+        .mockResolvedValueOnce([[entry]])
+        .mockResolvedValueOnce([]);
+
+      const updatingEntryMap = new Map();
+
+      // Without the global `media_folder` option, there is no global folder
+      await collectEntryChangesFromAssets({
+        _globalAssetFolder: undefined,
+        movingAssets: [{ asset, path: 'assets/new/image.jpg' }],
+        updatingEntryMap,
+      });
+
+      expect(getEntriesByAssets).toHaveBeenLastCalledWith(
+        [{ asset, newURL: '/media/new/image.jpg' }],
+        { entries: [updatingEntryMap.get('entry1')] },
+      );
+    });
+
     it('should rewrite the references in a copy of each entry, falling back to the folder paths', async () => {
       const { getAssetPublicURL } = await import('$lib/services/assets/info');
       const { getEntriesByAssets } = await import('$lib/services/assets/references');
@@ -750,6 +779,35 @@ describe('assets/data/move', () => {
       // A reference that doesn’t end with the name is left alone
       expect(newURL('other.png')).toBeUndefined();
       expect(newURL('not-my photo.png')).toBeUndefined();
+    });
+
+    it('should swap a file name encoded with the `encode_file_path` option when renaming', async () => {
+      const { getAssetPublicURL } = await import('$lib/services/assets/info');
+      const { getEntriesByAssets } = await import('$lib/services/assets/references');
+      const entry = { id: 'entry1', locales: {} };
+
+      const asset = {
+        path: 'content/posts/hello/photo (1).png',
+        name: 'photo (1).png',
+        folder: { internalPath: 'content/posts', entryRelative: true },
+      };
+
+      vi.mocked(getAssetPublicURL).mockReturnValue(undefined);
+      vi.mocked(getEntriesByAssets).mockResolvedValue([[entry]]);
+
+      await collectEntryChangesFromAssets({
+        _globalAssetFolder: { publicPath: '/images' },
+        movingAssets: [{ asset, path: 'content/posts/hello/photo (2).png' }],
+        updatingEntryMap: new Map(),
+      });
+
+      const [[{ newURL }]] = vi.mocked(getEntriesByAssets).mock.lastCall;
+
+      // `encodeFilePath()` encodes `(` and `)` as well, unlike `encodeURI()`
+      expect(newURL('photo%20%281%29.png')).toBe('photo%20%282%29.png');
+      expect(newURL('./photo%20%281%29.png')).toBe('./photo%20%282%29.png');
+      // A name encoded by hand is still matched
+      expect(newURL('photo%20(1).png')).toBe('photo%20(2).png');
     });
 
     it('should fall back to the folder paths when an entry-relative asset changes folders', async () => {
@@ -954,6 +1012,34 @@ describe('assets/data/move', () => {
     beforeEach(() => {
       // The implementations the tests above gave the mocks must not leak into these
       vi.resetAllMocks();
+    });
+
+    it('refuses to move a file into or out of a folder the CMS is served from', async () => {
+      const { saveChanges } = await import('$lib/services/backends/save');
+      const asset = /** @type {any} */ ({ path: 'static/images/a.png', sha: 'a' });
+
+      await expect(moveAssets('move', [{ asset, path: 'static/admin/a.png' }])).rejects.toThrow(
+        'Cannot change a file in a folder the CMS is served from',
+      );
+      await expect(
+        moveAssets('rename', [
+          { asset: { ...asset, path: 'static/admin/index.html' }, path: 'static/admin/old.html' },
+        ]),
+      ).rejects.toThrow('Cannot change a file in a folder the CMS is served from');
+      // An empty folder’s placeholder counts too
+      await expect(
+        moveAssets('move', [], {
+          extraChanges: [
+            { action: 'move', path: 'static/admin/.gitkeep', previousPath: 'static/x/.gitkeep' },
+          ],
+        }),
+      ).rejects.toThrow('Cannot change a file in a folder the CMS is served from');
+      await expect(
+        moveAssets('move', [], {
+          extraChanges: [{ action: 'create', path: 'static/cms/.gitkeep' }],
+        }),
+      ).rejects.toThrow('Cannot change a file in a folder the CMS is served from');
+      expect(saveChanges).not.toHaveBeenCalled();
     });
 
     it('should move assets and update entries', async () => {

@@ -1,4 +1,3 @@
-import { getPathInfo } from '@sveltia/utils/file';
 import mime from 'mime';
 
 import { fetchLastCommit } from '$lib/services/backends/git/github/commits';
@@ -15,9 +14,10 @@ import {
   repository,
 } from '$lib/services/backends/git/github/repository';
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
-import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
+import { mapConcurrently, runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { fetchAndParseFiles } from '$lib/services/backends/git/shared/fetch';
 import { startSimulatedProgress } from '$lib/services/backends/git/shared/progress';
+import { toFileListItems } from '$lib/services/backends/git/shared/tree';
 import { encodePath } from '$lib/services/backends/git/shared/url';
 import { forkedRepository, openAuthoringInitialized } from '$lib/services/workflow/open-authoring';
 
@@ -32,22 +32,78 @@ import { forkedRepository, openAuthoringInitialized } from '$lib/services/workfl
  */
 
 /**
- * Fetch the repository’s complete file list, and return it in the canonical format.
+ * @typedef {{ type: string, path: string, sha: string, size: number }} GitTreeEntry
+ */
+
+/**
+ * Fetch a Git tree.
+ * @param {string} treeRef Commit SHA, branch name or tree SHA.
+ * @param {boolean} recursive Whether to list the subtrees as well.
+ * @returns {Promise<{ tree: GitTreeEntry[], truncated: boolean }>} Tree, and whether the response
+ * was truncated because the tree is too big.
+ * @see https://docs.github.com/en/rest/git/trees#get-a-tree
+ */
+const fetchTree = async (treeRef, recursive) => {
+  const { owner, repo } = repository;
+  const query = recursive ? '?recursive=1' : '';
+
+  return /** @type {{ tree: GitTreeEntry[], truncated: boolean }} */ (
+    await fetchAPI(`/repos/${owner}/${repo}/git/trees/${encodePath(treeRef)}${query}`)
+  );
+};
+
+/**
+ * Fetch the repository’s complete file list, and return it in the canonical format. A tree too big
+ * to be listed recursively in one response, as in a huge repository, has its subtrees listed
+ * separately instead, as GitHub suggests.
  * @param {string} [lastHash] The last commit’s SHA-1 hash.
  * @returns {Promise<BaseFileListItemProps[]>} File list.
+ * @throws {Error} If a single directory has too many files to list.
  */
 export const fetchFileList = async (lastHash) => {
-  const { owner, repo, branch } = repository;
-  const ref = encodePath(/** @type {string} */ (lastHash ?? branch));
+  /** @type {GitTreeEntry[]} */
+  const blobs = [];
+  /** @type {{ sha: string, prefix: string }[]} */
+  let pending = [{ sha: /** @type {string} */ (lastHash ?? repository.branch), prefix: '' }];
 
-  const result =
-    /** @type {{ tree: { type: string, path: string, sha: string, size: number }[] }} */ (
-      await fetchAPI(`/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`)
+  // One level at a time, so the requests in flight stay within the concurrency limit
+  while (pending.length) {
+    // eslint-disable-next-line no-await-in-loop
+    const results = await mapConcurrently(pending, async ({ sha, prefix }) => {
+      const { tree, truncated } = await fetchTree(sha, true);
+
+      if (!truncated) {
+        return { prefix, entries: tree, subtrees: [] };
+      }
+
+      // List this directory alone, and its subdirectories separately
+      const { tree: children, truncated: tooBig } = await fetchTree(sha, false);
+
+      if (tooBig) {
+        throw new Error(`The directory '${prefix || '/'}' has too many files to list.`);
+      }
+
+      return {
+        prefix,
+        entries: children,
+        subtrees: children.filter(({ type }) => type === 'tree'),
+      };
+    });
+
+    pending = results.flatMap(({ prefix, subtrees }) =>
+      subtrees.map(({ path, sha }) => ({ sha, prefix: `${prefix}${path}/` })),
     );
 
-  return result.tree
-    .filter(({ type }) => type === 'blob')
-    .map(({ path, sha, size }) => ({ path, sha, size, name: getPathInfo(path).basename }));
+    results.forEach(({ prefix, entries }) => {
+      entries.forEach((entry) => {
+        if (entry.type === 'blob') {
+          blobs.push({ ...entry, path: `${prefix}${entry.path}` });
+        }
+      });
+    });
+  }
+
+  return toFileListItems(blobs);
 };
 
 /**
@@ -170,18 +226,29 @@ export const parseFileContents = async (fetchingFiles, results) => {
  */
 export const parseFileMetadata = (fetchingFiles, results) =>
   Object.fromEntries(
-    fetchingFiles.map(({ path }, index) => {
-      const {
-        author: { name, email, user: _user },
-        committedDate,
-      } = results[index].target.history.nodes[0];
+    fetchingFiles.flatMap(({ path }, index) => {
+      const commit = results[index]?.target?.history?.nodes?.[0];
+
+      // The file may have been deleted since the tree was fetched, leaving no commit to read. Skip
+      // it rather than losing the metadata of every other file; it’s fetched again next time
+      if (!commit) {
+        return [];
+      }
+
+      const { author, committedDate } = commit;
+      const user = author?.user;
 
       return [
-        path,
-        {
-          commitAuthor: { name, email, id: _user?.id, login: _user?.login },
-          commitDate: new Date(committedDate),
-        },
+        [
+          path,
+          {
+            // The author can be `null` when the commit has no valid author info
+            commitAuthor: author
+              ? { name: author.name, email: author.email, id: user?.id, login: user?.login }
+              : undefined,
+            commitDate: new Date(committedDate),
+          },
+        ],
       ];
     }),
   );
@@ -238,8 +305,11 @@ export const fetchFileMetadata = async (fetchingFiles) =>
 /**
  * Fetch file list from the backend service, download/parse all the entry files, then cache them in
  * the {@link allEntries} and {@link allAssets} stores.
+ * @param {object} [options] Options.
+ * @param {{ hash: string, message: string }} [options.lastCommit] Last commit on the branch, if the
+ * caller has just fetched it, so it isn’t fetched again.
  */
-export const fetchFiles = async () => {
+export const fetchFiles = async ({ lastCommit } = {}) => {
   // With Open Authoring, a user without write access is a contributor rather than a stranger, so
   // they’re given a fork to work in instead of being turned away. Setting the fork up may involve
   // the user, so it has to finish before the data is fetched, unlike a plain access check
@@ -258,6 +328,7 @@ export const fetchFiles = async () => {
     checkBranchAccess: forkedRepository.current ? undefined : checkBranchAccess,
     fetchDefaultBranchName,
     fetchLastCommit,
+    lastCommit,
     fetchFileList,
     fetchFileContents,
     fetchFileMetadata,

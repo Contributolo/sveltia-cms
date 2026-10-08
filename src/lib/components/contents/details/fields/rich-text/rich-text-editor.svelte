@@ -32,9 +32,11 @@
     COMPONENT_NAME_PREFIX_REGEX,
     DEFAULT_BUTTONS,
     DEFAULT_MODES,
+    getValueFormat,
     NODE_NAME_MAP,
   } from '$lib/services/contents/fields/rich-text';
   import { getComponentDef } from '$lib/services/contents/fields/rich-text/components/definitions';
+  import { supportsHTML } from '$lib/services/contents/fields/rich-text/components/utils';
   import {
     getDroppedImages,
     getPastedImages,
@@ -108,6 +110,7 @@
     use_markdown_shortcuts: useMarkdownShortcuts = defaultConfig.use_markdown_shortcuts ?? true,
     minimal = defaultConfig.minimal ?? false,
   } = $derived(fieldConfig);
+  const format = $derived(getValueFormat(fieldConfig));
   const modes = $derived(_modes.map((name) => NODE_NAME_MAP[name]).filter(Boolean));
   /* v8 ignore start -- the editor is only rendered while the draft is there */
   const isIndexFile = $derived(entryDraft.current?.isIndexFile ?? false);
@@ -155,6 +158,8 @@
           getComponentDef(name === 'image' && linkedImagesEnabled ? 'linked-image' : name),
         )
         .filter((def) => !!def)
+        // Only the components with HTML syntax can be used in HTML
+        .filter((def) => format !== 'html' || supportsHTML(def))
         // Compare the definition IDs, because the parent component names are the IDs, which are
         // prefixed for custom components, e.g. `x-youtube`
         .filter(
@@ -352,6 +357,7 @@
       <TextEditor
         lang={getCanonicalLocale(locale)}
         dir={getDirection(locale)}
+        {format}
         {modes}
         {buttons}
         {components}

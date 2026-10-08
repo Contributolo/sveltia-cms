@@ -2,7 +2,7 @@ import { isObjectArray } from '@sveltia/utils/array';
 import { isObject } from '@sveltia/utils/object';
 
 import { getListItemKeys } from '$lib/services/contents/entry/key-paths';
-import { getOrCreateBounded } from '$lib/services/utils/cache';
+import { getOrCreate, getOrCreateBounded } from '$lib/services/utils/cache';
 
 /**
  * @import { FlattenedEntryContent } from '$lib/types/private';
@@ -37,16 +37,8 @@ const optionsKeyCache = new WeakMap();
  * @param {any[]} options Field options.
  * @returns {string} Cache key.
  */
-const getOptionsKey = (options) => {
-  let key = optionsKeyCache.get(options);
-
-  if (key === undefined) {
-    key = JSON.stringify(options);
-    optionsKeyCache.set(options, key);
-  }
-
-  return key;
-};
+const getOptionsKey = (options) =>
+  getOrCreate(optionsKeyCache, options, () => JSON.stringify(options));
 
 /**
  * Get the display value for an option.
@@ -69,10 +61,10 @@ export const getOptionLabel = ({ fieldConfig, valueMap, keyPath }) => {
   }
 
   const optionsKey = getOptionsKey(options);
-
-  const cacheKey = multiple
-    ? `${keyPath}|${optionsKey}|${JSON.stringify(rawValues)}`
-    : `${keyPath}|${optionsKey}|${String(valueMap[keyPath])}`;
+  // Serialize the value with its type, so `1` and `'1'`, which can be options with different
+  // labels, don’t share a cache entry
+  const valueKey = JSON.stringify(multiple ? rawValues : valueMap[keyPath]);
+  const cacheKey = `${keyPath}|${optionsKey}|${valueKey}`;
 
   /**
    * Get the label by value.

@@ -1,8 +1,29 @@
+// @vitest-environment happy-dom
 /* eslint-disable jsdoc/require-jsdoc */
 
-import { describe, expect, it, vi } from 'vitest';
+import { fromJS, isList } from 'immutable';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildMarkdownWithPreviews, encodeImageSrc, splitMarkdownBlocks } from './previews.js';
+import {
+  buildMarkdownWithPreviews,
+  encodeImageSrc,
+  getComponentFieldList,
+  getNoAsset,
+  MEDIA_QUERY_SELECTOR,
+  parseSrcset,
+  resolveMediaURLs,
+  splitHTMLBlocks,
+  splitMarkdownBlocks,
+} from './previews.js';
+
+const { immutableLoaded } = vi.hoisted(() => ({
+  immutableLoaded: { current: false },
+}));
+
+vi.mock('$lib/services/api/immutable', () => ({
+  getImmutable: () => ({ fromJS }),
+  immutableLoaded,
+}));
 
 describe('encodeImageSrc', () => {
   it('should encode spaces in image URLs without title', () => {
@@ -206,6 +227,27 @@ describe('encodeImageSrc', () => {
   });
 });
 
+describe('splitHTMLBlocks', () => {
+  it('should split HTML into its top-level nodes, keeping the text between them', () => {
+    expect(
+      splitHTMLBlocks(
+        '<h2>Title</h2>\n<p>A <b>bold</b> move</p><!-- more -->Tom &amp; <i>Jerry</i>',
+      ),
+    ).toEqual(['<h2>Title</h2>', '\n', '<p>A <b>bold</b> move</p>', 'Tom &amp; ', '<i>Jerry</i>']);
+  });
+
+  it('should keep a component placeholder as a block', () => {
+    expect(splitHTMLBlocks('<p>Hi</p><span data-component-key="abc"></span>')).toEqual([
+      '<p>Hi</p>',
+      '<span data-component-key="abc"></span>',
+    ]);
+  });
+
+  it('should return no blocks for an empty string', () => {
+    expect(splitHTMLBlocks('')).toEqual([]);
+  });
+});
+
 describe('buildMarkdownWithPreviews', () => {
   it('should return the original markdown when there are no component defs', () => {
     const { markdown, previewMap } = buildMarkdownWithPreviews('Hello **world**', []);
@@ -219,6 +261,97 @@ describe('buildMarkdownWithPreviews', () => {
 
     expect(markdown).toBe('');
     expect(previewMap.size).toBe(0);
+  });
+
+  describe('with the HTML format', () => {
+    /** @type {import('$lib/types/public').EditorComponentDefinition[]} */
+    const componentDefs = [
+      {
+        id: 'note',
+        label: 'Note',
+        fields: [],
+        pattern: /\[note\](?<content>.*?)\[\/note\]/s,
+        toBlock: ({ content }) => `[note]${content}[/note]`,
+        toPreview: ({ content }) => `<div class="preview">${content}</div>`,
+        htmlSelector: 'aside',
+        fromBlockHTML: (element) =>
+          element.classList.contains('note') ? { content: element.innerHTML } : undefined,
+        toBlockHTML: ({ content }) => `<aside class="note">${content}</aside>`,
+      },
+      {
+        // A component without HTML support is left out
+        id: 'markdown-only',
+        label: 'Markdown Only',
+        fields: [],
+        pattern: /<p>/,
+        toBlock: () => '',
+        toPreview: () => '<b>should not be used</b>',
+      },
+    ];
+
+    /**
+     * Build the preview of an HTML value.
+     * @param {string | undefined} html HTML.
+     * @param {import('$lib/types/public').EditorComponentDefinition[]} [defs] Definitions.
+     * @param {Map<string, any>} [previousPreviewMap] Previous preview map.
+     * @returns {ReturnType<typeof buildMarkdownWithPreviews>} Result.
+     */
+    const build = (html, defs = componentDefs, previousPreviewMap = undefined) =>
+      buildMarkdownWithPreviews(html, defs, previousPreviewMap, undefined, 'html');
+
+    it('should find the components with the HTML syntax, outermost first', () => {
+      const { markdown, previewMap } = build(
+        '<p>[note]Not a note[/note]</p><section><aside class="note">Hi <aside class="note">' +
+          'nested</aside></aside></section><aside>Not a note either</aside>',
+      );
+
+      expect(markdown).toBe(
+        '<p>[note]Not a note[/note]</p><section><div class="preview">Hi <aside class="note">' +
+          'nested</aside></div></section><aside>Not a note either</aside>',
+      );
+      expect(previewMap.size).toBe(1);
+    });
+
+    it('should replace an element preview with a placeholder, with unique keys', () => {
+      const element = document.createElement('div');
+      const defs = [{ ...componentDefs[0], toPreview: () => element }];
+
+      const { markdown, previewMap } = build(
+        '<aside class="note">Hi</aside><aside class="note">Hi</aside>',
+        defs,
+      );
+
+      const keys = [...previewMap.keys()];
+
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(`${keys[0]}-1`);
+      expect(markdown).toBe(
+        keys.map((key) => `<span data-component-key="${key}"></span>`).join(''),
+      );
+      expect([...previewMap.values()]).toEqual([element, element]);
+    });
+
+    it('should reuse a preview from the previous run', () => {
+      const toPreview = vi.fn(() => '<b>preview</b>');
+      const defs = [{ ...componentDefs[0], toPreview }];
+      const { previewMap } = build('<aside class="note">Hi</aside>', defs);
+      const { markdown } = build('<p>New</p><aside class="note">Hi</aside>', defs, previewMap);
+
+      expect(toPreview).toHaveBeenCalledOnce();
+      expect(markdown).toBe('<p>New</p><b>preview</b>');
+    });
+
+    it('should leave the HTML of a component without a preview as is', () => {
+      const html = '<p><aside class="note">Hi</aside></p>';
+      const { markdown, previewMap } = build(html, [{ ...componentDefs[0], toPreview: undefined }]);
+
+      expect(markdown).toBe(html);
+      expect(previewMap.size).toBe(0);
+    });
+
+    it('should return an empty string for an undefined value', () => {
+      expect(build(undefined).markdown).toBe('');
+    });
   });
 
   it('should inline a string preview directly in the markdown', () => {
@@ -558,7 +691,11 @@ describe('buildMarkdownWithPreviews', () => {
       const B = elementDef('B');
       const { markdown, previewMap } = buildMarkdownWithPreviews(nested, [A, B]);
 
-      expect(A.toPreview).toHaveBeenCalledWith({ body: 'outer\n\n<B>\n\ninner\n\n</B>' });
+      expect(A.toPreview).toHaveBeenCalledWith(
+        { body: 'outer\n\n<B>\n\ninner\n\n</B>' },
+        expect.any(Function),
+        undefined,
+      );
       expect(B.toPreview).not.toHaveBeenCalled();
       expect(previewMap.size).toBe(1);
       expect(markdown).toMatch(/^<span data-component-key="[^"]+"><\/span>$/);
@@ -569,7 +706,11 @@ describe('buildMarkdownWithPreviews', () => {
       const B = elementDef('B');
       const { markdown, previewMap } = buildMarkdownWithPreviews(nested, [B, A]);
 
-      expect(A.toPreview).toHaveBeenCalledWith({ body: 'outer\n\n<B>\n\ninner\n\n</B>' });
+      expect(A.toPreview).toHaveBeenCalledWith(
+        { body: 'outer\n\n<B>\n\ninner\n\n</B>' },
+        expect.any(Function),
+        undefined,
+      );
       expect(B.toPreview).not.toHaveBeenCalled();
       expect(previewMap.size).toBe(1);
       expect(markdown).toMatch(/^<span data-component-key="[^"]+"><\/span>$/);
@@ -588,7 +729,7 @@ describe('buildMarkdownWithPreviews', () => {
 
       expect(first.markdown).toMatch(expected);
       expect(first.previewMap.size).toBe(2);
-      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' });
+      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' }, expect.any(Function), undefined);
 
       const second = buildMarkdownWithPreviews(nested, [B, A]);
 
@@ -718,7 +859,7 @@ describe('buildMarkdownWithPreviews', () => {
 
       expect(markdown).toMatch(/^<A>outer\n\n<span data-component-key="[^"]+"><\/span><\/A>$/);
       expect(previewMap.size).toBe(2);
-      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' });
+      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' }, expect.any(Function), undefined);
     });
 
     it('should substitute a component that a preview exposes through a list item', () => {
@@ -740,7 +881,7 @@ describe('buildMarkdownWithPreviews', () => {
       const { markdown } = buildMarkdownWithPreviews(nested, [A, B]);
 
       expect(markdown).toMatch(/^<li>outer\n\n<span data-component-key="[^"]+"><\/span><\/li>$/);
-      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' });
+      expect(B.toPreview).toHaveBeenCalledWith({ body: 'inner' }, expect.any(Function), undefined);
     });
 
     it('should stop after a bounded number of passes when a value reproduces its syntax', () => {
@@ -763,6 +904,230 @@ describe('buildMarkdownWithPreviews', () => {
       expect(previewMap.size).toBe(10);
       expect(markdown).toBe(`${'<b>'.repeat(10)}[loop]${'</b>'.repeat(10)}`);
     });
+  });
+});
+
+describe('toPreview arguments', () => {
+  /**
+   * Create a definition whose preview records the arguments it receives.
+   * @returns {import('$lib/types/public').EditorComponentDefinition & { toPreview: any }} Def.
+   */
+  const imageDef = () => ({
+    id: 'figure',
+    label: 'Figure',
+    fields: [{ name: 'src', widget: 'image' }],
+    pattern: /^:::figure (?<src>.+)$/m,
+    toBlock: ({ src }) => `:::figure ${src}`,
+    toPreview: vi.fn((/** @type {any} */ { src }, /** @type {any} */ getAsset) => {
+      const asset = getAsset(src);
+
+      return `<img src="${asset ?? ''}" alt="">`;
+    }),
+  });
+
+  afterEach(() => {
+    immutableLoaded.current = false;
+  });
+
+  it('should never find an asset without a getter', () => {
+    expect(getNoAsset('photo.jpg')).toBeUndefined();
+
+    const { markdown } = buildMarkdownWithPreviews(':::figure photo.jpg', [imageDef()]);
+
+    expect(markdown).toBe('<img src="" alt="">');
+  });
+
+  it('should pass the given asset getter', () => {
+    const getAsset = vi.fn(() => /** @type {any} */ ({ toString: () => 'blob:photo' }));
+    const def = imageDef();
+
+    const { markdown, previewMap, assetMap } = buildMarkdownWithPreviews(
+      ':::figure photo.jpg\n\n:::figure none.jpg',
+      [def],
+      undefined,
+      (path) => (path === 'photo.jpg' ? getAsset() : undefined),
+    );
+
+    expect(getAsset).toHaveBeenCalledOnce();
+    expect(def.toPreview).toHaveBeenCalledWith(
+      { src: 'photo.jpg' },
+      expect.any(Function),
+      undefined,
+    );
+
+    // The assets each preview has got are reported, so the preview can be computed again once
+    // their URL changes, but only for the previews computed in this run
+    const [photoKey] = previewMap.keys();
+
+    expect([...assetMap.keys()]).toEqual([photoKey]);
+    expect(assetMap.get(photoKey)).toEqual([getAsset.mock.results[0].value]);
+    expect(buildMarkdownWithPreviews(':::figure photo.jpg', [def], previewMap).assetMap.size).toBe(
+      0,
+    );
+    expect(markdown).toBe('<img src="blob:photo" alt="">\n\n<img src="" alt="">');
+  });
+
+  it('should pass the fields as an Immutable List once Immutable.js is loaded', () => {
+    const def = imageDef();
+
+    expect(getComponentFieldList(def)).toBeUndefined();
+
+    immutableLoaded.current = true;
+
+    const fields = getComponentFieldList(def);
+
+    expect(isList(fields)).toBe(true);
+    expect(fields?.toJS()).toEqual(def.fields);
+    // The list is created once per component
+    expect(getComponentFieldList(def)).toBe(fields);
+
+    buildMarkdownWithPreviews(':::figure photo.jpg', [def]);
+
+    expect(def.toPreview).toHaveBeenCalledWith({ src: 'photo.jpg' }, expect.any(Function), fields);
+    expect(
+      def.toPreview.mock.calls[0][2].find((/** @type {any} */ f) => f.get('widget') === 'image'),
+    ).toBeDefined();
+  });
+});
+
+describe('MEDIA_QUERY_SELECTOR', () => {
+  it('should match the URL attributes of images, videos and audio not processed yet', () => {
+    expect(MEDIA_QUERY_SELECTOR).toBe(
+      ':is(img[src], img[srcset], source[src], source[srcset], video[src], video[poster], ' +
+        'audio[src]):not([data-processed])',
+    );
+  });
+});
+
+describe('parseSrcset', () => {
+  it('should parse URLs with and without descriptors', () => {
+    expect(parseSrcset('a.jpg 1x, b.jpg 2x')).toEqual([
+      { url: 'a.jpg', descriptor: '1x' },
+      { url: 'b.jpg', descriptor: '2x' },
+    ]);
+    expect(parseSrcset('  a.jpg,, b.jpg   800w ,  ')).toEqual([
+      { url: 'a.jpg', descriptor: '' },
+      { url: 'b.jpg', descriptor: '800w' },
+    ]);
+    expect(parseSrcset('a.jpg')).toEqual([{ url: 'a.jpg', descriptor: '' }]);
+    expect(parseSrcset(' , ')).toEqual([]);
+  });
+
+  it('should keep a comma within a URL', () => {
+    expect(parseSrcset('data:image/png;base64,AAAA 1x, /b.png 2x')).toEqual([
+      { url: 'data:image/png;base64,AAAA', descriptor: '1x' },
+      { url: '/b.png', descriptor: '2x' },
+    ]);
+  });
+});
+
+describe('resolveMediaURLs', () => {
+  /**
+   * Create a minimal element.
+   * @param {string} localName Tag name.
+   * @param {Record<string, string>} attributes Attributes.
+   * @param {any} [parentElement] Parent element.
+   * @returns {any} Element.
+   */
+  const createElement = (localName, attributes, parentElement = null) => ({
+    localName,
+    parentElement,
+    attributes: { ...attributes },
+    getAttribute(/** @type {string} */ name) {
+      return this.attributes[name] ?? null;
+    },
+    setAttribute(/** @type {string} */ name, /** @type {string} */ value) {
+      this.attributes[name] = value;
+    },
+  });
+
+  /**
+   * Resolve a path to a blob URL, unless it’s missing.
+   * @param {string} value Path.
+   * @returns {Promise<string | undefined>} URL.
+   */
+  const resolve = async (value) => (value.includes('missing') ? undefined : `blob:${value}`);
+
+  it('should resolve the URL attributes of a media element', async () => {
+    const video = createElement('video', { src: '/clip.mp4', poster: '/poster.jpg', id: 'x' });
+
+    await resolveMediaURLs(video, resolve);
+
+    expect(video.attributes).toEqual({
+      src: 'blob:/clip.mp4',
+      poster: 'blob:/poster.jpg',
+      id: 'x',
+    });
+  });
+
+  it('should resolve each URL in a srcset, and leave what can’t be resolved', async () => {
+    const img = createElement('img', {
+      src: '/missing.jpg',
+      srcset: '/a.jpg 1x, /missing.jpg 2x',
+    });
+
+    await resolveMediaURLs(img, resolve);
+
+    expect(img.attributes).toEqual({
+      src: '/missing.jpg',
+      srcset: 'blob:/a.jpg 1x, /missing.jpg 2x',
+    });
+
+    // A srcset without a resolved URL is left as written
+    const unchanged = createElement('img', { srcset: '/missing.jpg 1x,/missing.jpg 2x' });
+
+    unchanged.setAttribute = vi.fn();
+    await resolveMediaURLs(unchanged, resolve);
+    expect(unchanged.setAttribute).not.toHaveBeenCalled();
+  });
+
+  it('should load the media again once a source is updated', async () => {
+    const video = { localName: 'video', load: vi.fn() };
+    const source = createElement('source', { src: '/clip.mp4' }, video);
+
+    await resolveMediaURLs(source, resolve);
+    expect(source.attributes.src).toBe('blob:/clip.mp4');
+    expect(video.load).toHaveBeenCalledOnce();
+
+    // Nothing to load again if the source is unchanged, or within a picture
+    await resolveMediaURLs(createElement('source', { src: '/missing.mp4' }, video), resolve);
+    expect(video.load).toHaveBeenCalledOnce();
+
+    const picture = { localName: 'picture', load: vi.fn() };
+
+    await resolveMediaURLs(createElement('source', { srcset: '/a.jpg' }, picture), resolve);
+    await resolveMediaURLs(createElement('source', { srcset: '/a.jpg' }), resolve);
+    expect(picture.load).not.toHaveBeenCalled();
+  });
+
+  it('should leave a URL that fails to be resolved, and resolve the others', async () => {
+    const img = createElement('img', {
+      src: '/broken.jpg',
+      srcset: '/broken.jpg 1x, /a.jpg 2x',
+    });
+
+    await resolveMediaURLs(img, async (value) => {
+      if (value === '/broken.jpg') {
+        throw new Error('Failed to retrieve blob');
+      }
+
+      return `blob:${value}`;
+    });
+
+    expect(img.attributes).toEqual({
+      src: '/broken.jpg',
+      srcset: '/broken.jpg 1x, blob:/a.jpg 2x',
+    });
+  });
+
+  it('should ignore an element without URL attributes', async () => {
+    const audio = createElement('audio', {});
+    const other = createElement('div', { src: '/a.jpg' });
+
+    await resolveMediaURLs(audio, resolve);
+    await resolveMediaURLs(other, resolve);
+    expect(audio.attributes).toEqual({});
+    expect(other.attributes).toEqual({ src: '/a.jpg' });
   });
 });
 

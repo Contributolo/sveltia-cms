@@ -10,7 +10,7 @@
   import UploadAssetsButton from '$lib/components/assets/list/internal/upload-assets-button.svelte';
   import PreviewAssetButton from '$lib/components/assets/list/preview-asset-button.svelte';
   import PrimaryToolbar from '$lib/components/assets/list/primary-toolbar.svelte';
-  import { goBack, goto } from '$lib/services/app/navigation';
+  import { encodeRoutePath, goBack, goto } from '$lib/services/app/navigation';
   import { planAssetDeletion } from '$lib/services/assets/data/cascade';
   import { deleteAssets } from '$lib/services/assets/data/delete';
   import {
@@ -23,7 +23,7 @@
   import { getAssetBlob } from '$lib/services/assets/info';
   import { canPreviewAsset } from '$lib/services/assets/kinds';
   import { focusedAsset, selectedOrFocusedAssets } from '$lib/services/assets/state';
-  import { selectedSubfolderPath } from '$lib/services/assets/subfolders';
+  import { browsingCmsFolder, selectedSubfolderPath } from '$lib/services/assets/subfolders';
   import { getFolderLabelByCollection, listedAssets } from '$lib/services/assets/view';
   import { lockedBranch } from '$lib/services/backends/branch-access';
   import { getReadonlyMessage } from '$lib/services/config/readonly';
@@ -49,9 +49,9 @@
   // Uploading to the media library commits straight to the configured branch rather than going
   // through review, so it’s not something an Open Authoring contributor or a user who can’t push to
   // the branch can do. An asset attached to an entry is committed with that entry, so it’s
-  // unaffected
+  // unaffected. Nor can anything be added to a folder the CMS itself is served from
   const uploadDisabled = $derived(
-    assetsLocked.current || !canCreateAsset(targetAssetFolder.current),
+    assetsLocked.current || !canCreateAsset(targetAssetFolder.current) || browsingCmsFolder.current,
   );
 
   /**
@@ -63,7 +63,10 @@
    * as the back button on small screens does.
    */
   const browseAncestor = (depth, back) => {
-    const path = `/assets/${createPath([folder?.internalPath, ...subfolderNames.slice(0, depth)])}`;
+    const path = encodeRoutePath(
+      `/assets/${createPath([folder?.internalPath, ...subfolderNames.slice(0, depth)])}`,
+    );
+
     const options = { transitionType: /** @type {const} */ ('backwards'), state: { folder } };
 
     if (back) {
@@ -86,7 +89,7 @@
 <PrimaryToolbar rootLabel={folderLabel} {subfolderNames} onBrowse={browseAncestor}>
   {#snippet actions()}
     <PreviewAssetButton
-      path={asset ? `/assets/${asset.path}` : undefined}
+      path={asset ? encodeRoutePath(`/assets/${asset.path}`) : undefined}
       disabled={!asset || !canPreviewAsset(asset)}
     />
     <CopyAssetsButton assets={asset ? [asset] : []} />

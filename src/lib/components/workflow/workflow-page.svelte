@@ -22,6 +22,7 @@
     updateWorkflowStatus,
   } from '$lib/services/workflow/save';
   import { canMoveToStatus, canPublish } from '$lib/services/workflow/validate';
+  import { getWorkflowErrorMessage } from '$lib/services/workflow/verify';
 
   /**
    * @import { UnpublishedEntry, WorkflowStatus } from '$lib/types/private';
@@ -154,16 +155,18 @@
 
     busyBranches = [...busyBranches, branch];
     toastStatus = 'info';
-    toastMessage = messages.info;
+    toastMessage = _(messages.info);
     showToast = true;
 
     try {
       await request;
       toastStatus = 'success';
-      toastMessage = messages.success;
+      toastMessage = _(messages.success);
     } catch (/** @type {any} */ ex) {
       toastStatus = 'error';
-      toastMessage = messages.error;
+      // A failure that trying again wouldn’t fix says why, e.g. a publish refused over what the
+      // pull request holds, or another request open from the branch
+      toastMessage = getWorkflowErrorMessage(ex, messages.error);
       // eslint-disable-next-line no-console
       console.error(ex);
     } finally {
@@ -182,8 +185,26 @@
    */
   const reportValidationErrors = (messageKey) => {
     toastStatus = 'error';
-    toastMessage = messageKey;
+    toastMessage = _(messageKey);
     showToast = true;
+  };
+
+  /**
+   * Ask for confirmation before deleting the given entry, or calling its pending deletion off.
+   * @param {UnpublishedEntry} entry Entry.
+   */
+  const confirmDelete = (entry) => {
+    targetEntry = entry;
+    showDeleteDialog = true;
+  };
+
+  /**
+   * Ask for confirmation before publishing the given entry, or carrying out its pending deletion.
+   * @param {UnpublishedEntry} entry Entry.
+   */
+  const confirmPublish = (entry) => {
+    targetEntry = entry;
+    showPublishDialog = true;
   };
 
   /**
@@ -287,14 +308,8 @@
                       draggedEntry = undefined;
                       dropTarget = undefined;
                     }}
-                    onDelete={() => {
-                      targetEntry = entry;
-                      showDeleteDialog = true;
-                    }}
-                    onPublish={() => {
-                      targetEntry = entry;
-                      showPublishDialog = true;
-                    }}
+                    onDelete={() => confirmDelete(entry)}
+                    onPublish={() => confirmPublish(entry)}
                   />
                 {:else}
                   <EmptyState>
@@ -317,14 +332,8 @@
                   <WorkflowEntryCard
                     {entry}
                     busy={isBusy(entry)}
-                    onDelete={() => {
-                      targetEntry = entry;
-                      showDeleteDialog = true;
-                    }}
-                    onPublish={() => {
-                      targetEntry = entry;
-                      showPublishDialog = true;
-                    }}
+                    onDelete={() => confirmDelete(entry)}
+                    onPublish={() => confirmPublish(entry)}
                   />
                 {/each}
               </div>
@@ -403,7 +412,7 @@
 <!-- The `id` makes the auto-hide timer restart when the message changes -->
 {#if toastMessage}
   <Toast id={toastMessage} bind:show={showToast}>
-    <Alert status={toastStatus}>{_(toastMessage)}</Alert>
+    <Alert status={toastStatus}>{toastMessage}</Alert>
   </Toast>
 {/if}
 

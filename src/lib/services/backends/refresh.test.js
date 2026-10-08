@@ -145,6 +145,8 @@ describe('checkForRemoteChanges', () => {
       modifiedAssets: [],
       deletedAssets: [],
     });
+    // The head just fetched is handed over, so the fetch doesn’t ask for it again
+    expect(fetchFiles).toHaveBeenCalledWith({ lastCommit: { hash: 'head-2', message: '' } });
   });
 
   test('reports nothing when the new commit changed nothing the CMS manages', async () => {
@@ -160,9 +162,25 @@ describe('checkForRemoteChanges', () => {
   test('tracks the new head as the one the site is built from', async () => {
     productionSHA.current = 'head-1';
     fetchLastCommit.mockResolvedValue({ hash: 'head-2', message: '' });
+    // The fetch records the head it has loaded, like the real one
+    fetchFiles.mockImplementation(async () => {
+      repositoryHead.current = 'head-2';
+    });
 
     await checkForRemoteChanges();
     expect(productionSHA.current).toBe('head-2');
+  });
+
+  test('tracks the head the fetch has loaded, when another commit has landed meanwhile', async () => {
+    productionSHA.current = 'head-1';
+    fetchLastCommit.mockResolvedValue({ hash: 'head-2', message: '' });
+    // The fetch resolves the head again, and finds yet another commit
+    fetchFiles.mockImplementation(async () => {
+      repositoryHead.current = 'head-3';
+    });
+
+    await checkForRemoteChanges();
+    expect(productionSHA.current).toBe('head-3');
   });
 
   test('shares one check between callers that overlap', async () => {

@@ -4,9 +4,14 @@ import { getWorkflowRepository } from '$lib/services/backends/git/github/fork';
 import { fetchAliasedBatch } from '$lib/services/backends/git/github/graphql';
 import { repository } from '$lib/services/backends/git/github/repository';
 import { fetchGraphQL } from '$lib/services/backends/git/shared/api';
-import { createCommitMessage, dedupeFileCommits } from '$lib/services/backends/git/shared/commits';
+import {
+  assertBranchNotMoved,
+  createCommitMessage,
+  dedupeFileCommits,
+} from '$lib/services/backends/git/shared/commits';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
 import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
+import { getByteSize } from '$lib/services/utils/file';
 import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
 /**
@@ -87,8 +92,9 @@ const MAX_GRAPHQL_BLOB_SIZE = 10 * 1024 * 1024;
  * Get the head a commit is expected to go on top of. The caller knows it when it has just created
  * the branch. On the configured branch, it’s the commit the loaded site data reflects, which the
  * caller has just brought up to date: GitHub then refuses the commit if someone else has pushed in
- * the meantime, rather than letting it overwrite their change. A workflow branch is only ever
- * written by its own author, so its head is simply looked up.
+ * the meantime, rather than letting it overwrite their change. On a workflow branch, the caller
+ * passes the head the entry was loaded or saved at when there is one, for the same reason;
+ * otherwise the head is looked up.
  * @param {CommitOptions} options Commit options.
  * @returns {Promise<string>} Commit SHA.
  */
@@ -189,13 +195,11 @@ const createCommit = async ({
   // limitation where large blob OIDs cannot be resolved
   // @see https://github.com/sveltia/sveltia-cms/issues/692
   const fileShaQuery = additions
-    .map(({ index, path, data }) => {
-      const size = data instanceof Blob ? data.size : new Blob([data ?? '']).size;
-
-      return size <= MAX_GRAPHQL_BLOB_SIZE
+    .map(({ index, path, data }) =>
+      getByteSize(data ?? '') <= MAX_GRAPHQL_BLOB_SIZE
         ? `file_${index}: file(path: ${JSON.stringify(path)}) { oid }`
-        : '';
-    })
+        : '',
+    )
     .filter(Boolean)
     .join(' ');
 
@@ -233,17 +237,10 @@ const createCommit = async ({
 
     return commit;
   } catch (ex) {
-    // Tell a commit refused over a moved head from any other failure, so the user is told what
-    // happened and to try again, which picks up the other change first. GitHub says so in the
-    // error message, but the head is looked up rather than the wording relied upon. A failed lookup
-    // leaves the original error to be reported
-    const head = onWorkflowBranch ? undefined : await fetchLastCommit().catch(() => undefined);
-
-    if (head && head.hash !== expectedHeadOid) {
-      throw createLocalizedError(
-        'The branch has moved since the site data was loaded.',
-        'save_conflict.branch_moved',
-      );
+    // GitHub says so in the error message, but the head is looked up rather than the wording
+    // relied upon
+    if (!onWorkflowBranch) {
+      await assertBranchNotMoved(expectedHeadOid, fetchLastCommit);
     }
 
     throw ex;

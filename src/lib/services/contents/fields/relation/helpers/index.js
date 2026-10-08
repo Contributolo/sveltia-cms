@@ -2,6 +2,8 @@ import { compare } from '@sveltia/utils/string';
 
 import { getCollection } from '$lib/services/contents/collection';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
+import { isManuallyOrdered } from '$lib/services/contents/collection/entries/reorder/config';
+import { sortEntriesByOrderField } from '$lib/services/contents/collection/entries/reorder/sort';
 import { getCollectionFileEntry } from '$lib/services/contents/collection/files';
 import { getListItemKeys } from '$lib/services/contents/entry/key-paths';
 import {
@@ -138,7 +140,6 @@ const buildOptions = ({
 
   const { identifier_field: identifierField = 'title' } = _type === 'entry' ? collection : {};
   const templates = prepareFieldTemplates(fieldConfig, identifierField);
-  const { allFieldNames, hasListFields } = templates;
 
   const filteredEntries = filterAndPrepareEntries({
     refEntries,
@@ -155,13 +156,9 @@ const buildOptions = ({
       content,
       collection,
       templates,
-      allFieldNames,
-      hasListFields,
-      collectionName,
       fileName,
       locale,
       identifierField,
-      defaultLocale,
       pendingEntries,
     }),
   );
@@ -197,7 +194,8 @@ export const getRefEntries = ({ collection: collectionName, file: fileName }) =>
  * templates are ignored.
  * @param {PendingEntry[]} [args.pendingEntries] Entries created from a Relation field of the draft
  * being edited, so the labels referring to one of them through another Relation field resolve.
- * @returns {RelationOption[]} Options.
+ * @returns {RelationOption[]} Options, sorted by label unless the field references a file or a
+ * collection kept in a manual order.
  */
 export const getOptions = ({
   locale,
@@ -207,7 +205,7 @@ export const getOptions = ({
   currentSlug = undefined,
   pendingEntries = undefined,
 }) => {
-  const { filters } = fieldConfig;
+  const { collection: collectionName, file: fileName, filters } = fieldConfig;
   // Resolve template strings in filter values against the current entry’s locale content and slug.
   // The resolved values are also baked into the cache key so stale options are not returned when
   // the relevant field value changes while the user is editing.
@@ -235,13 +233,25 @@ export const getOptions = ({
       optionsInProgress.add(cacheKey);
 
       try {
-        return buildOptions({
+        const collection = getCollection(collectionName);
+        // The options taken from a list in a single file follow the order of the list items, and
+        // those from the entries of a collection the user can reorder follow the manual order;
+        // the others are sorted by label
+        const manuallyOrdered = !fileName && isManuallyOrdered(collection);
+
+        const options = buildOptions({
           locale,
           fieldConfig,
-          refEntries,
+          refEntries: manuallyOrdered
+            ? sortEntriesByOrderField(refEntries, /** @type {any} */ (collection))
+            : refEntries,
           entryFilters: resolvedFilters,
           pendingEntries,
-        }).sort((a, b) => compare(a.label, b.label));
+        });
+
+        return fileName || manuallyOrdered
+          ? options
+          : options.sort((a, b) => compare(a.label, b.label));
       } finally {
         optionsInProgress.delete(cacheKey);
       }

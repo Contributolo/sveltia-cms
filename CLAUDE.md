@@ -66,13 +66,24 @@ Build output: `package/dist/sveltia-cms.js` (IIFE), `package/dist/sveltia-cms.mj
 
 ## CI
 
-`.github/workflows/tests.yml` runs on every push: Check, Test (three shards each of the unit and component tests and four of the end-to-end tests, the latter two with Chromium), Build in parallel, using `.nvmrc` Node version and pnpm. A PR must pass ESLint, Prettier, all tests, Svelte compiler checks, the production build, and the unused-imports check.
+`.github/workflows/tests.yml` runs on every push: Check, Test (three shards each of the unit and component tests and six of the end-to-end tests, the latter two with Chromium), Build in parallel, using `.nvmrc` Node version and pnpm. A PR must pass ESLint, Prettier, all tests, Svelte compiler checks, the production build, and the unused-imports check.
 
 ## Workflow
 
 - Fix a bug a test turns up, and cover it with a test that fails without the fix; don’t work around it in the test. When the fix needs a product decision, pin the current behaviour with a “(known issue)” test (see `e2e/README.md`) and raise it instead.
 - Before committing a change, review it with `/code-review --fix` and repeat until it reports no findings.
 - Run the end-to-end tests on a port of your own, e.g. `E2E_PORT=4181 pnpm test:e2e`, when another worktree may be running them: the run fails rather than share a busy port.
+
+## Localization PRs
+
+When reviewing or preparing a PR that adds or updates a translation:
+
+- Read `src/lib/locales/README.md` first and check the PR against it: a linked l10n issue the author is assigned to, the title “Add/Update [language] localization”, a Firefox-style language code as the file name (`ko`, not `ko-KR`), every comment of `en-US.yaml` kept untranslated and in order, quotes only where YAML needs them, curly quotes in prose and straight ones in code, and HTML/Markdown formatting, code spans and link targets kept from the English string.
+- Run `pnpm check:l10n` (`scripts/check-locales.js`): it must report no errors for the locale, and a new locale should have no warnings either. It catches MF2 syntax errors, plural variants the language doesn’t have, a count-less `one` variant in languages where `one` also covers 21, 31…, mismatched placeholders, stale keys and missing plural categories. Also run `pnpm check:prettier` on the file.
+- The PR changes only `src/lib/locales/<code>.yaml`. No scripts, `package.json` entries, docs, or other locales: fixes to another language go in that language’s own PR. A new locale needs no registration — `src/lib/services/app/i18n.js` loads every file in the folder.
+- `en-US.yaml` is the source of truth for keys and meaning. A missing key falls back to English, so it isn’t an error, but there should be no keys that `en-US.yaml` lacks.
+- The Sveltia UI strings are translated in a separate PR to `sveltia/sveltia-ui`; a new language needs both.
+- Translation quality can’t be judged here: limit the review to structure, syntax, placeholders, plurals and the rules above, and spot-check plural forms against the [CLDR plural rules](https://www.unicode.org/cldr/charts/48/supplemental/language_plural_rules.html).
 
 ## Conventions
 

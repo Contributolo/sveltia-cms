@@ -1731,8 +1731,6 @@ config:
   # Warning messages (logged to console)
   warning:
     oauth_no_app_id: ID aplikace OAuth není definováno. Uživatelé se musí přihlásit pomocí přístupového tokenu.
-    editorial_workflow_unsupported: Redakční workflow zatím není ve Sveltia CMS podporováno.
-    open_authoring_unsupported_backend: Open Authoring je v současné době podporován pouze s backendem GitHub.
     # {$prop} is the unsupported option name that will be ignored
     unsupported_ignored_option: Možnost `{$prop}` není ve Sveltia CMS podporována a bude ignorována.
     # Don’t localize `picker_utc`, `input_timezone`, and `output_utc`
@@ -1875,8 +1873,6 @@ workflow:
       one {{ Jedna z nich ještě nebyla publikována, takže vaše nepublikované změny budou zahozeny. Případná publikovaná verze zůstane publikována. }}
       few {{ {$count} z nich ještě nebyly publikovány, takže vaše nepublikované změny budou zahozeny. Případné publikované verze zůstanou publikovány. }}
       *   {{ {$count} z nich ještě nebylo publikováno, takže vaše nepublikované změny budou zahozeny. Případné publikované verze zůstanou publikovány. }}
-  # Confirmation dialog shown before merging the pull request. Keep the wording free of Git jargon.
-  confirm_publishing_entry: Opravdu chcete tuto položku publikovat? Vaše změny se projeví okamžitě.
   # Workflow page: toast notifications shown while an entry is being published from a card, and
   # once publishing has completed
   publishing_entry: Publikování položky…

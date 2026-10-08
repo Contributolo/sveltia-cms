@@ -58,6 +58,37 @@ export const mainAreaTitle = createRawState('');
 export const overlayTitle = createRawState('');
 
 /**
+ * Percent-encode each segment of the given route path, keeping the slashes, so a file or folder
+ * name containing a `%`, `#` or `?` sign makes it through the URL hash intact and is decoded back
+ * to the same name by {@link parseLocation}. Build every route that contains an entry or asset
+ * path with this before passing it to {@link goto} or {@link goBack}.
+ * @param {string} path Route path without a query string, e.g. `/assets/images/50%off.jpg`.
+ * @returns {string} Encoded path, e.g. `/assets/images/50%25off.jpg`.
+ */
+export const encodeRoutePath = (path) => path.split('/').map(encodeURIComponent).join('/');
+
+/**
+ * Decode the given route path. A malformed escape sequence, e.g. the `%` sign in a link to a
+ * `50%off.jpg` file built before route paths were encoded, would make `decodeURIComponent()` throw,
+ * so in that case only the valid escape sequences are decoded and anything else is left as is.
+ * @param {string} path Encoded route path.
+ * @returns {string} Decoded path.
+ */
+const decodeRoutePath = (path) => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path.replace(/(?:%[\da-f]{2})+/gi, (sequence) => {
+      try {
+        return decodeURIComponent(sequence);
+      } catch {
+        return sequence;
+      }
+    });
+  }
+};
+
+/**
  * Parse the URL and return the decoded result.
  * @param {string} [href] URL. Omit this to use the current URL.
  * @returns {{ path: string, params: Record<string, string> }} Path and search params.
@@ -69,7 +100,7 @@ export const parseLocation = (href = window.location.href) => {
   return {
     // Drop any trailing slash before decoding, so a hand-typed `#/collections/` resolves the same
     // way as `#/collections` rather than matching no route at all. The root path is left as is
-    path: decodeURIComponent(pathname.replace(/(?!^)\/+$/, '')),
+    path: decodeRoutePath(pathname.replace(/(?!^)\/+$/, '')),
     params: Object.fromEntries(
       // Merge multiple values of the same key with a comma, e.g. `?a=1&a=2` becomes `{ a: '1,2' }`.
       // This is to support both `?tags=tag1,tag2` and `?tags=tag1&tags=tag2` formats for dynamic
@@ -248,6 +279,7 @@ export const updateContentFromHashChange = (event, updateContent, routeRegex) =>
  * Navigate to a different URL or replace the current URL. This is similar to SvelteKit’s `goto`
  * method but assumes hash-based SPA routing.
  * @param {string} path URL path. It will appear in th URL hash but omit the leading `#` sign here.
+ * Encode any entry or asset path in it with {@link encodeRoutePath}.
  * @param {GoToMethodOptions} [options] Options.
  */
 export const goto = async (
@@ -256,8 +288,9 @@ export const goto = async (
 ) => {
   const { path: currentPath } = parseLocation();
 
-  // If we’re already on this page AND not updating state, don’t navigate or trigger a transition
-  if (currentPath === path && !Object.keys(state).length && !replaceState) {
+  // If we’re already on this page AND not updating state, don’t navigate or trigger a transition.
+  // The given path is encoded, while the current one is decoded
+  if (currentPath === decodeRoutePath(path) && !Object.keys(state).length && !replaceState) {
     return;
   }
 
@@ -312,11 +345,62 @@ export const redirectLegacyEntryLink = () => {
   // Carry any query string over, so the editor locale and dynamic default values survive
   const query = new URLSearchParams(params).toString();
 
-  goto(`/collections/${collectionName}/entries/${subPath}${query ? `?${query}` : ''}`, {
-    replaceState: true,
-  });
+  goto(
+    `${encodeRoutePath(`/collections/${collectionName}/entries/${subPath}`)}${query ? `?${query}` : ''}`,
+    {
+      replaceState: true,
+    },
+  );
 
   return true;
+};
+
+/**
+ * Page names that make up the whole route. Unlike the content library and the other pages that
+ * take a path of their own, anything following these in the URL is a dead link.
+ */
+const STANDALONE_PAGE_NAMES = ['workflow', 'config', 'menu'];
+/**
+ * Search modes set by the pages that search their own items.
+ * @type {Record<string, 'contents' | 'assets'>}
+ */
+const PAGE_SEARCH_MODES = { collections: 'contents', assets: 'assets' };
+
+/**
+ * Result of {@link resolveRoute}: a URL to redirect to, a dead link, or the page to show along with
+ * the search mode to set. `searchMode` is `undefined` when the current search mode is to be kept.
+ * @typedef {{ redirect: string } | { notFound: true } | {
+ * pageName: string, searchMode: 'contents' | 'assets' | null | undefined }} ResolvedRoute
+ */
+
+/**
+ * Determine which page to show for the given URL path.
+ * @param {string} path URL path, as returned by {@link parseLocation}.
+ * @param {string[]} pageNames Names of the available pages.
+ * @returns {ResolvedRoute} Result.
+ */
+export const resolveRoute = (path, pageNames) => {
+  // The page name has to fill the whole first path segment, so `/collections-foo` doesn’t pass for
+  // the content library and land on a page that can’t make sense of the rest of the path
+  const { pageName } = path.match(`^\\/(?<pageName>${pageNames.join('|')})(?=\\/|$)`)?.groups ?? {};
+
+  if (!pageName) {
+    // The bare `#/` path is where the app starts, so open the content library. Any other unknown
+    // path is a dead link. Show a Not Found page instead of redirecting, which would hide the fact
+    // that the URL the user followed no longer goes anywhere
+    return path === '/' ? { redirect: '#/collections' } : { notFound: true };
+  }
+
+  if (STANDALONE_PAGE_NAMES.includes(pageName) && path !== `/${pageName}`) {
+    return { notFound: true };
+  }
+
+  // The content library and the asset library search their own items. The search page keeps the
+  // current mode, and any other page has nothing to search
+  return {
+    pageName,
+    searchMode: pageName === 'search' ? undefined : (PAGE_SEARCH_MODES[pageName] ?? null),
+  };
 };
 
 /**
@@ -339,7 +423,7 @@ export const goBack = (path, { returnTo, ...options } = {}) => {
     if (
       sameDocument &&
       previousPath !== undefined &&
-      (previousPath === path || returnTo?.(previousPath))
+      (previousPath === decodeRoutePath(path) || returnTo?.(previousPath))
     ) {
       startViewTransition(transitionType, () => {
         window.navigation.back();

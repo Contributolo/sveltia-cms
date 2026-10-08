@@ -3,6 +3,7 @@ import { page, userEvent } from 'vitest/browser';
 
 import { allAssetFolders } from '$lib/services/assets/folders';
 import { backendName } from '$lib/services/backends';
+import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
 import { getCollection } from '$lib/services/contents/collection';
 import {
   contentUpdatesToast,
@@ -23,7 +24,8 @@ import { prefs } from '$lib/services/user/prefs.svelte';
 import { formatDate } from '$lib/services/utils/date';
 import { unpublishedEntries } from '$lib/services/workflow';
 import {
-  deleteWorkflowEntry,
+  deleteWorkflowEntries,
+  discardWorkflowEntries,
   discardWorkflowEntry,
   updateWorkflowStatus,
 } from '$lib/services/workflow/save';
@@ -734,6 +736,27 @@ describe('Toolbar', () => {
     await waitForToastsToHide();
   });
 
+  test('says what stands in the way of the deletion', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(deleteEntries).mockRejectedValue(
+      createLocalizedError(
+        'Cannot delete a published entry as an Open Authoring contributor',
+        'open_authoring.direct_commit_unsupported',
+      ),
+    );
+
+    await renderExisting();
+    await (await openMenu()).getByRole('menuitem', { name: 'Delete Entry' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+
+    await expect
+      .element(page.getByRole('alert'))
+      .toHaveTextContent(
+        'error Error This change can’t be made directly. Only edits to entries can be suggested for review.',
+      );
+    await waitForToastsToHide();
+  });
+
   test('reports a failure to save without a cause', async () => {
     vi.mocked(saveEntry).mockRejectedValue(new Error('saving_failed'));
 
@@ -743,7 +766,10 @@ describe('Toolbar', () => {
     const dialog = page.getByRole('alertdialog', { name: 'Error' });
 
     await expect.element(dialog).toBeVisible();
-    expect(dialog.element().textContent).toContain('saving_failed');
+    // Only the generic description, not the error key
+    expect(dialog.element().textContent).toContain('There was an error while saving the entry.');
+    expect(dialog.element().textContent).not.toContain('saving_failed');
+    expect(dialog.element().querySelector('.error')).toBeNull();
   });
 
   test('renders a bare toolbar for a missing entry', async () => {
@@ -1182,7 +1208,8 @@ describe('Toolbar', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.mocked(updateWorkflowStatus).mockRejectedValue(new Error('Boom'));
 
-      await renderToolbar();
+      const { entryDraft } = await renderToolbar();
+
       await page.getByRole('button', { name: 'Save' }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: 'Send for Review' }).click();
 
@@ -1191,14 +1218,39 @@ describe('Toolbar', () => {
         .toHaveTextContent(
           'Error There was an error while saving the entry. Please try again later. Couldn’t change the status. Please try again. OK',
         );
-      // The editor stays open
+      // The editor stays open, so the status change can be retried from the status menu
       expect(window.location.hash).not.toBe('#/collections/posts');
+      // The draft is pointed at the entry as saved, all the same. Left on the pre-save one, the
+      // next save would compare it with the branch and report the save that just landed as
+      // someone else’s change
+      await expect.poll(() => entryDraft.current?.isNew).toBe(false);
+      await expect.poll(() => entryDraft.current?.originalEntry).toBe(unpublishedEntry);
+    });
+
+    test('says what stands in the way of sending for review', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(updateWorkflowStatus).mockRejectedValue(
+        createLocalizedError('The workflow branch is in use.', 'workflow.branch_in_use', {
+          number: '!3',
+        }),
+      );
+
+      await renderToolbar();
+
+      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Send for Review' }).click();
+
+      await expect
+        .element(page.getByRole('alertdialog', { name: 'Error' }))
+        .toHaveTextContent(
+          'Error There was an error while saving the entry. Please try again later. Another request (\u2068!3\u2069) is already open for this entry outside the CMS. Ask a developer to close it first. OK',
+        );
     });
 
     test('deletes an unpublished entry by discarding its pull request', async () => {
       // Nothing has been published yet
       setEntries([]);
-      vi.mocked(discardWorkflowEntry).mockResolvedValue(undefined);
+      vi.mocked(discardWorkflowEntries).mockResolvedValue(undefined);
 
       await renderExisting();
       await (await openMenu()).getByRole('menuitem', { name: 'Delete Entry' }).click();
@@ -1212,14 +1264,16 @@ describe('Toolbar', () => {
         );
       await dialog.getByRole('button', { name: 'Delete' }).click();
 
-      await vi.waitFor(() => expect(discardWorkflowEntry).toHaveBeenCalledWith(unpublishedEntry));
+      await vi.waitFor(() =>
+        expect(discardWorkflowEntries).toHaveBeenCalledWith([unpublishedEntry]),
+      );
       await expect.poll(() => contentUpdatesToast.current.deleted).toBe(true);
       await expect.poll(() => window.location.hash).toBe('#/collections/posts');
     });
 
     test('proposes the deletion of a published entry', async () => {
       setEntries([helloEntry]);
-      vi.mocked(deleteWorkflowEntry).mockResolvedValue(/** @type {any} */ (undefined));
+      vi.mocked(deleteWorkflowEntries).mockResolvedValue(undefined);
 
       await renderExisting();
       await (await openMenu()).getByRole('menuitem', { name: 'Delete' }).click();
@@ -1232,7 +1286,7 @@ describe('Toolbar', () => {
       );
       await dialog.getByRole('button', { name: 'Delete' }).click();
 
-      await vi.waitFor(() => expect(deleteWorkflowEntry).toHaveBeenCalled());
+      await vi.waitFor(() => expect(deleteWorkflowEntries).toHaveBeenCalled());
       await expect.poll(() => contentUpdatesToast.current.deletionPending).toBe(true);
     });
 
@@ -1290,7 +1344,7 @@ describe('Toolbar', () => {
         createMockEntry({ slug: 'a', content: { _default: { title: 'A', tag: 'travel' } } }),
       ]);
       unpublishedEntries.current = [renamedTag];
-      vi.mocked(deleteWorkflowEntry).mockResolvedValue(/** @type {any} */ (undefined));
+      vi.mocked(deleteWorkflowEntries).mockResolvedValue(undefined);
       window.location.hash = '#/collections/tags/entries/trips';
 
       await renderToolbar({

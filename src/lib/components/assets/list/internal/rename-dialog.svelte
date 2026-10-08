@@ -3,12 +3,14 @@
   import { getPathInfo } from '@sveltia/utils/file';
 
   import RenameDialog from '$lib/components/assets/list/rename-dialog.svelte';
-  import { goto, parseLocation } from '$lib/services/app/navigation';
+  import { encodeRoutePath, goto, parseLocation } from '$lib/services/app/navigation';
   import { getAssetsByDirName } from '$lib/services/assets';
   import { moveAssets } from '$lib/services/assets/data/move';
   import { getAssetUsedEntries } from '$lib/services/assets/details';
   import { renamingAsset } from '$lib/services/assets/state';
   import { getReadonlyEntryLabel, isEntryReadonly } from '$lib/services/contents/entry/readonly';
+  import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
+  import { watchAsync } from '$lib/services/utils/state.svelte';
 
   /**
    * @import { Entry } from '$lib/types/private';
@@ -57,18 +59,22 @@
     await moveAssets('rename', [{ asset, path: newPath }]);
 
     if (parseLocation().path === `/assets/${oldPath}`) {
-      await goto(`/assets/${newPath}`, { replaceState: true, notifyChange: false });
+      await goto(encodeRoutePath(`/assets/${newPath}`), {
+        replaceState: true,
+        notifyChange: false,
+      });
     }
   };
 
-  $effect(() => {
-    if (asset) {
-      (async () => {
-        usedEntries = await getAssetUsedEntries(asset);
-        open = true;
-      })();
-    }
-  });
+  // Another asset can be renamed before the entries using this one are found, which `watchAsync`
+  // takes care of
+  watchAsync(
+    () => (asset ? getAssetUsedEntries(asset) : undefined),
+    (entries) => {
+      usedEntries = entries;
+      open = true;
+    },
+  );
 </script>
 
 <RenameDialog
@@ -77,6 +83,7 @@
   {otherNames}
   usedEntryCount={usedEntries.length}
   {blockedMessage}
+  slugificationEnabled={getDefaultMediaLibraryOptions().config.slugify_filename}
   onRename={renameAsset}
   onClose={() => {
     renamingAsset.current = undefined;

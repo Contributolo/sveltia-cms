@@ -9,9 +9,11 @@
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { env } from '$lib/services/user/env.svelte';
   import { WORKFLOW_STATUS_LABELS } from '$lib/services/workflow/constants';
+  import { handleEntryAlreadyPublished } from '$lib/services/workflow/editor';
   import { workflowStages } from '$lib/services/workflow/open-authoring';
   import { updateWorkflowStatus } from '$lib/services/workflow/save';
   import { canMoveToStatus } from '$lib/services/workflow/validate';
+  import { getWorkflowErrorMessage } from '$lib/services/workflow/verify';
 
   /**
    * @import { UnpublishedEntry, WorkflowStatus } from '$lib/types/private';
@@ -35,6 +37,7 @@
 
   let updating = $state(false);
   let showErrorToast = $state(false);
+  let errorMessage = $state('');
   let showValidationToast = $state(false);
 
   const status = $derived(entry.workflow.status);
@@ -64,12 +67,22 @@
 
     updating = true;
 
+    // Read these up front: an entry that turns out to have been published leaves
+    // `unpublishedEntries`, and the `entry` prop is derived from that store
+    const { collectionName, pullRequest } = entry.workflow;
+
     try {
       await updateWorkflowStatus(entry, newStatus);
     } catch (/** @type {any} */ ex) {
-      showErrorToast = true;
-      // eslint-disable-next-line no-console
-      console.error(ex);
+      // An entry published since it was opened closes the editor instead
+      if (
+        !handleEntryAlreadyPublished(ex, { entryDraft, branch: pullRequest.branch, collectionName })
+      ) {
+        errorMessage = getWorkflowErrorMessage(ex, 'workflow.status_change_failed');
+        showErrorToast = true;
+        // eslint-disable-next-line no-console
+        console.error(ex);
+      }
     } finally {
       updating = false;
     }
@@ -103,7 +116,7 @@
 </MenuButton>
 
 <Toast bind:show={showErrorToast}>
-  <Alert status="error">{_('workflow.status_change_failed')}</Alert>
+  <Alert status="error">{errorMessage}</Alert>
 </Toast>
 
 <Toast bind:show={showValidationToast}>

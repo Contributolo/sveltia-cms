@@ -2,6 +2,7 @@ import { getPathInfo } from '@sveltia/utils/file';
 import { compare } from '@sveltia/utils/string';
 
 import { allAssetFolders, selectedAssetFolder } from '$lib/services/assets/folders';
+import { isCmsFolderName, isCmsFolderPath } from '$lib/services/assets/reserved';
 import { gitConfigFiles } from '$lib/services/backends/git/shared/config';
 import { slugify } from '$lib/services/common/slug';
 import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
@@ -151,6 +152,14 @@ export const browsedDirPath = createDerivedState(() => {
 });
 
 /**
+ * Whether the directory being browsed in the Asset Library is, or is below, a folder the CMS itself
+ * is usually served from, such as `admin`. Nothing can be uploaded or created there.
+ */
+export const browsingCmsFolder = createDerivedState(() =>
+  isCmsFolderPath(browsedDirPath.current ?? ''),
+);
+
+/**
  * List the immediate subfolders of a directory, read off the paths of the files below it. A folder
  * isn’t an object of its own in a Git repository or an object storage bucket, so this is how the
  * folders are found. A folder path ending with a slash stands for an empty folder kept by a
@@ -259,6 +268,16 @@ export const getSubfolders = ({ dirPath, assets }) => {
 };
 
 /**
+ * Get the assets right in a directory, leaving out the ones in its subfolders.
+ * @param {object} args Arguments.
+ * @param {string} args.dirPath Directory path. An empty string for the repository root.
+ * @param {Asset[]} args.assets Assets below the directory, at any depth.
+ * @returns {Asset[]} Assets in the directory.
+ */
+export const getAssetsInDir = ({ dirPath, assets }) =>
+  assets.filter(({ path }) => getDirName(path) === dirPath);
+
+/**
  * Get the path of the directory that uploaded files are saved to, which is the target folder’s
  * `internalPath` joined with the subfolder path, if any.
  * @param {UploadingAssets} uploadingAssets Files to be uploaded and their target folder.
@@ -291,8 +310,8 @@ export const formatSubfolderName = (name) => {
  * @param {string[]} args.takenNames Names of the files and folders already in the parent
  * directory. A Git tree can’t hold a blob and a subtree under one name, so a file name is taken as
  * well.
- * @returns {'empty' | 'invalid' | 'duplicate' | undefined} What stops the name from being used, or
- * `undefined` if it can be used.
+ * @returns {'empty' | 'invalid' | 'reserved' | 'duplicate' | undefined} What stops the name from
+ * being used, or `undefined` if it can be used.
  */
 export const validateSubfolderName = ({ name, takenNames }) => {
   const trimmedName = name.trim();
@@ -307,6 +326,11 @@ export const validateSubfolderName = ({ name, takenNames }) => {
   // listings, and sanitization can leave nothing to name the folder with
   if (!folderName || trimmedName.includes('/') || folderName.startsWith('.')) {
     return 'invalid';
+  }
+
+  // The files in a folder the CMS itself is usually served from are read-only
+  if (isCmsFolderName(folderName)) {
+    return 'reserved';
   }
 
   const normalizedName = folderName.normalize().toLowerCase();

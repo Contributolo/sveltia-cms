@@ -75,9 +75,11 @@ let lastParseKey;
 const getParseKey = (databaseName) => `${databaseName}\n${cmsConfigVersion.current}`;
 
 /**
- * Get the file list from the meta database or fetch it if not cached.
+ * Get the file list from the meta database or fetch it if not cached. The commit the list was
+ * fetched at isn’t recorded here but with {@link saveFileListMeta}, once the file contents have
+ * been cached: until then, the cache still holds the files of the previous commit, which the file
+ * list would be restored from.
  * @param {object} args Arguments.
- * @param {IndexedDB} args.metaDB The meta database instance.
  * @param {[string, any][]} args.metaEntries Entries read from the meta database.
  * @param {string} args.lastCommitHash The latest commit hash.
  * @param {[string, any][]} args.cachedFileEntries Cached file entries.
@@ -87,7 +89,6 @@ const getParseKey = (databaseName) => `${databaseName}\n${cmsConfigVersion.curre
  * @returns {Promise<BaseFileList>} The file list.
  */
 export const getFileList = async ({
-  metaDB,
   metaEntries,
   lastCommitHash,
   cachedFileEntries,
@@ -133,15 +134,27 @@ export const getFileList = async ({
 
   log(`Fetched the file list: ${describeFileList(fileList)}`);
 
-  metaDB.saveEntries(
+  return fileList;
+};
+
+/**
+ * Record the commit and CMS configuration the file cache reflects, so that the next fetch for the
+ * same ones can restore the file list from the cache. This is only done once the cache has been
+ * updated with the files of that commit.
+ * @param {object} args Arguments.
+ * @param {IndexedDB} args.metaDB The meta database instance.
+ * @param {string | undefined} args.lastConfigHash The CMS configuration hash the files were
+ * fetched for.
+ * @param {string} args.lastCommitHash The commit hash the files were fetched at.
+ */
+export const saveFileListMeta = async ({ metaDB, lastConfigHash, lastCommitHash }) => {
+  await metaDB.saveEntries(
     Object.entries({
       last_config_hash: lastConfigHash,
       last_commit_hash: lastCommitHash,
       git_config_fetched: true,
     }),
   );
-
-  return fileList;
 };
 
 /**
@@ -291,7 +304,9 @@ export const applyFileMetadata = ({ fetchedFileMap, metadataMap }) => {
 };
 
 /**
- * Update the file cache by saving new entries and deleting unused ones.
+ * Update the file cache by saving new entries and deleting unused ones. Both are awaited, as the
+ * cache is only recorded as reflecting the commit once it’s up to date: a file left in it would
+ * come back with the file list restored from it.
  * @param {object} args Arguments.
  * @param {IndexedDB} args.cacheDB The cache database instance.
  * @param {BaseFileListItem[]} args.allFiles List of all files in the repository.
@@ -309,15 +324,12 @@ export const updateCache = async ({
   const usedPaths = new Set(allFiles.map(({ path }) => path));
   const unusedPaths = Object.keys(cachedFiles).filter((path) => !usedPaths.has(path));
 
-  // Save new entry caches
-  if (fetchingFiles.length) {
-    await cacheDB.saveEntries(Object.entries(fetchedFileMap));
-  }
-
-  // Delete old entry caches; we don’t need `await` for the deletion to finish, as it’s not critical
-  if (unusedPaths.length) {
-    cacheDB.deleteEntries(unusedPaths);
-  }
+  await Promise.all([
+    // Save new entry caches
+    fetchingFiles.length ? cacheDB.saveEntries(Object.entries(fetchedFileMap)) : undefined,
+    // Delete old entry caches
+    unusedPaths.length ? cacheDB.deleteEntries(unusedPaths) : undefined,
+  ]);
 };
 
 /**
@@ -366,6 +378,8 @@ const readDatabaseEntries = ({ metaDB, cacheDB }) =>
  * default branch name.
  * @param {() => Promise<{ hash: string, message: string }>} args.fetchLastCommit Function to fetch
  * the last commit’s SHA-1 hash and message.
+ * @param {{ hash: string, message: string }} [args.lastCommit] Last commit, if the caller has
+ * just fetched it. It’s only used once the branch is known.
  * @param {DebugLogger} args.log Function to trace the loading in the console.
  * @returns {Promise<{ hash: string, message: string }>} Last commit’s SHA-1 hash and message.
  */
@@ -374,9 +388,17 @@ const resolveHead = async ({
   accessPromise,
   fetchDefaultBranchName,
   fetchLastCommit,
+  lastCommit,
   log,
 }) => {
   let { branch } = repository;
+
+  // A check for remote changes has just fetched the head to compare it, so it isn’t fetched again
+  if (branch && lastCommit) {
+    await accessPromise;
+
+    return lastCommit;
+  }
 
   if (!branch) {
     // Only the request is started here; the access check is settled first, so that its error is
@@ -397,11 +419,11 @@ const resolveHead = async ({
 
   await accessPromise;
 
-  const lastCommit = await lastCommitPromise;
+  const fetchedCommit = await lastCommitPromise;
 
-  log(`Fetched the last commit on ${branch}: ${lastCommit.hash}`);
+  log(`Fetched the last commit on ${branch}: ${fetchedCommit.hash}`);
 
-  return lastCommit;
+  return fetchedCommit;
 };
 
 /**
@@ -555,9 +577,15 @@ const completeMetadata = async ({
 
   if (fetchFileMetadata && fetchingFiles.length) {
     // Cache the text right away, so that a reload before the slower metadata pass has finished
-    // only costs that pass next time, not the contents again
-    await updateCache({ cacheDB, allFiles, cachedFiles, fetchingFiles, fetchedFileMap });
-    log(`Cached the contents of ${fetchingFiles.length} files`);
+    // only costs that pass next time, not the contents again. A failure here doesn’t stop the
+    // metadata from being filled in; the cache is written again below, which reports it
+    try {
+      await updateCache({ cacheDB, allFiles, cachedFiles, fetchingFiles, fetchedFileMap });
+      log(`Cached the contents of ${fetchingFiles.length} files`);
+    } catch (/** @type {any} */ ex) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to cache the contents.', ex);
+    }
 
     try {
       applyFileMetadata({
@@ -585,6 +613,32 @@ const completeMetadata = async ({
 };
 
 /**
+ * Update the file cache, then record the commit it reflects. If the cache can’t be updated, the
+ * commit isn’t recorded, so the next fetch gets the file list again instead of restoring it from a
+ * cache that may still hold files of an earlier commit, such as ones deleted since. The site data
+ * is already usable without the cache, so the failure is only logged.
+ * @param {object} args Arguments.
+ * @param {IndexedDB} args.metaDB The meta database instance.
+ * @param {string | undefined} args.lastConfigHash The CMS configuration hash the files were
+ * fetched for.
+ * @param {string} args.lastCommitHash The commit hash the files were fetched at.
+ * @param {Promise<void>} args.cacheUpdate Update of the file cache in progress.
+ */
+const cacheFiles = async ({ metaDB, lastConfigHash, lastCommitHash, cacheUpdate }) => {
+  try {
+    await cacheUpdate;
+  } catch (/** @type {any} */ ex) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to update the file cache.', ex);
+
+    return;
+  }
+
+  // Only now that the cache holds the files of this commit can the file list be restored from it
+  await saveFileListMeta({ metaDB, lastConfigHash, lastCommitHash });
+};
+
+/**
  * Fetch file list from a backend service, download/parse all the entry files, then cache them in
  * the {@link allEntries} and {@link allAssets} stores.
  * @param {object} args Arguments.
@@ -601,6 +655,8 @@ const completeMetadata = async ({
  * default branch name.
  * @param {() => Promise<{ hash: string, message: string }>} args.fetchLastCommit Function to fetch
  * the last commit’s SHA-1 hash and message.
+ * @param {{ hash: string, message: string }} [args.lastCommit] Last commit, if the caller has
+ * just fetched it, so it isn’t fetched again.
  * @param {FetchFileListFunction} args.fetchFileList Function to fetch the repository’s complete
  * file list.
  * @param {FetchFileContentsFunction} args.fetchFileContents Function to fetch the metadata of
@@ -617,6 +673,7 @@ export const fetchAndParseFiles = async ({
   checkBranchAccess,
   fetchDefaultBranchName,
   fetchLastCommit,
+  lastCommit,
   fetchFileList,
   fetchFileContents,
   fetchFileMetadata,
@@ -646,6 +703,7 @@ export const fetchAndParseFiles = async ({
     accessPromise,
     fetchDefaultBranchName,
     fetchLastCommit,
+    lastCommit,
     log,
   });
 
@@ -654,8 +712,9 @@ export const fetchAndParseFiles = async ({
 
   log(`Read the file cache: ${cachedFileEntries.length} files`);
 
+  const lastConfigHash = cmsConfigVersion.current;
+
   const fileList = await getFileList({
-    metaDB,
     metaEntries,
     lastCommitHash,
     cachedFileEntries,
@@ -674,6 +733,20 @@ export const fetchAndParseFiles = async ({
     lastParseKey = parseKey;
     repositoryHead.current = lastCommitHash;
     log('The site data is ready: no files to load');
+
+    await cacheFiles({
+      metaDB,
+      lastConfigHash,
+      lastCommitHash,
+      // Only what’s left from the previous commit, to be deleted
+      cacheUpdate: updateCache({
+        cacheDB,
+        allFiles: [],
+        cachedFiles: Object.fromEntries(cachedFileEntries),
+        fetchingFiles: [],
+        fetchedFileMap: {},
+      }),
+    });
 
     return;
   }
@@ -700,13 +773,18 @@ export const fetchAndParseFiles = async ({
   repositoryHead.current = lastCommitHash;
   log('The site data is ready');
 
-  await completeMetadata({
-    cacheDB,
-    allFiles: fileList.allFiles,
-    cachedFiles,
-    fetchingFiles,
-    fetchedFileMap,
-    fetchFileMetadata,
-    log,
+  await cacheFiles({
+    metaDB,
+    lastConfigHash,
+    lastCommitHash,
+    cacheUpdate: completeMetadata({
+      cacheDB,
+      allFiles: fileList.allFiles,
+      cachedFiles,
+      fetchingFiles,
+      fetchedFileMap,
+      fetchFileMetadata,
+      log,
+    }),
   });
 };

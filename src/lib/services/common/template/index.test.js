@@ -454,7 +454,7 @@ describe('fillTemplate()', async () => {
       { entryFilePath: 'article.md', expected: 'md' },
       { entryFilePath: 'article.html.erb', expected: 'erb' },
       { entryFilePath: 'article.backup.json', expected: 'json' },
-      { entryFilePath: 'article', expected: 'article' },
+      { entryFilePath: 'article', expected: '' },
       { entryFilePath: 'path/to/article.txt', expected: 'txt' },
     ];
 
@@ -475,8 +475,8 @@ describe('fillTemplate()', async () => {
 
     const testCases = [
       { entryFilePath: 'article.md', expected: 'article' },
-      { entryFilePath: 'article.html.erb', expected: 'article' },
-      { entryFilePath: 'my-long-filename.backup.json', expected: 'my-long-filename' },
+      { entryFilePath: 'article.html.erb', expected: 'article.html' },
+      { entryFilePath: 'my-long-filename.backup.json', expected: 'my-long-filename.backup' },
       { entryFilePath: 'path/to/article.txt', expected: 'article' },
       { entryFilePath: 'path/to/no-extension', expected: 'no-extension' },
     ];
@@ -491,6 +491,28 @@ describe('fillTemplate()', async () => {
 
       expect(result).toEqual(expected);
     });
+  });
+
+  test('filename extraction with the `multiple_files` i18n structure', async () => {
+    await setupCmsConfig();
+
+    const multiFileCollection = {
+      ...collection,
+      _i18n: {
+        ...DEFAULT_I18N_CONFIG,
+        allLocales: ['en', 'fr'],
+        structureMap: { ...DEFAULT_I18N_CONFIG.structureMap, i18nMultiFile: true },
+      },
+    };
+
+    const result = fillTemplate('{{filename}}.{{extension}}', {
+      collection: multiFileCollection,
+      content: {},
+      type: 'preview_path',
+      entryFilePath: 'content/posts/my.post.fr.md',
+    });
+
+    expect(result).toEqual('my.post.md');
   });
 
   test('custom identifier field', async () => {
@@ -696,6 +718,42 @@ describe('fillTemplate()', async () => {
       fillTemplate('{{title}}-{{title}}', {
         collection: { ...collection, slug_length: undefined },
         content: { title: 'Hello' },
+      }),
+    ).toBe('hello-');
+  });
+
+  test('keep the replacement at the end of a slug that is not truncated', async () => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: {
+        backend: { name: 'github' },
+        collections: [collection],
+        slug: { trim: false, maxlength: 50 },
+      },
+    };
+
+    expect(
+      fillTemplate('{{title}}', {
+        collection: { ...collection, slug_length: undefined },
+        content: { title: '--Hello World--' },
+      }),
+    ).toBe('-hello-world-');
+  });
+
+  test('keep the replacement left at the end by truncation with `trim: false`', async () => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: {
+        backend: { name: 'github' },
+        collections: [collection],
+        slug: { trim: false, maxlength: 6 },
+      },
+    };
+
+    expect(
+      fillTemplate('{{title}}', {
+        collection: { ...collection, slug_length: undefined },
+        content: { title: 'Hello World' },
       }),
     ).toBe('hello-');
   });

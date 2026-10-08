@@ -3,9 +3,15 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 
 import EditorComponent from '$lib/components/contents/details/fields/rich-text/editor-component.svelte';
 import {
+  getSelectorTagNames,
   isMultiLinePattern,
   normalizeProps,
+  supportsHTML,
 } from '$lib/services/contents/fields/rich-text/components/utils';
+import {
+  getComponentFieldList,
+  getNoAsset,
+} from '$lib/services/contents/fields/rich-text/previews';
 
 /**
  * @import {
@@ -28,7 +34,8 @@ const TAG_NAME_REGEX = /^<(?<tagName>[a-z]+)/i;
  * HTML document can be converted back to the component.
  * @param {string | HTMLElement | ReactElement | undefined} preview Return value of the component’s
  * `toPreview()` method, if any.
- * @param {string} block Return value of the component’s `toBlock()` method.
+ * @param {string | undefined} block Return value of the component’s `toBlock()` method, if it
+ * could be called.
  * @returns {string | undefined} Tag name, e.g. `img`, or `undefined` if it cannot be determined,
  * including when the preview is a React element.
  */
@@ -42,13 +49,29 @@ const getTagName = (preview, block) => {
   if (typeof preview === 'string') {
     return (
       preview.trim().match(TAG_NAME_REGEX)?.groups?.tagName ??
-      (typeof block === 'string'
-        ? block.trim().match(TAG_NAME_REGEX)?.groups?.tagName
-        : /* v8 ignore next */ undefined)
+      (typeof block === 'string' ? block.trim().match(TAG_NAME_REGEX)?.groups?.tagName : undefined)
     );
   }
 
   return undefined;
+};
+
+/**
+ * Call a method of a component with empty field values, to learn the HTML tag it renders. A method
+ * that needs the values can throw, e.g. by reading a property of `undefined`. The tag is then left
+ * unknown, rather than the error breaking the editor, which creates the node class of every
+ * registered component, whether an entry uses it or not.
+ * @param {((props: Record<string, any>, ...args: any[]) => any) | undefined} method `toPreview()`
+ * or `toBlock()`.
+ * @param {any[]} [args] Other arguments, e.g. the asset getter and field list for `toPreview()`.
+ * @returns {any} Return value, or `undefined` if the method is missing or has thrown.
+ */
+const callWithEmptyProps = (method, args = []) => {
+  try {
+    return method?.({}, ...args);
+  } catch {
+    return undefined;
+  }
 };
 
 /**
@@ -64,16 +87,45 @@ export const createCustomNodeClass = (componentDef) => {
     collapsed,
     mode,
     summary,
+    thumbnail,
     fields,
     pattern,
     toBlock,
     toPreview,
+    htmlSelector,
+    fromBlockHTML,
+    toBlockHTML,
   } = componentDef;
 
   const inline = !isMultiLinePattern(pattern);
-  const preview = toPreview?.({});
-  const block = toBlock({});
-  const tagName = getTagName(preview, block);
+  const htmlSupported = supportsHTML(componentDef);
+
+  // The selector has been validated when the component was registered
+  const htmlTagNames = htmlSupported
+    ? /** @type {string[]} */ (getSelectorTagNames(/** @type {string} */ (htmlSelector)))
+    : [];
+
+  // Without the HTML syntax, guess the element from the preview to convert a pasted element
+  const preview = htmlSupported
+    ? undefined
+    : callWithEmptyProps(toPreview, [getNoAsset, getComponentFieldList(componentDef)]);
+
+  const block = htmlSupported ? undefined : callWithEmptyProps(toBlock);
+  const tagName = htmlSupported ? undefined : getTagName(preview, block);
+
+  /**
+   * Get the field values of the component from the given element, using the `htmlSelector` and
+   * `fromBlockHTML` options.
+   * @param {HTMLElement} element Element.
+   * @returns {Record<string, any> | undefined} Values, or `undefined` if the element is not an
+   * instance of the component.
+   */
+  const getPropsFromElement = (element) =>
+    element.matches(/** @type {string} */ (htmlSelector))
+      ? /** @type {(element: HTMLElement) => Record<string, any> | undefined} */ (fromBlockHTML)(
+          element,
+        )
+      : undefined;
 
   /**
    * Genetic custom node.
@@ -235,6 +287,7 @@ export const createCustomNodeClass = (componentDef) => {
           mode,
           inline,
           summary,
+          thumbnail,
           fields,
           values: this.__props,
           onChange,
@@ -289,20 +342,75 @@ export const createCustomNodeClass = (componentDef) => {
     }
 
     /**
-     * Export the node as a DOM node.
+     * Export the node as a DOM node: the HTML written with the `toBlockHTML` option, which is saved
+     * in a RichText field with the `html` format, and copied to the clipboard in any field. Without
+     * the option, the component’s editor UI is exported instead.
      * @returns {DOMExportOutput} Output.
      */
     exportDOM() {
-      return { element: this.createDOM() };
+      if (!toBlockHTML) {
+        return { element: this.createDOM() };
+      }
+
+      const output = /** @type {unknown} */ (toBlockHTML(normalizeProps(this.__props ?? {})));
+
+      if (output && typeof output === 'object') {
+        return { element: /** @type {HTMLElement} */ (output) };
+      }
+
+      const template = document.createElement('template');
+
+      // Anything other than a string, e.g. `undefined` for an empty component, exports nothing
+      template.innerHTML = typeof output === 'string' ? output : '';
+
+      return { element: template.content };
     }
 
     /**
-     * Import a DOM node.
+     * Import a DOM node. With the `htmlSelector` option, an element the selector matches is
+     * converted to the component, e.g. when HTML is loaded in a RichText field with the `html`
+     * format or pasted to the editor. Otherwise, a pasted element of the type the preview renders
+     * is.
      * @returns {DOMConversionMap} Conversion map.
      */
     static importDOM() {
       /** @type {DOMConversionMap} */
       const conversionMap = {};
+
+      if (htmlSupported) {
+        htmlTagNames.forEach((name) => {
+          /**
+           * Conversion map item.
+           * @param {HTMLElement} element Element.
+           * @returns {DOMConversion | null} Conversion, or `null` if the element is not an
+           * instance of the component.
+           */
+          conversionMap[name] = (element) => {
+            const props = getPropsFromElement(element);
+
+            if (!props) {
+              return null;
+            }
+
+            return {
+              /**
+               * Conversion.
+               * @returns {DOMConversionOutput} Output.
+               */
+              conversion: () => ({
+                node: new CustomNode(props),
+                // The content of the element is part of the component
+                // eslint-disable-next-line jsdoc/require-jsdoc
+                after: () => [],
+              }),
+              // Take priority over Lexical’s own conversions, e.g. a link
+              priority: 4,
+            };
+          };
+        });
+
+        return conversionMap;
+      }
 
       if (tagName) {
         /**
@@ -326,38 +434,6 @@ export const createCustomNodeClass = (componentDef) => {
             ),
           }),
           priority: 3,
-        });
-      }
-
-      if (componentName === 'linked-image') {
-        // Add extra conversion for the built-in image component to support linked images
-        Object.assign(conversionMap, {
-          /**
-           * Conversion map item.
-           * @param {Node} node Target node.
-           * @returns {DOMConversion | null} Conversion.
-           */
-          a: (node) => {
-            if (node.firstChild?.nodeName.toLowerCase() === 'img') {
-              const { href: link } = /** @type {HTMLAnchorElement} */ (node);
-              const { src, alt, title } = /** @type {HTMLImageElement} */ (node.firstChild);
-
-              return {
-                /**
-                 * Conversion.
-                 * @returns {DOMConversionOutput} Output.
-                 */
-                conversion: () => ({
-                  node: new CustomNode({ src, alt, title, link }),
-                  // eslint-disable-next-line jsdoc/require-jsdoc
-                  after: () => [],
-                }),
-                priority: 4,
-              };
-            }
-
-            return null;
-          },
         });
       }
 

@@ -1,5 +1,5 @@
 import { sleep } from '@sveltia/utils/misc';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, onTestFinished, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
@@ -7,6 +7,8 @@ import { createSubfolder } from '$lib/services/assets/data/subfolder';
 import { globalAssetFolder } from '$lib/services/assets/folders';
 import { selectAssetsView, showContentOverlay } from '$lib/services/contents/editor';
 import { duplicates } from '$lib/services/contents/fields/file/duplicates.svelte';
+import { listAssets } from '$lib/services/contents/fields/file/helpers';
+import { getUnsavedAssets } from '$lib/services/contents/fields/file/process';
 import {
   FRAME_ORIGIN as CLOUDINARY_ORIGIN,
   activated as cloudinaryActivated,
@@ -25,6 +27,9 @@ import {
 } from '$lib/test/config';
 
 import SelectAssetsDialog from './select-assets-dialog.svelte';
+
+vi.mock('$lib/services/contents/fields/file/helpers', { spy: true });
+vi.mock('$lib/services/contents/fields/file/process', { spy: true });
 
 vi.mock('$lib/services/assets/data/subfolder', async (importOriginal) => ({
   .../** @type {object} */ (await importOriginal()),
@@ -291,6 +296,37 @@ describe('SelectAssetsDialog', () => {
       await waitForGrid(1);
 
       await expect.element(dialog.getByRole('button', { name: 'New Folder' })).toBeDisabled();
+    });
+
+    test('neither creates nor uploads anything in a folder the CMS is served from', async () => {
+      assets.push(
+        createMockAsset({
+          name: 'logo.png',
+          folderPath: 'static/uploads/admin',
+          file: await createMockImageFile({ name: 'logo.png' }),
+          asset: { folder: globalAssetFolder.current },
+        }),
+      );
+      setAssets(assets);
+
+      const { onSelect } = await renderDialog();
+      const dialog = page.getByRole('dialog', { name: 'Select Image' });
+
+      await waitForGrid(2);
+      await dialog
+        .getByRole('listbox', { name: 'Folders' })
+        .getByRole('option', { name: 'admin' })
+        .click();
+      await waitForGrid(1);
+
+      await expect.element(dialog.getByRole('button', { name: 'New Folder' })).toBeDisabled();
+      await expect.element(dialog.getByRole('button', { name: 'Upload' })).toBeDisabled();
+
+      // A dropped file is ignored rather than headed for the folder
+      dropFiles([await createMockImageFile({ name: 'index.png' })]);
+      await waitForGrid(1);
+      await expect.element(dialog.getByRole('button', { name: 'Insert' })).toBeDisabled();
+      expect(onSelect).not.toHaveBeenCalled();
     });
 
     test('creates a folder where the user is, and uploads there', async () => {
@@ -778,6 +814,42 @@ describe('SelectAssetsDialog', () => {
     );
     // The very same `File` object is passed on, not a clone that would have to be read again
     expect(onSelect.mock.calls[0][0][0].file).toBe(file);
+  });
+
+  test('ignores the unsaved assets of an earlier draft state that are read late', async () => {
+    const draft = $state({ originalEntry: undefined, files: /** @type {any} */ ({}) });
+    /** @type {((assets: any[]) => void)[]} */
+    const resolvers = [];
+
+    onTestFinished(() => {
+      vi.mocked(getUnsavedAssets).mockReset();
+    });
+    // Read the draft’s files synchronously like the real function, so their changes are tracked
+    vi.mocked(getUnsavedAssets).mockImplementation(({ draft: _draft }) => {
+      void Object.keys(_draft.files);
+
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    });
+
+    await renderDialog({ draft });
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+    // The draft’s files change, and the reads are answered in reverse order
+    draft.files['blob:a'] = { file: new File(['a'], 'a.png'), folder: globalAssetFolder.current };
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]([{ name: 'latest.png' }]);
+    await vi.waitFor(() =>
+      expect(vi.mocked(listAssets).mock.lastCall?.[0].unsavedAssets).toEqual([
+        { name: 'latest.png' },
+      ]),
+    );
+    resolvers[0]([{ name: 'stale.png' }]);
+    await sleep(50);
+
+    expect(vi.mocked(listAssets).mock.lastCall?.[0].unsavedAssets).toEqual([
+      { name: 'latest.png' },
+    ]);
   });
 
   test('releases the URLs of dropped files when closed, but not the draft’s', async () => {

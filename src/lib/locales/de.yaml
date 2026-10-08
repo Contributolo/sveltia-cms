@@ -1993,8 +1993,6 @@ config:
   # Warning messages (logged to console)
   warning:
     oauth_no_app_id: Die ID der OAuth-Anwendung ist nicht definiert. Zum Anmelden muss ein Zugriffstoken angegeben werden.
-    editorial_workflow_unsupported: Der Redaktions-Workflow wird derzeit nur mit den GitHub- und GitLab-Backends unterstützt.
-    open_authoring_unsupported_backend: Open Authoring wird derzeit nur mit dem GitHub-Backend unterstützt.
     # {$prop} is the unsupported option name that will be ignored
     unsupported_ignored_option: Die Option `{$prop}` wird in Sveltia CMS nicht unterstützt. Sie wird ignoriert.
     # Don’t localize `picker_utc`, `input_timezone`, and `output_utc`
@@ -2144,8 +2142,6 @@ workflow:
     .match $count
       one {{ Einer davon wurde noch nicht veröffentlicht, daher werden die unveröffentlichten Änderungen verworfen. Eine bereits veröffentlichte Version bleibt veröffentlicht. }}
       *   {{ {$count} davon wurden noch nicht veröffentlicht, daher werden die unveröffentlichten Änderungen verworfen. Bereits veröffentlichte Versionen bleiben veröffentlicht. }}
-  # Confirmation dialog shown before merging the pull request. Keep the wording free of Git jargon.
-  confirm_publishing_entry: Soll dieser Eintrag wirklich veröffentlicht werden? Die Änderungen werden sofort wirksam.
   # Workflow page: toast notifications shown while an entry is being published from a card, and
   # once publishing has completed
   publishing_entry: Eintrag wird veröffentlicht…

@@ -669,6 +669,21 @@ describe('collection/view/index', () => {
       ]);
     });
 
+    test('collectionState counts a never-published draft toward the quota', async () => {
+      _selectedCollection.current = /** @type {any} */ ({
+        name: 'posts',
+        _type: 'entry',
+        create: true,
+        limit: 3,
+      });
+      _unpublishedEntries.current = [createDraft('needed'), createDraft('brand-new')];
+      await wait();
+
+      // The draft for `needed` updates a published entry, so it doesn’t take up another slot
+      expect(read(collectionState).remaining).toBe(0);
+      expect(read(collectionState).creationDisabled).toBe(true);
+    });
+
     test('listedUnpublishedEntries is empty while reordering', async () => {
       _unpublishedEntries.current = [createDraft('brand-new')];
       await wait();
@@ -1529,13 +1544,13 @@ describe('collection/view/index', () => {
       });
       await wait();
 
-      vi.mocked(getEntriesByCollection).mockReturnValue(twoEntries);
+      // Like the real one, read the entry store, which the collection state then depends on
+      vi.mocked(getEntriesByCollection).mockImplementation(() => _allEntries.current);
       _allEntries.current = twoEntries;
       await wait();
       expect(collectionState.current.remaining).toBe(1);
       expect(collectionState.current.creationDisabled).toBe(false);
 
-      vi.mocked(getEntriesByCollection).mockReturnValue(threeEntries);
       _allEntries.current = threeEntries;
       await wait();
       expect(collectionState.current.remaining).toBe(0);
@@ -2023,6 +2038,10 @@ describe('collection/view/index', () => {
     });
 
     test('restores the saved view, keeping the saved options over the defaults', async () => {
+      vi.mocked(getSortConfig).mockReturnValue({
+        keys: ['title', 'date'],
+        default: { key: 'title', order: 'ascending' },
+      });
       _entryListSettings.current = {
         posts: {
           type: 'grid',
@@ -2040,6 +2059,59 @@ describe('collection/view/index', () => {
         filters: [],
         group: null,
       });
+    });
+
+    test('keeps a saved sort key and group that are still configured', async () => {
+      vi.mocked(parseGroupConfig).mockReturnValue({
+        options: [{ name: 'year', label: 'Year', field: 'date', pattern: '\\d{4}' }],
+        default: { field: 'category' },
+      });
+      _entryListSettings.current = {
+        posts: {
+          type: 'list',
+          sort: { key: 'title', order: 'descending' },
+          group: { field: 'date', pattern: '\\d{4}' },
+        },
+      };
+      _selectedCollection.current = collection;
+      await wait();
+
+      expect(currentView.current.sort).toEqual({ key: 'title', order: 'descending' });
+      expect(currentView.current.group).toEqual({ field: 'date', pattern: '\\d{4}' });
+    });
+
+    test('drops a saved sort key and group removed from the configuration since', async () => {
+      // The commit metadata may arrive after the entries, so the keys depending on it are
+      // validated as if it were there
+      vi.mocked(getSortConfig).mockImplementation(({ isCommitDateAvailable }) => ({
+        keys: isCommitDateAvailable ? ['title', 'commit_date'] : ['title'],
+        default: { key: 'title', order: 'ascending' },
+      }));
+      _entryListSettings.current = {
+        posts: {
+          type: 'list',
+          sort: { key: 'author', order: 'descending' },
+          group: { field: 'year' },
+        },
+        drafts: { type: 'list', sort: { key: 'commit_date', order: 'descending' }, group: null },
+      };
+      _selectedCollection.current = collection;
+      await wait();
+
+      // The collection defaults apply instead, so the user isn’t stuck with a group the menu no
+      // longer offers to undo
+      expect(currentView.current).toEqual({
+        type: 'list',
+        sort: { key: 'title', order: 'ascending' },
+        filters: [{ field: 'draft', pattern: false }],
+        group: { field: 'category' },
+      });
+
+      _selectedCollection.current = { ...collection, name: 'drafts' };
+      await wait();
+
+      expect(currentView.current.sort).toEqual({ key: 'commit_date', order: 'descending' });
+      expect(currentView.current.group).toBeNull();
     });
 
     test('leaves the view alone for a file collection', async () => {

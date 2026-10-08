@@ -570,6 +570,8 @@ new_folder_description: 新しいフォルダーは「{$folder}」内に作成�
 new_folder_error:
   empty: フォルダー名は空白にはできません。
   invalid: フォルダー名にスラッシュを含めたり、ドットで始めたりすることはできません。
+  # A name the CMS itself is usually served from, e.g. `admin` or `cms`
+  reserved: この名前のフォルダーは通常 CMS 自体の配置に使われるため、中のファイルは読み取り専用です。
   duplicate: この名前のフォルダーまたはファイルは既に存在します。
 # Progress and error messages while the folder is being created
 creating_folder: フォルダーを作成中…
@@ -640,6 +642,9 @@ enter_new_name_for_asset_error:
   empty: ファイル名を空白にすることはできません。
   character: ファイル名に特別な文字を含めることはできません。
   duplicate: このファイル名は他のアセットに使われています。
+# Shown while renaming a file whose name will be changed on saving, e.g. by the `slugify_filename`
+# media library option
+file_will_be_saved_as: ファイルは「{$name}」として保存されます。
 # Confirmation dialog shown when the file extension is changed while renaming an asset
 change_file_extension: 拡張子の変更
 # {$oldExtension} and {$newExtension} are file extensions without a leading dot, e.g. png
@@ -1693,6 +1698,8 @@ config:
     i18n_invalid_default_locale: '`default_locale` オプションに `{$locale}` が指定されていますが、`locales` に含まれていません。'
     # {$locale} is the locale code from the configuration; Don’t localize `initial_locales` and `locales`
     i18n_invalid_initial_locale: '`initial_locales` オプションに `{$locale}` が含まれていますが、`locales` に含まれていません。'
+    # Don’t localize `i18n`
+    i18n_no_collections: '設定のトップレベルで `i18n` オプションが設定されていますが、どのコレクションやシングルトンにも `i18n` オプションがないため、コンテンツを翻訳できません。翻訳するコレクションやシングルトンに `i18n: true` を追加してください。'
     # {$key} is the unsupported key found in the option map; Don’t localize `transformations`, `raster_image` and `svg`
     invalid_transformation_key: '`transformations` オプションにサポートされていない `{$key}` キーが含まれています。`raster_image`、`svg` またはサポートされているラスター画像形式を指定してください。'
     # {$key} is the transformation key; Don’t localize `quality`
@@ -1780,6 +1787,12 @@ config:
     invalid_collection_folder_locale: '`folder` パス `{$folder}` は無効です。`locale` プレースホルダーは `content/\{\{locale\}\}/posts` のように、フォルダー名全体として一度だけ使用できます。'
     # Don’t localize `i18n`, `locale` and `file`
     collection_file_i18n_required: コレクションファイルには、`file` パスで `locale` プレースホルダーを使用する場合、`i18n` オプションを定義する必要があります。
+    # Don’t localize `i18n`, `i18n: true` and `i18n: duplicate`
+    collection_i18n_no_fields: 'コレクションに `i18n` オプションがありますが、どのフィールドにも `i18n` オプションがないため、フィールドを翻訳できません。翻訳するフィールドに `i18n: true` または `i18n: duplicate` を追加してください。'
+    # Don’t localize `i18n` and `i18n: true`
+    collection_i18n_no_files: 'コレクションに `i18n` オプションがありますが、どのファイルにも `i18n` オプションがないため、ファイルを翻訳できません。翻訳するファイルに `i18n: true` を追加してください。'
+    # Don’t localize `i18n`, `i18n: true` and `i18n: duplicate`
+    collection_file_i18n_no_fields: 'コレクションファイルに `i18n` オプションがありますが、どのフィールドにも `i18n` オプションがないため、フィールドを翻訳できません。翻訳するフィールドに `i18n: true` または `i18n: duplicate` を追加してください。'
     # {$count} is the 1-based field index in the current fields array; Don’t localize `name`
     missing_field_name: フィールド {$count} には `name` オプションを空でない文字列として定義する必要があります。
     # {$name} is the invalid or duplicate field name
@@ -1791,6 +1804,8 @@ config:
     invalid_variable_type: 変数タイプ名 `{$name}` は無効です。特殊文字を含めることはできません。
     duplicate_variable_type: 変数タイプ名は一意でなければなりませんが、`{$name}` が複数回使用されています。
     date_field_type: 'Sveltia CMS では非推奨の Date フィールドタイプはサポートされていません。代わりに `type: date` オプション付きの DateTime フィールドタイプを使用してください。'
+    # curly brackets in the placeholder are escaped with backslashes for MessageFormat 2
+    hidden_field_locale_without_i18n: Hidden フィールドの `default` オプションで `\{\{locale\}\}` プレースホルダーが使用されていますが、コレクションで i18n が有効になっていないため、置き換えるロケールがありません。
     # {$timeZone} is the invalid IANA timezone identifier from the configuration
     invalid_timezone: '無効なタイムゾーン: {$timeZone}。有効な IANA タイムゾーン識別子を使用してください。例: `America/New_York` または `Asia/Tokyo`。'
     # {$prop} is the deprecated option name and {$newProp} is the supported replacement option
@@ -1889,8 +1904,6 @@ config:
   # Warning messages (logged to console)
   warning:
     oauth_no_app_id: OAuth アプリケーション ID が定義されていません。ユーザーがログインするにはアクセストークンを入力する必要があります。
-    editorial_workflow_unsupported: エディトリアルワークフローは現在 GitHub と GitLab バックエンドでのみサポートされています。
-    open_authoring_unsupported_backend: オープンオーサリングは現在 GitHub バックエンドでのみサポートされています。
     # {$prop} is the unsupported option name that will be ignored
     unsupported_ignored_option: '`{$prop}` オプションは Sveltia CMS ではサポートされていません。このオプションは無視されます。'
     # Don’t localize `picker_utc`, `input_timezone`, and `output_utc`
@@ -1907,6 +1920,8 @@ config:
     slug_i18n_ineffective: コレクションが各ロケールのファイルを個別に持つ `multiple_files`、`multiple_folders`、`multiple_root_folders` のいずれの i18n 構造も使用していないため、`slug` の `i18n` オプションは効果がありません。
     # Don’t localize `i18n`
     i18n_not_configured: '`i18n` オプションが有効になっていますが、設定のトップレベルまたはコレクションで i18n が設定されていないため、このオプションは効果がありません。'
+    # Don’t localize `public_folder` and `media_folder`
+    empty_public_folder: '`public_folder` オプションが空の文字列になっているため、エントリーに保存されるアセットパスには代わりに `media_folder` のパスが使用されます。このオプションを削除するか、`/images` のように使用したいパスを設定してください。'
     # {$option} is an option path from the configuration, such as `filter.Regulation`
     schema_unknown_option: '`{$option}` オプションは Sveltia CMS の設定スキーマに定義されていません。このオプションは無視されます。入力ミスや記述ミスがないか確認してください。'
 
@@ -2037,7 +2052,7 @@ workflow:
       1   {{ そのうち 1 件はまだ公開されていないため、未公開の変更は破棄されます。公開版があればそのまま公開されたままになります。 }}
       *   {{ そのうち {$count} 件はまだ公開されていないため、未公開の変更は破棄されます。公開版があればそのまま公開されたままになります。 }}
   # Confirmation dialog shown before merging the pull request. Keep the wording free of Git jargon.
-  confirm_publishing_entry: このエントリーを公開してもよろしいですか？ 変更は即座に反映されます。
+  confirm_publishing_entry_after_build: このエントリーを公開してもよろしいですか？ 変更はサイトの再構築後に反映されます。
   # Workflow page: toast notifications shown while an entry is being published from a card, and
   # once publishing has completed
   publishing_entry: エントリーを公開しています…
@@ -2049,6 +2064,17 @@ workflow:
   entry_deleted: エントリーを削除しました。
   # Error notification when publishing fails
   publishing_entry_failed: エントリーを公開できませんでした。再度お試しください。
+  # Error notification when an entry can’t be published from the CMS, because its request also
+  # changes files that aren’t part of the entry and that the CMS doesn’t show, goes somewhere other
+  # than the site’s branch, or is too large to check. Keep the wording free of Git jargon
+  publish_refused_other_changes: このエントリーには CMS で表示できない他の変更が含まれているため、ここでは公開できません。開発者にレビューを依頼してください。
+  # Error notification when an entry can’t be published because its branch has been committed to
+  # since the entry was opened, so what would be published isn’t what was reviewed
+  publish_refused_entry_changed: エントリーを開いた後に変更が加えられました。ページを再読み込みして最新の内容を確認してから公開してください。
+  # Error shown in the save error dialog when an entry can’t be saved for review, because a request
+  # the CMS doesn’t show is already open from the branch the entry would be saved to. `{$number}` is
+  # the request number, e.g. `#12` on GitHub or `!12` on GitLab. Keep the wording free of Git jargon
+  branch_in_use: このエントリーには CMS の外で別のリクエスト ({$number}) が既に作成されています。先に開発者にそのリクエストを閉じてもらってください。
   # Workflow page: empty column message
   no_entries: エントリーはありません。
   # Workflow page: aria-label for a draggable entry card
@@ -2069,6 +2095,10 @@ open_authoring:
   fork_declined: 変更を提案するには、あなたのアカウントにリポジトリのフォークが必要です。
   # Error shown when the fork couldn’t be created. {$repo} is the repository identifier
   fork_failed: 「{$repo}」リポジトリのフォークをあなたのアカウントに作成できませんでした。
+  # Error shown when the user’s fork doesn’t have the branch the CMS is configured with, so there’s
+  # nothing to start their changes from. {$fork} and {$repo} are repository identifiers in
+  # owner/repo format, {$branch} is the branch name
+  fork_branch_missing: あなたの「{$fork}」フォークに「{$branch}」ブランチがありません。「{$repo}」リポジトリからフォークを更新してから、もう一度サインインしてください。
   # Error shown when the CMS couldn’t work out whether the user can write to the repository, e.g.
   # because the API rate limit is exhausted. {$repo} is the repository identifier
   permission_check_failed: 「{$repo}」リポジトリへのアクセス権を確認できませんでした。しばらくしてから再度お試しください。
@@ -2083,6 +2113,10 @@ open_authoring:
   private_repo_scope_required: ログインにプライベートリポジトリへのアクセスが含まれていないため、「{$repo}」リポジトリを読み取れません。CMS の認証設定を確認するようメンテナーに依頼してください。
   # Error shown when a contributor tries to publish an entry, which only a maintainer can do
   publish_unsupported: このサイトへの変更を公開できるのはメンテナーだけです。代わりにエントリーをレビュー中にしてください。誰かが確認します。
+  # Error shown when a contributor changes the status of an entry whose request a maintainer has
+  # published since the page was loaded, leaving nothing to review. The entry then leaves the
+  # Editorial Workflow board and the editor closes. Keep the wording free of Git jargon
+  entry_already_published: このエントリーはメンテナーによって既に公開されているため、レビューするものはありません。
   # Error shown when a change would go straight to the site instead of being reviewed, which a
   # contributor can’t do. It covers media library uploads and deletions, and entry reordering
   direct_commit_unsupported: この変更は直接行えません。レビューを依頼できるのはエントリーの編集のみです。

@@ -16,7 +16,6 @@
   import { sleep } from '@sveltia/utils/misc';
   import { onMount, tick, untrack } from 'svelte';
 
-  import BackupFeedback from '$lib/components/contents/details/backup-feedback.svelte';
   import PaneBody from '$lib/components/contents/details/pane-body.svelte';
   import PaneHeader from '$lib/components/contents/details/pane-header.svelte';
   import RemoteChangeInfobar from '$lib/components/contents/details/remote-change-infobar.svelte';
@@ -28,28 +27,17 @@
   import { getReadonlyMessage, isDraftReadonly } from '$lib/services/config/readonly';
   import { selectedCollection } from '$lib/services/contents/collection';
   import { collectionState } from '$lib/services/contents/collection/view';
-  import {
-    resetBackupToastState,
-    scheduleBackup,
-    showBackupToastIfNeeded,
-  } from '$lib/services/contents/draft/backup';
+  import { resetBackupToastState, scheduleBackup } from '$lib/services/contents/draft/backup';
   import { getValueMapVersion } from '$lib/services/contents/draft/create/proxy.svelte';
-  import {
-    setEntryDraftContext,
-    setEntryDraftRoot,
-  } from '$lib/services/contents/draft/state.svelte';
-  import { updateComputedValues } from '$lib/services/contents/draft/update/compute';
+  import { initEntryDraftEditor } from '$lib/services/contents/draft/editor.svelte';
+  import { setEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import {
     editorFirstPane,
     editorSecondPane,
     showContentOverlay,
     showDuplicateToast,
   } from '$lib/services/contents/editor';
-  import {
-    findEditorField,
-    getExpanderKeys,
-    syncExpanderStates,
-  } from '$lib/services/contents/editor/fields';
+  import { revealEditorField } from '$lib/services/contents/editor/fields';
   import {
     getDefaultPanes,
     getLocaleContentLabel,
@@ -64,7 +52,7 @@
     awaitPendingFieldUpdates,
   } from '$lib/services/contents/editor/pending';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
-  import { DEFAULT_I18N_CONFIG } from '$lib/services/contents/i18n/config';
+  import { getDraftI18nConfig } from '$lib/services/contents/i18n/config';
   import { env } from '$lib/services/user/env.svelte';
   import { prefs } from '$lib/services/user/prefs.svelte';
   import { watch } from '$lib/services/utils/state.svelte';
@@ -128,14 +116,11 @@
     collectionFile,
     fileName,
     isIndexFile,
-    currentValues,
   } = $derived(/** @type {EntryDraft} */ (entryDraft.current ?? {}));
   const { showPreview, showSecondPane = true } = $derived(entryEditorSettings.current ?? {});
-  /* v8 ignore start -- only read while the panes are set up, which needs a collection */
   const { i18nEnabled, allLocales, defaultLocale } = $derived(
-    (collectionFile ?? collection)?._i18n ?? DEFAULT_I18N_CONFIG,
+    getDraftI18nConfig(entryDraft.current),
   );
-  /* v8 ignore stop */
   const paneStateKey = $derived(getPaneStateKey({ collection, collectionFile }));
   const {
     readonly: collectionReadonly,
@@ -276,14 +261,13 @@
   };
 
   /**
-   * Highlight the corresponding editor field by expanding the parent list/object(s), moving the
-   * element into the viewport, and focus any control within the field, such as a text input or
-   * button.
+   * Reveal the requested editor field: switch to an edit pane for the locale if needed, then expand
+   * the parent list/object(s), move the field into the viewport and focus a control within it.
    * @param {object} args Arguments.
    * @param {InternalLocaleCode} args.locale Locale code.
    * @param {FieldKeyPath} args.keyPath Key path of the field.
    */
-  const highlightEditorField = async ({ locale, keyPath }) => {
+  const revealRequestedField = async ({ locale, keyPath }) => {
     highlightRequestCount += 1;
 
     const request = highlightRequestCount;
@@ -298,42 +282,13 @@
       return;
     }
 
-    const valueMap = currentValues?.[locale] ?? {};
+    /**
+     * Check whether a newer request has come in.
+     * @returns {boolean} Result.
+     */
+    const isOutdated = () => request !== highlightRequestCount;
 
-    const expanderKeys = getExpanderKeys({
-      collectionName,
-      fileName,
-      valueMap,
-      keyPath,
-      isIndexFile,
-    });
-
-    syncExpanderStates({
-      draft,
-      stateMap: Object.fromEntries(expanderKeys.map((key) => [key, true])),
-    });
-
-    const targetField = await findEditorField({ locale, keyPath });
-
-    // Finding the field can take a while, so leave it to a newer request that came in meanwhile
-    if (!targetField || request !== highlightRequestCount) {
-      return;
-    }
-
-    /* v8 ignore start -- `scrollIntoViewIfNeeded()` is non-standard; Firefox doesn’t have it */
-    if (typeof targetField.scrollIntoViewIfNeeded === 'function') {
-      targetField.scrollIntoViewIfNeeded();
-    } else {
-      targetField.scrollIntoView();
-    }
-    /* v8 ignore stop */
-
-    const widgetWrapper = targetField.querySelector('.field-wrapper');
-
-    /** @type {HTMLElement | null} */ (
-      widgetWrapper?.querySelector('[contenteditable="true"], [tabindex="0"]') ??
-        widgetWrapper?.querySelector('input, textarea, button')
-    )?.focus();
+    await revealEditorField({ draft, locale, keyPath, isOutdated });
   };
 
   /**
@@ -341,19 +296,19 @@
    * clicks a search result or validation error. Then clear the highlight state so that it doesn’t
    * trigger again on navigation.
    */
-  const highlightEditorFieldIfNeeded = async () => {
+  const revealRequestedFieldIfNeeded = async () => {
     const { state } = window.history;
     const { locale, keyPath } = state?.highlight ?? {};
 
     if (typeof locale === 'string' && typeof keyPath === 'string' && locale && keyPath) {
-      await highlightEditorField({ locale, keyPath });
+      await revealRequestedField({ locale, keyPath });
       window.history.replaceState({ ...state, highlight: null }, '');
     }
   };
 
   /**
    * Called when a message event is received. If the event is a highlight event, calls
-   * {@link highlightEditorField} with the event payload.
+   * {@link revealRequestedField} with the event payload.
    * @param {MessageEvent} event The message event.
    */
   const onmessage = (event) => {
@@ -363,7 +318,7 @@
     }
 
     if (event.data?.type === 'highlight-editor-field' && event.data.payload) {
-      highlightEditorField(event.data.payload);
+      revealRequestedField(event.data.payload);
     }
   };
 
@@ -384,15 +339,6 @@
   });
 
   $effect(() => {
-    /* v8 ignore next 5 -- the wrapper is bound as long as the overlay is mounted */
-    if (wrapper) {
-      // Rich text editor components are mounted outside the component tree, so they look the
-      // draft up through the DOM rather than the context
-      setEntryDraftRoot(wrapper, entryDraft);
-    }
-  });
-
-  $effect(() => {
     if (prefs.devModeEnabled) {
       // Log a plain copy rather than the `$state` proxy. Taking it reads every value in the draft,
       // so the draft is logged again whenever a value or its validity changes
@@ -401,27 +347,12 @@
     }
   });
 
-  $effect(() => {
-    const draft = entryDraft.current;
-
-    if (!draft) {
-      return;
-    }
-
-    // Depend on every field value at the cost of one dependency per locale, without walking the
-    // values: each value map proxy counts its writes
-    Object.values(draft.currentValues).forEach(getValueMapVersion);
-    // The extra values of rich text editor components are plain `$state` objects with no version,
-    // so they have to be read to be tracked. They are few, so the walk is cheap
-    Object.values(draft.extraValues).forEach((valueMap) => void $state.snapshot(valueMap));
-    void $state.snapshot(draft.currentLocales);
-
-    untrack(() => {
-      // Resolve the Compute fields here rather than in their own editors, which only run while
-      // they are rendered — a collapsed or off-screen list item renders none of its fields
-      updateComputedValues(draft);
-    });
-  });
+  // Register the editor root, which the rich text editor components look the draft up with, and
+  // resolve the Compute fields
+  initEntryDraftEditor(
+    () => entryDraft,
+    () => wrapper,
+  );
 
   $effect(() => {
     const draft = entryDraft.current;
@@ -472,13 +403,13 @@
     /* v8 ignore next -- the wrapper is bound as long as the overlay is mounted */
     if (wrapper) {
       (async () => {
-        if (!showContentOverlay.current) {
-          await showBackupToastIfNeeded(entryDraft.current);
-        } else if (hidden) {
+        // The overlay is only rendered while it’s shown, so there is nothing to do once it’s
+        // closed; the page shows the backup toast then
+        if (hidden) {
           hidden = false;
           await switchPanes();
           await focusOverlay(() => wrapper);
-          await highlightEditorFieldIfNeeded();
+          await revealRequestedFieldIfNeeded();
           resetBackupToastState();
         }
       })();
@@ -502,7 +433,7 @@
       data-locale={locale}
       data-mode={mode}
     >
-      <PaneHeader id="{position}-pane-header" {thisPane} {thatPane} />
+      <PaneHeader id={`${position}-pane-header`} {thisPane} {thatPane} />
       {#if position === 'first'}
         <PaneBody
           id="first-pane-body"
@@ -638,8 +569,6 @@
     {/if}
   {/key}
 </div>
-
-<BackupFeedback />
 
 <Toast bind:show={showDuplicateToast.current}>
   <Alert status="success">

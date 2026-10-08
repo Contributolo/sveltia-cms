@@ -1,6 +1,6 @@
 /**
  * @import { ComponentType, ReactElement } from 'react';
- * @import { MapOf } from 'immutable';
+ * @import { List, MapOf } from 'immutable';
  */
 
 /**
@@ -212,15 +212,18 @@
  * @property {string} [region] Region, e.g. `us-east-1`. Required for Amazon S3, Backblaze B2, Bunny
  * Storage (two-letter storage region code, e.g. `de`), DigitalOcean Spaces and Scaleway Object
  * Storage. For Supabase Storage, set it to the project’s region; it defaults to `us-east-1`.
- * Ignored for Cloudflare R2, which always uses `auto`.
+ * Ignored for Cloudflare R2, which always uses `auto`. With a custom `endpoint`, it’s only used to
+ * sign requests and must match the server’s region, e.g. Garage’s `s3_region` (`garage` by
+ * default) or MinIO’s `us-east-1`; otherwise every request fails with a signature mismatch.
  * @property {string} [account_id] Cloudflare account ID. Required for Cloudflare R2.
  * @property {'default' | 'eu' | 'fedramp'} [jurisdiction] Cloudflare R2 jurisdiction. Required for
  * buckets created in the EU or FedRAMP jurisdictions; the global endpoint returns an error for
  * those buckets. Default: `'default'`.
  * @property {string} [project_id] Supabase project reference ID. Required for Supabase Storage.
- * @property {string} [endpoint] Custom endpoint URL for another S3-compatible service, such as
- * MinIO, configured as `aws_s3`. Ignored for the other services, whose endpoints are derived from
- * their own options.
+ * @property {string} [endpoint] Custom endpoint URL for another S3-compatible service, such as a
+ * self-hosted Garage or MinIO server, configured as `aws_s3`, e.g. `https://s3.example.com`.
+ * Objects are addressed with path-style URLs (`{endpoint}/{bucket}/{key}`), so no wildcard DNS is
+ * needed. Ignored for the other services, whose endpoints are derived from their own options.
  * @property {string} [prefix] Path prefix within the bucket, e.g. `uploads/`. A trailing slash is
  * added if missing.
  * @property {boolean} [force_path_style] Whether to use path-style URLs
@@ -919,6 +922,12 @@
  */
 
 /**
+ * Value format of a RichText field.
+ * @typedef {'markdown' | 'html'} RichTextValueFormat
+ * @see https://sveltiacms.app/en/docs/fields/richtext
+ */
+
+/**
  * RichText field base properties.
  * @typedef {object} RichTextFieldBaseProps
  * @property {string} [default] Default value.
@@ -957,16 +966,34 @@
  */
 
 /**
+ * RichText field properties for the value format, which the Markdown field type doesn’t support.
+ * @typedef {object} RichTextFieldFormatProps
+ * @property {RichTextValueFormat} [format] Format of the field value: `markdown` or `html`.
+ * Default: `markdown`. With `html`, the value is saved as HTML, and the raw mode shows the HTML
+ * source. Only the editor components that support HTML with the `htmlSelector`, `fromBlockHTML`
+ * and `toBlockHTML` options are available, including the built-in `code-block` and `image`
+ * components. HTML with an element the rich text mode cannot handle, like `<video>` without a
+ * component for it, can only be edited in the raw mode. Attributes the editor doesn’t use, like
+ * `class`, are dropped once the content is changed in the rich text mode.
+ * @see https://sveltiacms.app/en/docs/fields/richtext
+ */
+
+/**
  * RichText field properties.
  * @typedef {object} RichTextFieldProps
  * @property {'richtext'} widget Field type.
- * @todo Add the `format` option for HTML output.
  */
 
 /**
  * RichText field definition.
  * @typedef {CommonFieldProps & VisibleFieldProps & FieldValidationProps & RichTextFieldBaseProps &
- * RichTextFieldProps} RichTextField
+ * RichTextFieldFormatProps & RichTextFieldProps} RichTextField
+ */
+
+/**
+ * Default options for the RichText and Markdown field types. The `format` option only applies to
+ * the RichText field type, as the Markdown field type always holds Markdown.
+ * @typedef {RichTextFieldBaseProps & RichTextFieldFormatProps} RichTextFieldDefaults
  */
 
 /**
@@ -1978,10 +2005,15 @@
  * that carries the deploy preview URL, matched as a case-insensitive substring. Default: any
  * context or environment that looks like a deploy preview. See the
  * [documentation](https://sveltiacms.app/en/docs/workflows/deploy-previews) for details.
+ * @property {boolean} [open_authoring] Whether to enable Open Authoring, which lets a contributor
+ * without write access to the project propose changes from a fork. It requires the
+ * `editorial_workflow` publish mode. Default: `false`. See the
+ * [documentation](https://sveltiacms.app/en/docs/workflows/open) for details.
  * @see https://decapcms.org/docs/gitlab-backend/
  * @see https://decapcms.org/docs/editorial-workflows/
  * @see https://sveltiacms.app/en/docs/backends/gitlab
  * @see https://sveltiacms.app/en/docs/workflows/editorial
+ * @see https://sveltiacms.app/en/docs/workflows/open
  */
 
 /**
@@ -2005,8 +2037,20 @@
  * @property {string} [auth_endpoint] OAuth base URL path. Default: `login/oauth/authorize`.
  * @property {string} [app_id] OAuth application ID. Required for OAuth sign-in; without one, users
  * can still sign in with a personal access token.
+ * @property {string} [cms_label_prefix] Pull request label prefix used when writing Editorial
+ * Workflow labels. Default: `sveltia-cms/`. When reading labels, the `sveltia-cms/`, `netlify-cms/`
+ * and `decap-cms/` prefixes are also recognized, so unpublished entries created with a different
+ * prefix or with Netlify/Decap CMS remain editable.
+ * @property {boolean} [squash_merges] Whether to use squash marge for Editorial Workflow. Default:
+ * `false`.
+ * @property {boolean} [open_authoring] Whether to enable Open Authoring, which lets a contributor
+ * without write access to the repository propose changes from a fork. It requires the
+ * `editorial_workflow` publish mode. Default: `false`. See the
+ * [documentation](https://sveltiacms.app/en/docs/workflows/open) for details.
  * @see https://decapcms.org/docs/gitea-backend/
  * @see https://sveltiacms.app/en/docs/backends/gitea-forgejo
+ * @see https://sveltiacms.app/en/docs/workflows/editorial
+ * @see https://sveltiacms.app/en/docs/workflows/open
  */
 
 /**
@@ -2115,7 +2159,7 @@
  * Default options for fields. These options will be applied to all fields of the specified type
  * unless they are overridden by field-specific options.
  * @typedef {object} FieldDefaults
- * @property {RichTextFieldBaseProps} [richtext] Default options for the RichText and Markdown
+ * @property {RichTextFieldDefaults} [richtext] Default options for the RichText and Markdown
  * field types.
  */
 
@@ -2222,7 +2266,13 @@
  * compact placeholder that opens a dialog when clicked.
  * @property {string} [summary] Template for the placeholder text when `mode` is `dialog`, e.g.
  * `{{title}} - {{videoId}}`. Like the Object field’s `summary` option, it supports nested field
- * names and transformations. Falls back to the first String/Text field value, then to the label.
+ * names and transformations. Text without placeholders is shown as is. If the summary is empty,
+ * it falls back to the first String/Text field value, then to the label.
+ * @property {string} [thumbnail] Name of an Image or File field whose image is displayed as a 20×20
+ * thumbnail in the placeholder when `mode` is `dialog`, e.g. `icon`. A nested field can be named
+ * with a key path like `mobile.src`. The placeholder shows the thumbnail along with the summary, or
+ * only the thumbnail if the summary and String/Text field values are empty. The label is shown
+ * instead if the image fails to load. Default: none.
  * @property {Field[]} fields Set of fields to be displayed in the component.
  * @property {RegExp} pattern Regular expression to search a block from Markdown document. The
  * component is treated as a block if the pattern has the `m` or `s` flag, or contains `[\s\S]`;
@@ -2234,17 +2284,48 @@
  * @property {(props: Record<string, any>) => string} toBlock Function to convert field values to
  * Markdown content. It’s also called once with an empty object when the component is first used in
  * a rich text editor or preview, so it must handle missing values.
- * @property {(props: Record<string, any>) => string | HTMLElement | ReactElement} [toPreview]
- * Function to convert field values to the component preview. Like `toBlock`, it’s also called once
- * with an empty object when the component is first used in a rich text editor or preview. A string
- * is parsed as Markdown/HTML and sanitized unless the `sanitize_preview` field option is disabled,
- * while an `HTMLElement` (e.g. an element with a Svelte or Vue component mounted on it) or a React
- * element is inserted as is without sanitization, so the developer is responsible for escaping any
- * user-provided content. An `HTMLElement` preview receives an `Unmount` event once it’s removed
- * from the preview pane or the preview is closed, which can be used to destroy the mounted
- * component. A preview is reused while the component’s Markdown is unchanged. If the function is
- * omitted or returns another type of value, nothing is shown in the preview. The value of a nested
- * RichText or Markdown field is passed verbatim, including any nested component syntax; use
+ * @property {string} [htmlSelector] CSS selector to find the component’s element in HTML
+ * content, the counterpart of `pattern` for a RichText field with the `html` format, e.g.
+ * `aside.note`. A component is only available in such a field if this, `fromBlockHTML` and
+ * `toBlockHTML` are all defined. Each selector in a list has to name the element type it matches,
+ * e.g. `a:has(> img), img`, as the editor finds the component by those tag names; `.note` is
+ * invalid. The outermost matching element is the component, including its content. An element
+ * of the named types that isn’t a component instance, e.g. an `<aside>` without the class for
+ * `aside.note`, is handled as if there was no component: the editor imports it if it can, e.g. as
+ * a link for `a`, or the field can only be edited in the raw mode otherwise.
+ * @property {(element: HTMLElement) => Record<string, any> | undefined} [fromBlockHTML] Function
+ * to convert an element matching `htmlSelector` to field values, the counterpart of `fromBlock`,
+ * e.g. by reading its attributes with `getAttribute()`, which returns decoded values. It can return
+ * `undefined` if the element is not an instance of the component after all, e.g. a link that has
+ * more than an image, which a selector cannot tell. The element comes from content edited by
+ * users, so read it as data: inserting the element itself into the page would bypass the preview
+ * sanitization.
+ * @property {(props: Record<string, any>) => string | HTMLElement} [toBlockHTML] Function to
+ * convert field values to HTML content, the counterpart of `toBlock`. It should return a single
+ * element matching `htmlSelector`, either as an HTML string, escaping the field values as needed,
+ * or as an `HTMLElement` created with `document.createElement()`. The latter is safer, as values
+ * set with `setAttribute()` or `textContent` don’t have to be escaped. The output is also used
+ * when the component is copied to the clipboard in the editor, in a Markdown field as well.
+ * @property {(props: Record<string, any>, getAsset: GetAsset, fields: List<MapOf<Record<string,
+ * any>>> | undefined) => string | HTMLElement | ReactElement} [toPreview] Function to convert field
+ * values to the component preview. Like `toBlock`, it’s also called once with an empty object when
+ * the component is first used in a rich text editor or preview. The second argument is a function
+ * that returns the asset item for a file path, e.g. an image field value, so the preview can
+ * display a file that hasn’t been published yet; the media folders of editor component fields are
+ * also searched. The third argument is the component’s `fields` as an Immutable List, for
+ * compatibility with Netlify/Decap CMS; it’s `undefined` until Immutable.js, which is loaded on
+ * demand when a component whose `toPreview` takes three parameters is registered, is available. A
+ * string is parsed as Markdown/HTML and sanitized unless the `sanitize_preview` field option is
+ * disabled, while an `HTMLElement` (e.g. an element with a Svelte or Vue component mounted on it)
+ * or a React element is inserted as is without sanitization, so the developer is responsible for
+ * escaping any user-provided content. An `HTMLElement` preview receives an `Unmount` event once
+ * it’s removed from the preview pane or the preview is closed, which can be used to destroy the
+ * mounted component. A preview is reused while the component’s Markdown is unchanged, except that
+ * it’s computed again once an asset it got with `getAsset` has been retrieved, as the asset’s `url`
+ * is then replaced with the blob URL. If the function is omitted or returns another type of value,
+ * nothing is shown in the preview, except that the HTML of a component is shown as is in a RichText
+ * field with the `html` format if the function is omitted. The value of a nested RichText or
+ * Markdown field is passed verbatim, including any nested component syntax; use
  * `CMS.renderRichText()` to render it within an `HTMLElement` preview.
  * @see https://decapcms.org/docs/custom-widgets/#registereditorcomponent
  * @see https://sveltiacms.app/en/docs/api/editor-components
@@ -2347,6 +2428,16 @@
  */
 
 /**
+ * Function that returns the asset item for a given path: an asset in the repository, a file added
+ * to the entry draft but not saved yet, which a field value refers to with its blob URL, or a file
+ * on an external location, which a field value refers to with its URL. It returns `undefined` if
+ * the asset is not found. The `field` argument of Netlify/Decap CMS, the configuration of the field
+ * the path comes from, is accepted but not used; the asset is looked up in the media folders that
+ * apply to the entry.
+ * @typedef {(path: string, field?: any) => ApiAsset | undefined} GetAsset
+ */
+
+/**
  * Widget preview data returned by `widgetsFor`.
  * @typedef {object} WidgetsForData
  * @property {unknown} data Raw values for the list item or object, as an Immutable collection or a
@@ -2366,8 +2457,8 @@
  * @typedef {object} CustomPreviewBaseProps
  * @property {MapOf<ApiEntry>} entry Entry data for the preview, wrapped in an Immutable Map. Read
  * the entry content from `entry.getIn(['data', 'fieldName'])`.
- * @property {(path: string) => ApiAsset | undefined} getAsset Function that returns the asset item
- * for a given path. Returns `undefined` if the asset is not found.
+ * @property {GetAsset} getAsset Function that returns the asset item for a given path. Returns
+ * `undefined` if the asset is not found.
  * @property {MapOf<Record<string, any>>} fieldsMetaData Immutable Map of metadata from all fields
  * in the entry, keyed by field key path, e.g. `author` or `details.author`. For a Relation field,
  * it contains the referenced entry content in the `{ [collectionName]: { [value]: content } }`
@@ -2465,7 +2556,7 @@
  * for a control that shows values derived from other fields in the same entry, such as dynamically
  * generated select options. The prop is updated whenever any field in the entry is updated. It’s
  * `undefined` if the control is rendered outside an entry draft.
- * @property {((path: string) => ApiAsset | undefined) | undefined} getAsset Function that returns
+ * @property {GetAsset | undefined} getAsset Function that returns
  * the asset item for a given path, e.g. a file path stored in the value, or `undefined` if not
  * found. Use its `url` property to display the file in the control. It’s the same as the `getAsset`
  * prop of a preview. It’s `undefined` if the control is rendered outside an entry draft.

@@ -7,6 +7,8 @@ import {
   focusedExternalAsset,
   focusedExternalSubfolder,
   getFetchOptions,
+  mergeUploadedExternalAssets,
+  pruneExternalAssetSelection,
   selectedCloudService,
   selectedExternalAssets,
   selectedExternalDirPath,
@@ -15,6 +17,7 @@ import { partitionProcessedFiles, processFile } from '$lib/services/assets/proce
 import { cmsConfig } from '$lib/services/config';
 import { UPDATE_TOAST_DEFAULT_STATE } from '$lib/services/contents/collection/data';
 import { normalizeFileNameTemplate } from '$lib/services/integrations/media-libraries/default';
+import { createPath } from '$lib/services/utils/file';
 import { createDeepState, createRawState } from '$lib/services/utils/state.svelte';
 
 /**
@@ -97,13 +100,7 @@ const forgetDeletedAssets = (assets) => {
   const deletedIds = new Set(assets.map(({ id }) => id));
 
   setAssets(externalAssets.current?.filter(({ id }) => !deletedIds.has(id)));
-  selectedExternalAssets.current = selectedExternalAssets.current.filter(
-    ({ id }) => !deletedIds.has(id),
-  );
-
-  if (focusedExternalAsset.current && deletedIds.has(focusedExternalAsset.current.id)) {
-    focusedExternalAsset.current = undefined;
-  }
+  pruneExternalAssetSelection((id) => !deletedIds.has(id));
 };
 
 /**
@@ -137,11 +134,7 @@ const updateAsset = (oldAsset, newAsset) => {
 const pruneSelection = (assets, folders = []) => {
   const ids = new Set(assets.map(({ id }) => id));
 
-  selectedExternalAssets.current = selectedExternalAssets.current.filter(({ id }) => ids.has(id));
-
-  if (focusedExternalAsset.current && !ids.has(focusedExternalAsset.current.id)) {
-    focusedExternalAsset.current = undefined;
-  }
+  pruneExternalAssetSelection((id) => ids.has(id));
 
   const focusedPath = focusedExternalSubfolder.current?.path;
 
@@ -290,13 +283,8 @@ export const uploadExternalAssets = async (files, { originalAsset } = {}) => {
         }
       } else if (service.upload) {
         const uploaded = await service.upload(validFiles, fetchOptions);
-        const uploadedIds = new Set(uploaded.map(({ id }) => id));
 
-        // A file uploaded under an existing name overwrites the asset on most services
-        setAssets([
-          ...uploaded,
-          ...(externalAssets.current ?? []).filter(({ id }) => !uploadedIds.has(id)),
-        ]);
+        setAssets(mergeUploadedExternalAssets(uploaded, externalAssets.current ?? []));
         reportSuccess('saved', uploaded.length);
       }
     } catch (ex) {
@@ -395,7 +383,7 @@ export const createExternalFolder = async (name) => {
     return false;
   }
 
-  const dirPath = [selectedExternalDirPath.current, name].filter(Boolean).join('/');
+  const dirPath = createPath([selectedExternalDirPath.current, name]);
 
   try {
     await service.createFolder(dirPath, getFetchOptions(service));

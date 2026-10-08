@@ -3,10 +3,14 @@ import { getCollection } from '$lib/services/contents/collection';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
 import { getField, isFieldMultiple } from '$lib/services/contents/entry/fields';
 import { getKeysByPrefix, getListItemKeys } from '$lib/services/contents/entry/key-paths';
+import { RICH_TEXT_FIELD_TYPES } from '$lib/services/contents/fields';
 import { getDateTimeFieldDisplayValue } from '$lib/services/contents/fields/date-time/display';
 import { getReferencedOptionLabel } from '$lib/services/contents/fields/relation/helpers';
 import { getOptionLabel } from '$lib/services/contents/fields/select/helpers';
 import { getCanonicalLocale, getListFormatter } from '$lib/services/contents/i18n';
+import { getOrCreate } from '$lib/services/utils/cache';
+import { stripMarkdown } from '$lib/services/utils/markdown';
+import { isNonEmptyString } from '$lib/services/utils/string';
 
 /**
  * @import {
@@ -19,7 +23,9 @@ import { getCanonicalLocale, getListFormatter } from '$lib/services/contents/i18
  * } from '$lib/types/private';
  * @import {
  * DateTimeField,
+ * Field,
  * FieldKeyPath,
+ * ListFieldWithSubField,
  * ListFieldWithSubFields,
  * ListFieldWithTypes,
  * LocaleCode,
@@ -37,6 +43,14 @@ import { getCanonicalLocale, getListFormatter } from '$lib/services/contents/i18
 const numberFormatterCache = new Map();
 
 /**
+ * Check whether the given field is a Rich Text field.
+ * @param {Field | undefined} fieldConfig Field configuration.
+ * @returns {boolean} Result.
+ */
+const isRichTextField = (fieldConfig) =>
+  RICH_TEXT_FIELD_TYPES.includes(/** @type {string} */ (fieldConfig?.widget));
+
+/**
  * Get a field’s display value that matches the given field name (key path).
  * @param {object} args Arguments.
  * @param {string} args.collectionName Collection name.
@@ -49,6 +63,8 @@ const numberFormatterCache = new Map();
  * index file used specifically in Hugo.
  * @param {PendingEntry[]} [args.pendingEntries] Entries created from a Relation field of the draft
  * being edited, which a Relation field value can refer to before they are saved.
+ * @param {boolean} [args.plainText] Whether to remove the Markdown syntax and HTML tags from a Rich
+ * Text field value, e.g. for a summary.
  * @returns {string} Resolved display value.
  */
 export const getFieldDisplayValue = ({
@@ -60,6 +76,7 @@ export const getFieldDisplayValue = ({
   transformations,
   isIndexFile = false,
   pendingEntries = undefined,
+  plainText = false,
 }) => {
   const fieldConfig = getField({ collectionName, fileName, valueMap, keyPath, isIndexFile });
   let value = valueMap[keyPath];
@@ -100,17 +117,22 @@ export const getFieldDisplayValue = ({
   }
 
   if (fieldConfig?.widget === 'list') {
+    const { field } = /** @type {ListFieldWithSubField} */ (fieldConfig);
     const { fields } = /** @type {ListFieldWithSubFields} */ (fieldConfig);
     const { types } = /** @type {ListFieldWithTypes} */ (fieldConfig);
 
     if (fields || types) {
       // Ignore
     } else {
+      const stripItems = plainText && isRichTextField(field);
+
       // Concat values of single field list or simple list
       value = getListFormatter(locale).format(
         getListItemKeys(valueMap, keyPath)
           .map((key) => valueMap[key])
-          .filter((val) => typeof val === 'string' && !!val),
+          .filter((val) => typeof val === 'string')
+          .map((val) => (stripItems ? stripMarkdown(val) : val))
+          .filter((val) => !!val),
       );
     }
   }
@@ -127,15 +149,17 @@ export const getFieldDisplayValue = ({
       value !== ''
     ) {
       const canonicalLocale = getCanonicalLocale(locale);
-      let numberFormatter = numberFormatterCache.get(canonicalLocale);
 
-      if (!numberFormatter) {
-        numberFormatter = Intl.NumberFormat(canonicalLocale);
-        numberFormatterCache.set(canonicalLocale, numberFormatter);
-      }
+      const numberFormatter = getOrCreate(numberFormatterCache, canonicalLocale, () =>
+        Intl.NumberFormat(canonicalLocale),
+      );
 
       value = numberFormatter.format(Number(value));
     }
+  }
+
+  if (plainText && isRichTextField(fieldConfig) && typeof value === 'string') {
+    value = stripMarkdown(value);
   }
 
   if (Array.isArray(value)) {
@@ -159,6 +183,8 @@ export const getFieldDisplayValue = ({
  * @param {GetFieldArgs} args.getFieldArgs Arguments for `getField`.
  * @param {string} args.keyPathPrefix Key path prefix that a candidate must start with, e.g.
  * `authors.0.`.
+ * @param {boolean} [args.plainText] Whether to remove the Markdown syntax and HTML tags from a Rich
+ * Text field value.
  * @returns {string} Display value of the first visible field that has a non-empty value. If no such
  * field is found, returns an empty string.
  */
@@ -168,6 +194,7 @@ export const getVisibleFieldDisplayValue = ({
   keyPath,
   keyPathPrefix,
   getFieldArgs,
+  plainText = false,
 }) => {
   // Find the first visible item key path that has a non-empty value. `title` and `name` are
   // preferred, so they’re tried ahead of the map’s own order.
@@ -180,10 +207,7 @@ export const getVisibleFieldDisplayValue = ({
 
     if (
       !_keyPath.startsWith(keyPathPrefix) ||
-      !(
-        (typeof value === 'string' && value.trim()) ||
-        (typeof value === 'number' && !Number.isNaN(value))
-      )
+      !(isNonEmptyString(value) || (typeof value === 'number' && !Number.isNaN(value)))
     ) {
       return false;
     }
@@ -194,7 +218,12 @@ export const getVisibleFieldDisplayValue = ({
   });
 
   if (visibleItemKeyPath) {
-    return getFieldDisplayValue({ ...getFieldArgs, keyPath: visibleItemKeyPath, locale });
+    return getFieldDisplayValue({
+      ...getFieldArgs,
+      keyPath: visibleItemKeyPath,
+      locale,
+      plainText,
+    });
   }
 
   return '';

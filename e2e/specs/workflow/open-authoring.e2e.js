@@ -397,6 +397,49 @@ test.describe('as a contributor', () => {
       expect(github.pullRequests).toEqual([]);
     });
 
+    test('warns before saving over a commit made to the fork branch', async ({
+      cms,
+      github,
+      page,
+    }) => {
+      // A contributor’s branch is theirs alone, but a maintainer can be allowed to push to it, and
+      // the contributor can have the entry open in another tab. The branch head is on record even
+      // for a draft with no pull request, so the save notices
+      const branch = saveForkDraft(github, {
+        slug: 'second-post',
+        files: { 'content/posts/second-post.md': post('Second Post', 'Coming soon.') },
+      });
+
+      await cms.open();
+
+      const editor = await openEntry(page, 'Second Post');
+
+      github.commit(
+        { 'content/posts/second-post.md': post('Second Post', 'Edited elsewhere.') },
+        { branch, author: github.colleague },
+      );
+
+      await editor.getByRole('textbox', { name: 'Body' }).fill('Almost there.');
+      await editor.getByRole('button', { name: 'Save' }).click();
+
+      const dialog = page.getByRole('alertdialog', { name: 'Entry Changed by Someone Else' });
+
+      await expect(dialog).toContainText('If you save now, their changes will be lost.');
+      expect(github.readFile('content/posts/second-post.md', branch)).toBe(
+        post('Second Post', 'Edited elsewhere.'),
+      );
+
+      await dialog.getByRole('button', { name: 'Save Anyway' }).click();
+      await page
+        .getByRole('alertdialog', { name: 'Send for Review' })
+        .getByRole('button', { name: 'Later' })
+        .click();
+
+      await expect
+        .poll(() => github.readFile('content/posts/second-post.md', branch))
+        .toBe(post('Second Post', 'Almost there.'));
+    });
+
     test('sends a new entry for review right after saving it', async ({ cms, github, page }) => {
       await cms.open();
       await page.getByRole('button', { name: 'Create New Entry' }).first().click();
@@ -455,6 +498,49 @@ test.describe('as a contributor', () => {
       expect(github.pullRequests).toHaveLength(1);
     });
 
+    test('opens a new pull request when the known one was aimed elsewhere since', async ({
+      cms,
+      github,
+      page,
+    }) => {
+      const branch = saveForkDraft(github, {
+        slug: 'second-post',
+        files: { 'content/posts/second-post.md': post('Second Post', 'Coming soon.') },
+      });
+
+      const pullRequest = github.openPullRequest({
+        title: 'Create Post “second-post”',
+        head: branch,
+        author: github.user,
+      });
+
+      Object.assign(pullRequest, { state: 'closed', lastHead: github.refs.get(branch) });
+
+      await cms.open();
+      await openEntry(page, 'Second Post');
+
+      // Aimed at another branch on GitHub after the board was loaded. Reopening it would hand a
+      // request for that branch to the maintainers as the entry’s review
+      // @see https://github.com/sveltia/sveltia-cms/security/advisories/GHSA-8h97-74c4-g246
+      github.createBranch('develop', github.head.oid);
+      pullRequest.base = 'develop';
+
+      await cms.chooseMenuItem(
+        page.getByRole('button', { name: /Status: .*Draft/ }),
+        page.getByRole('menuitemradio', { name: 'In Review' }),
+      );
+
+      await expect.poll(() => github.pullRequests).toHaveLength(2);
+      expect(github.pullRequests[1]).toMatchObject({
+        head: branch,
+        base: 'main',
+        state: 'open',
+        draft: false,
+        author: github.user,
+      });
+      expect(pullRequest).toMatchObject({ base: 'develop', state: 'closed' });
+    });
+
     test('treats a branch changed after its pull request was merged as a new draft', async ({
       cms,
       github,
@@ -495,6 +581,100 @@ test.describe('as a contributor', () => {
         .poll(() => github.pullRequests.map(({ state }) => state))
         .toEqual(['merged', 'open']);
       expect(github.refs.has(branch)).toBe(true);
+    });
+
+    test('reports an entry published since the board was loaded instead of sending it for review', async ({
+      cms,
+      github,
+      page,
+    }) => {
+      const branch = saveForkDraft(github, {
+        slug: 'second-post',
+        files: { 'content/posts/second-post.md': post('Second Post', 'Coming soon.') },
+      });
+
+      const pullRequest = github.openPullRequest({
+        title: 'Create Post “second-post”',
+        head: branch,
+        draft: true,
+        author: github.user,
+      });
+
+      await cms.open();
+      // A draft pull request leaves the entry a draft
+      await openEntry(page, 'Second Post');
+
+      // A maintainer marks the pull request ready and merges it after the board was loaded, and
+      // the contributor commits nothing to the branch since
+      pullRequest.draft = false;
+      github.mergePullRequest(pullRequest);
+
+      await cms.chooseMenuItem(
+        page.getByRole('button', { name: /Status: .*Draft/ }),
+        page.getByRole('menuitemradio', { name: 'In Review' }),
+      );
+
+      await expect(page.getByRole('alert')).toContainText(
+        'A maintainer has already published this entry, so there’s nothing left to review.',
+      );
+      // No pull request with nothing in it is opened, and the leftover branch is deleted the way
+      // the next load would
+      expect(github.pullRequests.map(({ state }) => state)).toEqual(['merged']);
+      await expect.poll(() => github.refs.has(branch)).toBe(false);
+      // The editor closes onto the entry list, where the entry is published rather than a draft
+      await expect(page.getByRole('group', { name: 'Content Editor' })).toBeHidden();
+      await expect(page.getByRole('grid', { name: 'Entries' }).getByRole('row')).toHaveText([
+        /First Post/,
+        /^\s*Second Post\s*$/,
+      ]);
+    });
+
+    test('keeps unsaved changes to an entry published since the board was loaded', async ({
+      cms,
+      github,
+      page,
+    }) => {
+      const branch = saveForkDraft(github, {
+        slug: 'second-post',
+        files: { 'content/posts/second-post.md': post('Second Post', 'Coming soon.') },
+      });
+
+      const pullRequest = github.openPullRequest({
+        title: 'Create Post “second-post”',
+        head: branch,
+        draft: true,
+        author: github.user,
+      });
+
+      await cms.open();
+
+      const editor = await openEntry(page, 'Second Post');
+
+      pullRequest.draft = false;
+      github.mergePullRequest(pullRequest);
+
+      // Changed but not saved: the status menu doesn’t wait for a save
+      await editor.getByRole('textbox', { name: 'Body' }).fill('Now with more.');
+      await cms.chooseMenuItem(
+        page.getByRole('button', { name: /Status: .*Draft/ }),
+        page.getByRole('menuitemradio', { name: 'In Review' }),
+      );
+
+      await expect(page.getByRole('alert')).toContainText(
+        'A maintainer has already published this entry, so there’s nothing left to review.',
+      );
+      // The editor stays open with the change, which then saves as a new draft of the entry
+      await expect(editor.getByRole('textbox', { name: 'Body' })).toHaveValue('Now with more.');
+      await expect.poll(() => github.refs.has(branch)).toBe(false);
+      await editor.getByRole('button', { name: 'Save' }).click();
+      await page
+        .getByRole('alertdialog', { name: 'Send for Review' })
+        .getByRole('button', { name: 'Later' })
+        .click();
+
+      await expect.poll(() => github.refs.has(branch)).toBe(true);
+      expect(github.pullRequests.map(({ state }) => state)).toEqual(['merged']);
+      expect(github.readFile('content/posts/second-post.md', branch)).toContain('Now with more.');
     });
 
     test('sends a draft for review with a pull request from the fork', async ({
@@ -538,6 +718,56 @@ test.describe('as a contributor', () => {
 
       // The pull request is kept, as a draft
       await expect.poll(() => github.pullRequests[0]).toMatchObject({ state: 'open', draft: true });
+    });
+
+    test('ignores a pull request the contributor opened to another branch', async ({
+      cms,
+      github,
+      page,
+    }) => {
+      const branch = saveForkDraft(github, {
+        slug: 'second-post',
+        files: { 'content/posts/second-post.md': post('Second Post', 'Coming soon.') },
+      });
+
+      github.createBranch('develop', github.head.oid);
+
+      // A pull request the contributor opened from the same fork branch to a branch the CMS doesn’t
+      // manage. It isn’t the entry’s, so the CMS must leave it alone
+      const decoy = github.openPullRequest({
+        title: 'Tidy up the posts',
+        head: branch,
+        base: 'develop',
+        author: github.user,
+      });
+
+      await cms.open();
+
+      // The entry is still a draft, rather than being taken for one in review
+      await expect(page.getByRole('grid', { name: 'Entries' }).getByRole('row')).toHaveText([
+        /Unpublished Entries/,
+        /Second Post.*Draft/,
+        /Published Entries/,
+        /First Post/,
+      ]);
+
+      await openEntry(page, 'Second Post');
+      await cms.chooseMenuItem(
+        page.getByRole('button', { name: /Status: .*Draft/ }),
+        page.getByRole('menuitemradio', { name: 'In Review' }),
+      );
+
+      // Sending the entry for review opens a pull request of its own to the configured branch,
+      // rather than reusing the decoy
+      await expect.poll(() => github.pullRequests).toHaveLength(2);
+      expect(github.pullRequests[1]).toMatchObject({
+        title: 'Create Post “second-post”',
+        head: branch,
+        base: 'main',
+        state: 'open',
+        draft: false,
+      });
+      expect(decoy).toMatchObject({ title: 'Tidy up the posts', state: 'open', draft: false });
     });
 
     test('lists the entries in progress on the fork', async ({ cms, github, page }) => {

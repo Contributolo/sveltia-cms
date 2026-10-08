@@ -9,18 +9,20 @@ import {
   selectedAssetFolder,
 } from '$lib/services/assets/folders';
 import { allAssets, focusedAsset } from '$lib/services/assets/state';
-import { focusedSubfolder, selectedSubfolderPath } from '$lib/services/assets/subfolders';
-import { fillTemplate } from '$lib/services/common/template';
 import {
-  ESCAPED_PLACEHOLDER_REGEX,
-  TEMPLATE_TAG_REGEX,
-} from '$lib/services/common/template/constants';
+  focusedSubfolder,
+  getDirName,
+  selectedSubfolderPath,
+} from '$lib/services/assets/subfolders';
+import { fillTemplate } from '$lib/services/common/template';
+import { ESCAPED_PLACEHOLDER_REGEX } from '$lib/services/common/template/constants';
 import { hasTemplateTags } from '$lib/services/common/template/tags';
 import { getCollection } from '$lib/services/contents/collection';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
 import { getCollectionFilesByEntry } from '$lib/services/contents/collection/files';
 import { getAssociatedCollections } from '$lib/services/contents/entry/collections';
-import { createPath, resolvePath } from '$lib/services/utils/file';
+import { getOrCreate, memoizeOnSource } from '$lib/services/utils/cache';
+import { createPath, resolvePath, stripPathPrefix } from '$lib/services/utils/file';
 import { createRootEffect } from '$lib/services/utils/state.svelte';
 
 /**
@@ -35,26 +37,14 @@ import { createRootEffect } from '$lib/services/utils/state.svelte';
  */
 
 /**
- * Lazily-rebuilt Map from asset path to Asset, used for O(1) path lookups. Rebuilt only when
- * `allAssets` changes reference.
- * @type {{ source: Asset[] | undefined, map: Map<string, Asset> }}
+ * Get a Map from asset path to Asset, used for O(1) path lookups. Rebuilt only when `allAssets` is
+ * replaced.
+ * @type {() => Map<string, Asset>}
  */
-const assetPathCache = { source: undefined, map: new Map() };
-
-/**
- * Get a Map from asset path to Asset, rebuilt only when `allAssets` changes.
- * @returns {Map<string, Asset>} Map.
- */
-const getAssetPathMap = () => {
-  const _allAssets = allAssets.current;
-
-  if (_allAssets !== assetPathCache.source) {
-    assetPathCache.source = _allAssets;
-    assetPathCache.map = new Map(_allAssets.map((asset) => [asset.path, asset]));
-  }
-
-  return assetPathCache.map;
-};
+const getAssetPathMap = memoizeOnSource(
+  () => allAssets.current,
+  (_allAssets) => new Map(_allAssets.map((asset) => [asset.path, asset])),
+);
 
 /**
  * Get an asset by its internal repository path.
@@ -88,7 +78,7 @@ export const getAssetKey = ({ unsaved, blobURL, path }) => (unsaved && blobURL ?
  * not been saved yet.
  */
 export const fillInternalPathTemplate = ({ internalPath, collectionName, entry }) => {
-  if (!TEMPLATE_TAG_REGEX.test(internalPath)) {
+  if (!hasTemplateTags(internalPath)) {
     return internalPath;
   }
 
@@ -157,8 +147,13 @@ export const getAssetByRelativePathAndCollection = ({
       })
     : undefined;
 
-  let mediaFolder = fieldFolder?.entryRelative
-    ? (fieldFolder.internalSubPath ?? '')
+  // A field-level folder that isn’t entry-relative is an absolute one, e.g. `/src/assets/authors`,
+  // which has to be used along with its own `public_folder` rather than the collection’s
+  // `media_folder`
+  let mediaFolder = fieldFolder
+    ? fieldFolder.entryRelative
+      ? (fieldFolder.internalSubPath ?? '')
+      : `/${fieldFolder.internalPath}`
     : /** @type {string | undefined} */ ((file ?? collection).media_folder);
 
   const publicFolder = fieldFolder?.publicPath
@@ -187,7 +182,7 @@ export const getAssetByRelativePathAndCollection = ({
   }
 
   // Directory of the entry file, which is an empty string for an entry file at the repository root
-  const entryFolder = entryFilePath.slice(0, Math.max(entryFilePath.lastIndexOf('/'), 0));
+  const entryFolder = getDirName(entryFilePath);
   // Strip the `media_folder` prefix from the stored path before joining with `mediaFolder`, to
   // avoid duplication when the stored value already includes the media folder (e.g.
   // `images/photo.jpg`). Also normalize `./` prefix since `./images/photo.jpg` and
@@ -196,12 +191,7 @@ export const getAssetByRelativePathAndCollection = ({
   // `images`.
   const normalizedPath = path.replace(/^\.\//, '');
   const normalizedMediaFolder = mediaFolder?.replace(/^\.\//, '').replace(/\/$/, '');
-
-  let localPath =
-    normalizedMediaFolder && normalizedPath.startsWith(`${normalizedMediaFolder}/`)
-      ? normalizedPath.slice(normalizedMediaFolder.length + 1)
-      : normalizedPath;
-
+  let localPath = stripPathPrefix(normalizedPath, normalizedMediaFolder);
   let resolvedPath;
 
   // When `media_folder` is absolute (starts with `/`) and `public_folder` is entry-relative (e.g.
@@ -264,47 +254,38 @@ export const getAssetByRelativePath = ({
       ].filter((folder) => !!folder && !folder.hasTemplateTags)
     );
 
-    /** @type {Asset | undefined} */
-    let foundAsset;
+    const foundAsset = scanningFolders
+      .values()
+      .map((folder) => {
+        // Strip the publicPath prefix from the stored path to get the bare filename/subpath, so
+        // that e.g. `uploads/photo.jpg` with publicPath `/uploads` resolves to `uploads/photo.jpg`
+        // internally rather than `uploads/uploads/photo.jpg`.
+        const localPath = stripPathPrefix(path, folder.publicPath?.replace(/^\//, ''));
 
-    scanningFolders.find((folder) => {
-      // Strip the publicPath prefix from the stored path to get the bare filename/subpath, so
-      // that e.g. `uploads/photo.jpg` with publicPath `/uploads` resolves to `uploads/photo.jpg`
-      // internally rather than `uploads/uploads/photo.jpg`.
-      const publicPathBase = folder.publicPath?.replace(/^\//, '') ?? '';
-
-      const localPath =
-        publicPathBase && path.startsWith(`${publicPathBase}/`)
-          ? path.slice(publicPathBase.length + 1)
-          : path;
-
-      const found = getAssetPathMap().get(
-        createPath([folder.internalPath, folder.internalSubPath ?? '', localPath]),
-      );
-
-      if (found) {
-        foundAsset = found;
-      }
-
-      return !!found;
-    });
+        return getAssetPathMap().get(
+          createPath([folder.internalPath, folder.internalSubPath ?? '', localPath]),
+        );
+      })
+      .find(Boolean);
 
     return foundAsset ?? getAssetPathMap().get(path);
   }
 
-  const assets = getAssociatedCollections(entry).flatMap((collection) => {
-    const collectionFiles = getCollectionFilesByEntry(collection, entry);
-    const args = { path, entry, collection, componentName, typedKeyPath };
+  // Stop at the first collection or collection file that has the asset
+  const foundAsset = getAssociatedCollections(entry)
+    .values()
+    .flatMap((collection) => {
+      const collectionFiles = getCollectionFilesByEntry(collection, entry);
+      const args = { path, entry, collection, componentName, typedKeyPath };
+      /** @type {(InternalCollectionFile | undefined)[]} */
+      const files = collectionFiles.length ? collectionFiles : [undefined];
 
-    if (collectionFiles.length) {
-      return collectionFiles.map((file) => getAssetByRelativePathAndCollection({ ...args, file }));
-    }
-
-    return getAssetByRelativePathAndCollection({ ...args });
-  });
+      return files.values().map((file) => getAssetByRelativePathAndCollection({ ...args, file }));
+    })
+    .find(Boolean);
 
   return (
-    assets.filter(Boolean)[0] ??
+    foundAsset ??
     // Fall back to exact match at the root folder
     getAssetPathMap().get(path)
   );
@@ -322,19 +303,13 @@ const publicPathRegexCache = new WeakMap();
  * @param {AssetFolderInfo} folder Asset folder.
  * @returns {RegExp} Regular expression.
  */
-const getPublicPathRegex = (folder) => {
-  let regex = publicPathRegexCache.get(folder);
-
-  if (!regex) {
+const getPublicPathRegex = (folder) =>
+  getOrCreate(publicPathRegexCache, folder, () => {
     const publicPath = folder.publicPath ?? '';
     const normalizedPath = escapeRegExp(publicPath).replace(ESCAPED_PLACEHOLDER_REGEX, '.+?');
 
-    regex = new RegExp(`^${normalizedPath}${publicPath ? '(?=\\/|$)' : '$'}`);
-    publicPathRegexCache.set(folder, regex);
-  }
-
-  return regex;
-};
+    return new RegExp(`^${normalizedPath}${publicPath ? '(?=\\/|$)' : '$'}`);
+  });
 
 /**
  * Get an asset by an absolute public path typically stored as an image field value.

@@ -23,7 +23,9 @@ import {
   getFetchOptions,
   hasAuthInfo,
   hasFolderSupport,
+  mergeUploadedExternalAssets,
   overlaidExternalAssetId,
+  pruneExternalAssetSelection,
   renamingExternalAsset,
   renamingExternalSubfolder,
   resetExternalAssets,
@@ -94,6 +96,33 @@ describe('assets/external', () => {
     });
   });
 
+  describe('pruneExternalAssetSelection', () => {
+    const a = /** @type {any} */ ({ id: 'a' });
+    const b = /** @type {any} */ ({ id: 'b' });
+
+    it('should drop the selected and focused assets that fail the test', () => {
+      selectedExternalAssets.current = [a, b];
+      focusedExternalAsset.current = b;
+      pruneExternalAssetSelection((id) => id === 'a');
+      expect(selectedExternalAssets.current).toEqual([a]);
+      expect(focusedExternalAsset.current).toBeUndefined();
+    });
+
+    it('should leave the selection as is when every asset passes the test', () => {
+      const selected = [a, b];
+
+      selectedExternalAssets.current = selected;
+      focusedExternalAsset.current = a;
+      pruneExternalAssetSelection(() => true);
+      expect(selectedExternalAssets.current).toBe(selected);
+      expect(focusedExternalAsset.current).toBe(a);
+      focusedExternalAsset.current = undefined;
+      pruneExternalAssetSelection(() => false);
+      expect(selectedExternalAssets.current).toEqual([]);
+      expect(focusedExternalAsset.current).toBeUndefined();
+    });
+  });
+
   describe('enabledCloudServices', () => {
     it('should list the services enabled in the config, treating a missing check as enabled', () => {
       expect(enabledCloudServices.current.map(({ serviceId }) => serviceId)).toEqual([
@@ -158,6 +187,18 @@ describe('assets/external', () => {
       expect(canPreviewExternalAsset(create('other', 'a.md'))).toBe(true);
       expect(canPreviewExternalAsset(create('document', 'a.docx'))).toBe(false);
       expect(canPreviewExternalAsset(create('other', 'a'))).toBe(false);
+    });
+  });
+
+  describe('mergeUploadedExternalAssets', () => {
+    it('should list the uploaded assets first, replacing the ones with the same ID', () => {
+      const a = /** @type {any} */ ({ id: 'a', fileName: 'a.png' });
+      const b = /** @type {any} */ ({ id: 'b', fileName: 'b.png' });
+      const newB = /** @type {any} */ ({ id: 'b', fileName: 'b.png', size: 2 });
+      const c = /** @type {any} */ ({ id: 'c', fileName: 'c.png' });
+
+      expect(mergeUploadedExternalAssets([newB, c], [a, b])).toEqual([newB, c, a]);
+      expect(mergeUploadedExternalAssets([c], [])).toEqual([c]);
     });
   });
 

@@ -1741,8 +1741,6 @@ config:
   # Warning messages (logged to console)
   warning:
     oauth_no_app_id: ID OAuth aplikacije nije definiran. Korisnici se moraju prijaviti pomoću pristupnog tokena.
-    editorial_workflow_unsupported: Uredničko radno okruženje još nije podržano u Sveltia CMS-u.
-    open_authoring_unsupported_backend: Open Authoring trenutačno je podržan samo s GitHub backendom.
     # {$prop} is the unsupported option name that will be ignored
     unsupported_ignored_option: Opcija `{$prop}` nije podržana u Sveltia CMS-u. Bit će zanemarena.
     # Don’t localize `picker_utc`, `input_timezone`, and `output_utc`
@@ -1888,8 +1886,6 @@ workflow:
       one {{ {$count} njih još nije objavljen, pa će vaše neobjavljene promjene biti odbačene. Objavljena verzija, ako postoji, ostat će objavljena. }}
       few {{ {$count} njih još nisu objavljena, pa će vaše neobjavljene promjene biti odbačene. Objavljene verzije, ako postoje, ostat će objavljene. }}
       *   {{ {$count} njih još nije objavljeno, pa će vaše neobjavljene promjene biti odbačene. Objavljene verzije, ako postoje, ostat će objavljene. }}
-  # Confirmation dialog shown before merging the pull request. Keep the wording free of Git jargon.
-  confirm_publishing_entry: Jeste li sigurni da želite objaviti ovaj unos? Vaše će promjene odmah stupiti na snagu.
   # Workflow page: toast notifications shown while an entry is being published from a card, and
   # once publishing has completed
   publishing_entry: Objavljivanje unosa…

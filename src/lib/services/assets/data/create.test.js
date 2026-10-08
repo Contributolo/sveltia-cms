@@ -14,7 +14,8 @@ vi.mock('$lib/services/assets/state', () => ({
   overlaidAsset: { set: vi.fn() },
 }));
 
-vi.mock('$lib/services/assets/data', () => ({
+vi.mock('$lib/services/assets/data', async (importOriginal) => ({
+  .../** @type {Record<string, any>} */ (await importOriginal()),
   assetUpdatesToast: { set: vi.fn() },
 }));
 
@@ -77,7 +78,8 @@ vi.mock('$lib/services/assets', () => ({
   getAssetsByDirName: vi.fn().mockReturnValue([]),
 }));
 
-vi.mock('$lib/services/assets/data', () => ({
+vi.mock('$lib/services/assets/data', async (importOriginal) => ({
+  .../** @type {Record<string, any>} */ (await importOriginal()),
   assetUpdatesToast: { current: undefined },
 }));
 
@@ -788,6 +790,22 @@ describe('assets/data/create', () => {
   });
 
   describe('saveAssets', () => {
+    it('should refuse to upload to a folder the CMS is served from', async () => {
+      const { saveChanges } = await import('$lib/services/backends/save');
+
+      await expect(
+        saveAssets(
+          /** @type {any} */ ({
+            files: [new File([''], 'index.html')],
+            folder: { internalPath: 'static', entryRelative: false, hasTemplateTags: false },
+            subfolderPath: 'admin',
+          }),
+          { commitType: 'uploadMedia' },
+        ),
+      ).rejects.toThrow('Cannot change a file in a folder the CMS is served from');
+      expect(saveChanges).not.toHaveBeenCalled();
+    });
+
     it('should save assets and update stores', async () => {
       const mockFile = new File(['content'], 'test.jpg', { type: 'image/jpeg' });
 

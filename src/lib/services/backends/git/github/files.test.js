@@ -107,6 +107,66 @@ describe('GitHub files service', () => {
         `/repos/test-owner/test-repo/git/trees/${customHash}?recursive=1`,
       );
     });
+
+    test('walks the subtrees when the recursive tree is truncated', async () => {
+      const prefix = '/repos/test-owner/test-repo/git/trees';
+
+      /** @type {Record<string, any>} */
+      const responses = {
+        // The full tree is too big, so only part of it comes back
+        [`${prefix}/main?recursive=1`]: {
+          tree: [{ type: 'blob', path: 'a.md', sha: 'a', size: 1 }],
+          truncated: true,
+        },
+        [`${prefix}/main`]: {
+          tree: [
+            { type: 'blob', path: 'a.md', sha: 'a', size: 1 },
+            { type: 'tree', path: 'content', sha: 't1' },
+            { type: 'tree', path: 'static', sha: 't2' },
+          ],
+          truncated: false,
+        },
+        [`${prefix}/t1?recursive=1`]: {
+          tree: [
+            { type: 'blob', path: 'post.md', sha: 'b', size: 2 },
+            { type: 'tree', path: 'sub', sha: 't3' },
+            { type: 'blob', path: 'sub/x.md', sha: 'c', size: 3 },
+          ],
+          truncated: false,
+        },
+        // A subtree that is too big as well is walked in turn
+        [`${prefix}/t2?recursive=1`]: { tree: [], truncated: true },
+        [`${prefix}/t2`]: {
+          tree: [
+            { type: 'blob', path: 'img.png', sha: 'd', size: 4 },
+            { type: 'tree', path: 'icons', sha: 't4' },
+          ],
+          truncated: false,
+        },
+        [`${prefix}/t4?recursive=1`]: {
+          tree: [{ type: 'blob', path: 'logo.svg', sha: 'e', size: 5 }],
+          truncated: false,
+        },
+      };
+
+      vi.mocked(fetchAPI).mockImplementation(async (path) => responses[path]);
+
+      const result = await fetchFileList();
+
+      expect(result).toEqual([
+        { path: 'a.md', sha: 'a', size: 1, name: 'a.md' },
+        { path: 'content/post.md', sha: 'b', size: 2, name: 'post.md' },
+        { path: 'content/sub/x.md', sha: 'c', size: 3, name: 'x.md' },
+        { path: 'static/img.png', sha: 'd', size: 4, name: 'img.png' },
+        { path: 'static/icons/logo.svg', sha: 'e', size: 5, name: 'logo.svg' },
+      ]);
+    });
+
+    test('throws when a single directory is too big to list', async () => {
+      vi.mocked(fetchAPI).mockResolvedValue({ tree: [], truncated: true });
+
+      await expect(fetchFileList()).rejects.toThrow('too many files to list');
+    });
   });
 
   describe('getFileContentsFragment', () => {
@@ -257,6 +317,41 @@ describe('GitHub files service', () => {
             login: undefined,
           },
           commitDate: new Date('2023-01-02T00:00:00Z'),
+        },
+      });
+    });
+
+    test('skips a file without a commit and tolerates a missing author', () => {
+      const fetchingFiles = /** @type {any[]} */ ([
+        { path: 'deleted.md', sha: 'sha1', size: 100 },
+        { path: 'missing.md', sha: 'sha2', size: 100 },
+        { path: 'anonymous.md', sha: 'sha3', size: 100 },
+        { path: 'file.md', sha: 'sha4', size: 100 },
+      ]);
+
+      const results = [
+        // A file deleted between the tree fetch and the metadata pass
+        { target: { history: { nodes: [] } } },
+        null,
+        {
+          target: { history: { nodes: [{ author: null, committedDate: '2023-01-03T00:00:00Z' }] } },
+        },
+        createCommit('Author 1', { id: 'user1', login: 'author1' }, '2023-01-01T00:00:00Z'),
+      ];
+
+      expect(parseFileMetadata(fetchingFiles, results)).toEqual({
+        'anonymous.md': {
+          commitAuthor: undefined,
+          commitDate: new Date('2023-01-03T00:00:00Z'),
+        },
+        'file.md': {
+          commitAuthor: {
+            name: 'Author 1',
+            email: 'Author 1@example.com',
+            id: 'user1',
+            login: 'author1',
+          },
+          commitDate: new Date('2023-01-01T00:00:00Z'),
         },
       });
     });

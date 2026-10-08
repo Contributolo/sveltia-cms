@@ -1,27 +1,19 @@
 // @ts-nocheck
 
-import { IndexedDB } from '@sveltia/utils/storage';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { backend } from '$lib/services/backends';
 import { getArrayItemTarget } from '$lib/services/contents/draft/save/changes';
 import {
   buildEntryUpdateChanges,
   createSyntheticDraft,
-  resolveCacheDB,
 } from '$lib/services/contents/entry/changes';
 import { formatEntryFile } from '$lib/services/contents/file/format';
-
-vi.mock('$lib/services/backends', () => ({ backend: { current: null } }));
 
 vi.mock('$lib/services/contents/draft/save/changes', () => ({
   getArrayItemTarget: vi.fn((entry) =>
     entry.arrayIndex === undefined
       ? {}
       : { arrayItem: { index: entry.arrayIndex, locales: entry.locales } },
-  ),
-  getPreviousSha: vi.fn(async ({ previousPath }) =>
-    previousPath ? `sha:${previousPath}` : undefined,
   ),
 }));
 
@@ -33,13 +25,10 @@ vi.mock('$lib/services/contents/file/format', () => ({
   formatEntryFile: vi.fn(async ({ content }) => `formatted:${JSON.stringify(content)}`),
 }));
 
-vi.mock('@sveltia/utils/storage', () => ({ IndexedDB: vi.fn() }));
-
 const _file = { format: 'yaml-frontmatter' };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  backend.current = null;
 });
 
 describe('createSyntheticDraft()', () => {
@@ -71,25 +60,6 @@ describe('createSyntheticDraft()', () => {
   });
 });
 
-describe('resolveCacheDB()', () => {
-  test('returns the provided handle', () => {
-    const provided = { get: vi.fn() };
-
-    expect(resolveCacheDB(provided)).toBe(provided);
-    expect(IndexedDB).not.toHaveBeenCalled();
-  });
-
-  test('opens a handle for the current backend', () => {
-    backend.current = { repository: { databaseName: 'db' } };
-    resolveCacheDB();
-    expect(IndexedDB).toHaveBeenCalledWith('db', 'file-cache');
-  });
-
-  test('returns undefined when no backend is configured', () => {
-    expect(resolveCacheDB()).toBeUndefined();
-  });
-});
-
 describe('buildEntryUpdateChanges()', () => {
   test('produces one change for a single-file entry', async () => {
     const collection = {
@@ -103,7 +73,9 @@ describe('buildEntryUpdateChanges()', () => {
       locales: { _default: { slug: 'a', path: 'content/a.md', content: { title: 'A' } } },
     };
 
-    expect(await buildEntryUpdateChanges({ collection, entry, draft: {} })).toEqual([
+    const cacheDB = { get: vi.fn(async (path) => ({ sha: `sha:${path}` })) };
+
+    expect(await buildEntryUpdateChanges({ collection, entry, draft: {}, cacheDB })).toEqual([
       {
         action: 'update',
         slug: 'a',
@@ -159,6 +131,31 @@ describe('buildEntryUpdateChanges()', () => {
 
     expect(changes).toHaveLength(2);
     expect(changes.map(({ path }) => path)).toEqual(['en/a.md', 'fr/a.md']);
+  });
+
+  test('skips a locale missing from a multi-file entry', async () => {
+    const collection = {
+      name: 'posts',
+      _file,
+      _i18n: { i18nEnabled: true, allLocales: ['en', 'fr'], defaultLocale: 'en' },
+    };
+
+    const entry = {
+      slug: 'a',
+      locales: { en: { slug: 'a', path: 'en/a.md', content: { title: 'A' } } },
+    };
+
+    const cacheDB = { get: vi.fn(async (path) => ({ sha: `sha:${path}` })) };
+
+    expect(await buildEntryUpdateChanges({ collection, entry, draft: {}, cacheDB })).toEqual([
+      {
+        action: 'update',
+        slug: 'a',
+        path: 'en/a.md',
+        previousSha: 'sha:en/a.md',
+        data: 'formatted:{"title":"A"}',
+      },
+    ]);
   });
 
   test('passes the field comments for a single-file entry', async () => {

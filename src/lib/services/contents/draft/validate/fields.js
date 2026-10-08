@@ -84,6 +84,31 @@ const LIST_ITEM_SUBFIELD_REGEX = /\.\d+(?=\.)/g;
 const LIST_ITEM_INDEX_REGEX = /\.\d+(?=\.|$)/g;
 
 /**
+ * Compute the validation messages of a field from its validity state, if it has one, and record
+ * them under the same key path.
+ * @param {object} args Arguments.
+ * @param {LocaleValidityMap} args.validities Validity state.
+ * @param {LocaleValidationMessagesMap} args.validationMessages Validation messages, modified in
+ * place.
+ * @param {LocaleCode} args.locale Locale of the field.
+ * @param {FieldKeyPath} args.keyPath Key path the field’s validity state is kept under.
+ * @param {Field} args.fieldConfig Field configuration.
+ */
+const recordValidationMessages = ({
+  validities,
+  validationMessages,
+  locale,
+  keyPath,
+  fieldConfig,
+}) => {
+  const validity = validities[locale][keyPath];
+
+  if (validity) {
+    validationMessages[locale][keyPath] = getFieldValidationMessages({ validity, fieldConfig });
+  }
+};
+
+/**
  * Validate each field.
  * @param {ValidateFieldArgs} args Arguments.
  * @returns {EntryValidityState | undefined} Field validity.
@@ -274,7 +299,13 @@ const revalidateSingleField = ({ draft, locale, keyPath, value, valueMap }) => {
   // The field is known to be configured, as `validateAnyField` bails out otherwise
   const fieldConfig = /** @type {Field} */ (keyValueField ?? getField(getFieldArgs));
 
-  validationMessages[locale][stateKeyPath] = getFieldValidationMessages({ validity, fieldConfig });
+  recordValidationMessages({
+    validities,
+    validationMessages,
+    locale,
+    keyPath: stateKeyPath,
+    fieldConfig,
+  });
 };
 
 /**
@@ -346,6 +377,120 @@ export const validateList = ({ fieldConfig, validateArgs }) => {
 };
 
 /**
+ * @typedef {object} FieldValidationContext
+ * @property {Omit<ValidateFieldArgs, 'keyPath' | 'value'>} validateArgs Arguments shared by every
+ * field validated for a value: the draft, locale, entry values, validity state, rich text editor
+ * component name and whether required fields are enforced.
+ * @property {LocaleValidationMessagesMap} validationMessages Validation messages, modified in
+ * place.
+ * @property {GetFieldArgs} getFieldArgs Arguments for the {@link getField} function, with the
+ * value’s key path without the component name prefix.
+ */
+
+/**
+ * Get the configuration of a field in the value map.
+ * @param {FieldValidationContext} context Validation context.
+ * @param {FieldKeyPath} keyPath Key path, which may have a component name prefix.
+ * @returns {Field | undefined} Field configuration.
+ */
+const getConfig = ({ getFieldArgs }, keyPath) =>
+  getField({
+    ...getFieldArgs,
+    keyPath: keyPath.replace(COMPONENT_NAME_PREFIX_REGEX, ''), // Remove component name prefix
+  });
+
+/**
+ * Validate a List field itself, e.g. its item count, and compute its messages. The list is
+ * validated only once, however many of its items are in the value map.
+ * @param {FieldValidationContext} context Validation context.
+ * @param {object} args Arguments.
+ * @param {FieldKeyPath} args.listKeyPath Key path of the list.
+ * @param {Field} args.fieldConfig Configuration to validate the list with: the list’s own, or the
+ * item’s for a list with `field`.
+ * @param {Field} args.listFieldConfig The list’s own configuration, for the messages.
+ * @returns {{ valid: boolean, validateItems: boolean }} Whether the list is valid, and whether its
+ * items have to be validated too.
+ */
+const validateListItself = (context, { listKeyPath, fieldConfig, listFieldConfig }) => {
+  const { validateArgs, validationMessages } = context;
+  const { validities, locale } = validateArgs;
+
+  const result = validateList({
+    fieldConfig,
+    validateArgs: { ...validateArgs, keyPath: listKeyPath, value: '' },
+  });
+
+  // Compute messages for the list field itself (only on first item iteration)
+  if (!(listKeyPath in validationMessages[locale])) {
+    recordValidationMessages({
+      validities,
+      validationMessages,
+      locale,
+      keyPath: listKeyPath,
+      fieldConfig: listFieldConfig,
+    });
+  }
+
+  return result;
+};
+
+/**
+ * Validate the field the value belongs to when the value’s key path has no field configuration of
+ * its own, but its parent’s does, and record the result under the field’s key path, where the
+ * editor shows it. The field is validated only once, however many of its sub-keys are in the value
+ * map. A KeyValue pair is stored under an arbitrary key, e.g. `metadata.color`, so the field is
+ * validated through its first pair and the result is moved to the field’s key path. Without this, a
+ * KeyValue field holding pairs would never be validated. A Code field that stores an object is
+ * flattened into its code and language, e.g. `snippet.code`, and an existing entry has no value at
+ * the field’s own key path, so the field is validated through its sub-keys at the field’s key path.
+ * @param {FieldValidationContext} context Validation context.
+ * @param {object} args Arguments.
+ * @param {FieldKeyPath} args.keyPath Key path of the value.
+ * @param {any} args.value Value.
+ * @param {(args: GetFieldArgs) => Field | undefined} args.getParentField Function to get the
+ * configuration of the field the value belongs to.
+ * @param {boolean} args.viaSubKey Whether to validate the field with the value at its own key path
+ * and move the result to the field’s key path, instead of with the value at the field’s key path.
+ * @returns {boolean} Whether the field is valid, or `true` if it hasn’t been validated.
+ */
+const validateParentField = (context, { keyPath, value, getParentField, viaSubKey }) => {
+  const { validateArgs, validationMessages, getFieldArgs } = context;
+  const { validities, locale, valueMap } = validateArgs;
+  const fieldConfig = getParentField({ ...getFieldArgs });
+  const fieldKeyPath = keyPath.replace(PAIR_KEY_PATH_REGEX, '');
+
+  if (!fieldConfig || fieldKeyPath in validities[locale]) {
+    return true;
+  }
+
+  const validateKeyPath = viaSubKey ? keyPath : fieldKeyPath;
+
+  const valid = validateField({
+    ...validateArgs,
+    keyPath: validateKeyPath,
+    value: viaSubKey ? value : valueMap[fieldKeyPath],
+  });
+
+  const validity = validities[locale][validateKeyPath];
+
+  // A field that can’t be edited in the locale isn’t validated, so there is nothing to move
+  if (viaSubKey && validity) {
+    delete validities[locale][keyPath];
+    validities[locale][fieldKeyPath] = validity;
+  }
+
+  recordValidationMessages({
+    validities,
+    validationMessages,
+    locale,
+    keyPath: fieldKeyPath,
+    fieldConfig,
+  });
+
+  return valid;
+};
+
+/**
  * Validate the field values and return the results. Mimic the native `ValidityState` API.
  * @param {DraftValueStoreKey} valueStoreKey Key to store the values in {@link EntryDraft}.
  * @param {object} options Options.
@@ -361,8 +506,6 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
   const validities = {};
   /** @type {LocaleValidationMessagesMap} */
   const validationMessages = {};
-  /** @type {GetFieldArgs} */
-  const getFieldArgs = { collectionName, fileName, isIndexFile, keyPath: '', valueMap: {} };
   let valid = true;
 
   Object.entries(draft[valueStoreKey]).forEach(([locale, valueMap]) => {
@@ -380,8 +523,6 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
       return;
     }
 
-    const validateArgs = { draft, locale, valueMap, validities, enforceRequired };
-
     // Reset the state first
     validities[locale] = {};
     validationMessages[locale] = {};
@@ -398,132 +539,18 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
         return;
       }
 
-      /**
-       * Get the configuration of a field in the value map.
-       * @param {FieldKeyPath} _keyPath Key path, which may have a component name prefix.
-       * @returns {Field | undefined} Field configuration.
-       */
-      const getConfig = (_keyPath) =>
-        getField({
-          ...getFieldArgs,
-          keyPath: _keyPath.replace(COMPONENT_NAME_PREFIX_REGEX, ''), // Remove component name prefix
+      /** @type {FieldValidationContext} */
+      const context = {
+        validateArgs: { draft, locale, valueMap, validities, enforceRequired, componentName },
+        validationMessages,
+        getFieldArgs: {
+          collectionName,
+          fileName,
+          isIndexFile,
+          keyPath: keyPath.replace(COMPONENT_NAME_PREFIX_REGEX, ''), // Remove component name prefix
           valueMap,
           componentName,
-        });
-
-      /**
-       * Validate a List field itself, e.g. its item count, and compute its messages. The list is
-       * validated only once, however many of its items are in the value map.
-       * @param {object} args Arguments.
-       * @param {FieldKeyPath} args.listKeyPath Key path of the list.
-       * @param {Field} args.fieldConfig Configuration to validate the list with: the list’s own, or
-       * the item’s for a list with `field`.
-       * @param {Field} args.listFieldConfig The list’s own configuration, for the messages.
-       * @returns {boolean} Whether the list’s items have to be validated too.
-       */
-      const validateListItself = ({ listKeyPath, fieldConfig, listFieldConfig }) => {
-        const { valid: listValid, validateItems } = validateList({
-          fieldConfig,
-          validateArgs: { ...validateArgs, keyPath: listKeyPath, value: '', componentName },
-        });
-
-        if (!listValid) {
-          valid = false;
-        }
-
-        // Compute messages for the list field itself (only on first item iteration)
-        if (!(listKeyPath in validationMessages[locale])) {
-          const listValidity = validities[locale][listKeyPath];
-
-          if (listValidity) {
-            validationMessages[locale][listKeyPath] = getFieldValidationMessages({
-              validity: listValidity,
-              fieldConfig: listFieldConfig,
-            });
-          }
-        }
-
-        return validateItems;
-      };
-
-      /**
-       * Validate the KeyValue field the value belongs to, if it’s a pair. A pair is stored under an
-       * arbitrary key, e.g. `metadata.color`, that has no field configuration of its own, so the
-       * field is validated through its first pair and the result is recorded for the field, where
-       * the editor shows it. Without this, a KeyValue field holding pairs would never be validated.
-       */
-      const validateKeyValuePair = () => {
-        const keyValueField = getKeyValueField({
-          ...getFieldArgs,
-          keyPath: keyPath.replace(COMPONENT_NAME_PREFIX_REGEX, ''),
-          valueMap,
-          componentName,
-        });
-
-        const fieldKeyPath = keyPath.replace(PAIR_KEY_PATH_REGEX, '');
-
-        if (!keyValueField || fieldKeyPath in validities[locale]) {
-          return;
-        }
-
-        if (!validateField({ ...validateArgs, keyPath, value, componentName })) {
-          valid = false;
-        }
-
-        const validity = validities[locale][keyPath];
-
-        // A field that can’t be edited in the locale isn’t validated
-        if (!validity) {
-          return;
-        }
-
-        delete validities[locale][keyPath];
-        validities[locale][fieldKeyPath] = validity;
-        validationMessages[locale][fieldKeyPath] = getFieldValidationMessages({
-          validity,
-          fieldConfig: keyValueField,
-        });
-      };
-
-      /**
-       * Validate the Code field the value belongs to, if it’s the code or language of one that
-       * stores an object, e.g. `snippet.code`. Like a KeyValue pair, such a key path has no field
-       * configuration of its own, and an existing entry has no value at the field’s own key path,
-       * so the field is validated through its sub-keys, only once, at the field’s key path.
-       */
-      const validateCodeSubKey = () => {
-        const codeField = getCodeField({
-          ...getFieldArgs,
-          keyPath: keyPath.replace(COMPONENT_NAME_PREFIX_REGEX, ''),
-          valueMap,
-          componentName,
-        });
-
-        const fieldKeyPath = keyPath.replace(PAIR_KEY_PATH_REGEX, '');
-
-        if (!codeField || fieldKeyPath in validities[locale]) {
-          return;
-        }
-
-        if (
-          !validateField({
-            ...validateArgs,
-            keyPath: fieldKeyPath,
-            value: valueMap[fieldKeyPath],
-            componentName,
-          })
-        ) {
-          valid = false;
-        }
-
-        const validity = validities[locale][fieldKeyPath];
-
-        if (validity) {
-          validationMessages[locale][fieldKeyPath] = getFieldValidationMessages({
-            validity,
-            fieldConfig: codeField,
-          });
-        }
+        },
       };
 
       // The items of a List field with subfields or types are flattened to their own subfields,
@@ -531,14 +558,17 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
       // is in through the path of its items, or its item count would never be checked
       [...keyPath.matchAll(LIST_ITEM_SUBFIELD_REGEX)].forEach(({ index }) => {
         const ancestorKeyPath = keyPath.slice(0, index);
-        const ancestorConfig = getConfig(ancestorKeyPath);
+        const ancestorConfig = getConfig(context, ancestorKeyPath);
 
-        if (ancestorConfig?.widget === 'list') {
-          validateListItself({
+        if (
+          ancestorConfig?.widget === 'list' &&
+          !validateListItself(context, {
             listKeyPath: ancestorKeyPath,
             fieldConfig: ancestorConfig,
             listFieldConfig: ancestorConfig,
-          });
+          }).valid
+        ) {
+          valid = false;
         }
       });
 
@@ -546,20 +576,37 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
         ? keyPath.replace(LIST_KEY_PATH_REGEX, '')
         : undefined;
 
-      const listFieldConfig = listKeyPath === undefined ? undefined : getConfig(listKeyPath);
+      const listFieldConfig =
+        listKeyPath === undefined ? undefined : getConfig(context, listKeyPath);
 
       // An item of a List field without subfields has no config of its own, so the list stands in
       // for it: the list is validated as a whole, while the items, plain strings, are left alone
       const fieldConfig =
-        getConfig(keyPath) ??
+        getConfig(context, keyPath) ??
         (listFieldConfig?.widget === 'list' &&
         !getListFieldInfo(/** @type {ListField} */ (listFieldConfig)).hasSubFields
           ? listFieldConfig
           : undefined);
 
       if (!fieldConfig) {
-        validateKeyValuePair();
-        validateCodeSubKey();
+        // The value may be a KeyValue pair, or the code or language of a Code field
+        const pairValid = validateParentField(context, {
+          keyPath,
+          value,
+          getParentField: getKeyValueField,
+          viaSubKey: true,
+        });
+
+        const codeValid = validateParentField(context, {
+          keyPath,
+          value,
+          getParentField: getCodeField,
+          viaSubKey: false,
+        });
+
+        if (!pairValid || !codeValid) {
+          valid = false;
+        }
 
         return;
       }
@@ -572,26 +619,27 @@ export const validateFields = (valueStoreKey, { draft, enforceRequired = true })
       // Validate a list itself before the items. The item’s config is the subfield of a list with
       // `field`, so the list’s own config has to be used for the list’s messages, such as the
       // minimum item count
-      if (
-        listKeyPath !== undefined &&
-        !validateListItself({
+      if (listKeyPath !== undefined) {
+        const { valid: listValid, validateItems } = validateListItself(context, {
           listKeyPath,
           fieldConfig,
           listFieldConfig: /** @type {Field} */ (listFieldConfig),
-        })
-      ) {
-        return;
+        });
+
+        if (!listValid) {
+          valid = false;
+        }
+
+        if (!validateItems) {
+          return;
+        }
       }
 
-      if (!validateField({ ...validateArgs, keyPath, value, componentName })) {
+      if (!validateField({ ...context.validateArgs, keyPath, value })) {
         valid = false;
       }
 
-      const validity = validities[locale][keyPath];
-
-      if (validity) {
-        validationMessages[locale][keyPath] = getFieldValidationMessages({ validity, fieldConfig });
-      }
+      recordValidationMessages({ validities, validationMessages, locale, keyPath, fieldConfig });
     });
   });
 

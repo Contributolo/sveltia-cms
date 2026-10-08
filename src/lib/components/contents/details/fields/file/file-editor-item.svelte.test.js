@@ -1,3 +1,4 @@
+import { flushSync } from 'svelte';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
@@ -145,6 +146,48 @@ describe('FileEditorItem', () => {
       .toHaveTextContent('/static/uploads/Renamed Photo.png');
     expect(draft.files[blobURL].file.name).toBe('Renamed Photo.png');
     expect(activeInlineEditors.current).toBe(0);
+  });
+
+  test('slugifies the new name with the `slugify_filename` option', async () => {
+    const config = { site_url: 'https://example.com' };
+
+    await initTestConfig({
+      ...config,
+      media_libraries: { default: { config: { slugify_filename: true } } },
+    });
+
+    try {
+      const file = await createMockImageFile({ name: 'new-photo.png' });
+      const blobURL = URL.createObjectURL(file);
+
+      const { draft } = await renderItem(
+        blobURL,
+        {},
+        { files: { [blobURL]: { file, folder: globalAssetFolder.current } } },
+      );
+
+      await page.getByRole('button', { name: 'Rename' }).click();
+
+      const input = page.getByRole('textbox');
+
+      await expectFileNameSelected(input, 'new-photo.png');
+      // The current name is already a slug, so there’s nothing to show
+      expect(page.getByRole('status').elements()).toHaveLength(0);
+
+      await input.fill('Blog Photo 1.png');
+      await expect
+        .element(page.getByRole('status'))
+        .toHaveTextContent('The file will be saved as “\u2068blog-photo-1.png\u2069”.');
+      await userEvent.keyboard('{Enter}');
+
+      await expect
+        .element(page.getByRole('textbox'))
+        .toHaveTextContent('/static/uploads/blog-photo-1.png');
+      expect(draft.files[blobURL].file.name).toBe('blog-photo-1.png');
+      expect(page.getByRole('status').elements()).toHaveLength(0);
+    } finally {
+      await initTestConfig(config);
+    }
   });
 
   test('shows the name filled with the file name template, until renamed by hand', async () => {
@@ -297,6 +340,56 @@ describe('FileEditorItem', () => {
     props.value = '/uploads/photo.png';
     await expect.element(page.getByRole('textbox')).toHaveTextContent('/uploads/photo.png');
     expect(page.getByRole('button', { name: 'Rename' }).elements()).toHaveLength(0);
+  });
+
+  test('shows the preview of an unsaved file replacing a saved asset or another unsaved file', async () => {
+    const fileA = await createMockImageFile({ name: 'a.png' });
+    const fileB = await createMockImageFile({ name: 'b.png' });
+    const blobA = URL.createObjectURL(fileA);
+    const blobB = URL.createObjectURL(fileB);
+
+    const { container, props } = await renderItem(
+      '/uploads/photo.png',
+      {},
+      {
+        files: {
+          [blobA]: { file: fileA, folder: globalAssetFolder.current },
+          [blobB]: { file: fileB, folder: globalAssetFolder.current },
+        },
+      },
+    );
+
+    await expect.poll(() => container.querySelector('img')?.getAttribute('src')).toMatch(/^blob:/);
+
+    props.value = blobA;
+    await expect.poll(() => container.querySelector('img')?.getAttribute('src')).toBe(blobA);
+
+    props.value = blobB;
+    await expect.poll(() => container.querySelector('img')?.getAttribute('src')).toBe(blobB);
+  });
+
+  test('ignores the preview of an earlier value resolved after the current one', async () => {
+    const file = await createMockImageFile({ name: 'a.png' });
+    const blobURL = URL.createObjectURL(file);
+
+    const { container, props } = await renderItem(
+      '/uploads/photo.png',
+      {},
+      { files: { [blobURL]: { file, folder: globalAssetFolder.current } } },
+    );
+
+    await expect.poll(() => container.querySelector('img')).not.toBeNull();
+
+    // The kind of the unsaved file is still being read when the value is removed
+    props.value = blobURL;
+    flushSync();
+    props.value = '';
+    flushSync();
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 200);
+    });
+    expect(container.querySelector('img')).toBeNull();
   });
 
   test('offers the reorder controls in a list', async () => {

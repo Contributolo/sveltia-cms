@@ -1,5 +1,5 @@
 import { toRaw } from '@sveltia/utils/object';
-import { compare, escapeRegExp } from '@sveltia/utils/string';
+import { compare } from '@sveltia/utils/string';
 import { TomlDate } from 'smol-toml';
 
 import { cmsConfig } from '$lib/services/config';
@@ -13,6 +13,7 @@ import {
   hasRootField,
   isFieldRequired,
 } from '$lib/services/contents/entry/fields';
+import { getWildcardKeyPathPattern } from '$lib/services/contents/entry/key-paths';
 import { parseDateTimeConfig } from '$lib/services/contents/fields/date-time/config';
 import { resolveFileConfig } from '$lib/services/contents/file/config';
 import { TOML_FORMATS } from '$lib/services/contents/file/constants';
@@ -46,10 +47,7 @@ const getWildcardKeyPathRegex = (keyPath) =>
   getOrCreate(
     wildcardKeyPathRegexCache,
     keyPath,
-    () =>
-      new RegExp(
-        `^(${escapeRegExp(keyPath.replaceAll('*', '\\d+')).replaceAll('\\\\d\\+', '\\d+')})(?:\\.|$)`,
-      ),
+    () => new RegExp(`^(${getWildcardKeyPathPattern(keyPath)})(?:\\.|$)`),
   );
 
 /**
@@ -123,6 +121,22 @@ export const copyProperty = ({
 
   delete unsortedMap[key];
 };
+
+/**
+ * Field types whose object or array value is flattened into key paths that no field configuration
+ * describes: a Hidden field takes anything its `default` or the file gives it, and a Code field
+ * saves the code and the language under the property names of its `keys` option.
+ */
+const OPAQUE_FIELD_TYPES = ['code', 'hidden'];
+
+/**
+ * Check whether the given field holds a value whose properties no field configuration describes: a
+ * custom field, or one of {@link OPAQUE_FIELD_TYPES}.
+ * @param {Field} field Field configuration.
+ * @returns {boolean} Result.
+ */
+const isOpaqueField = (field) =>
+  OPAQUE_FIELD_TYPES.includes(String(field.widget)) || getFieldKind(field) === 'custom';
 
 /**
  * Finalize the content by sorting the entry draft content’s object properties by the order of the
@@ -241,14 +255,14 @@ const finalizeContent = ({
   };
 
   /**
-   * Copy a custom field’s value to the sorted property map. An object or array value is flattened
-   * into the key paths below the field’s own, which aren’t listed in the configured fields. Copy
-   * them right away, in the order the control gave the properties, rather than leaving them to be
-   * sorted with the remainder at the end of the output.
+   * Copy the value of a custom or Hidden field to the sorted property map. An object or array value
+   * is flattened into the key paths below the field’s own, which aren’t listed in the configured
+   * fields. Copy them right away, in the order the control or the file gave the properties, rather
+   * than leaving them to be sorted with the remainder at the end of the output.
    * @param {string} keyPath Concrete key path of the field.
    * @param {Field} field Field configuration.
    */
-  const copyCustomField = (keyPath, field) => {
+  const copyOpaqueField = (keyPath, field) => {
     if (keyPath in unsortedMap) {
       copyProperty({ ...copyArgs, key: keyPath, field });
     }
@@ -270,8 +284,8 @@ const finalizeContent = ({
     // is the placeholder of an empty field
     if (field?.widget === 'keyvalue' && !keyPath.includes('*')) {
       copyKeyValueField(keyPath, field);
-    } else if (field && !keyPath.includes('*') && getFieldKind(field) === 'custom') {
-      copyCustomField(keyPath, field);
+    } else if (field && !keyPath.includes('*') && isOpaqueField(field)) {
+      copyOpaqueField(keyPath, field);
     } else if (keyPath in unsortedMap) {
       copyProperty({ ...copyArgs, key: keyPath, field });
     } else {
@@ -295,8 +309,8 @@ const finalizeContent = ({
 
           if (resolvedField?.widget === 'keyvalue') {
             copyKeyValueField(concreteKeyPath, resolvedField);
-          } else if (resolvedField && getFieldKind(resolvedField) === 'custom') {
-            copyCustomField(concreteKeyPath, resolvedField);
+          } else if (resolvedField && isOpaqueField(resolvedField)) {
+            copyOpaqueField(concreteKeyPath, resolvedField);
           } else if (concreteKeyPath in unsortedMap) {
             copyProperty({ ...copyArgs, key: concreteKeyPath, field: resolvedField });
           }

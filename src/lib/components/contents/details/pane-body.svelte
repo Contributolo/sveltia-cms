@@ -22,6 +22,10 @@
   } from '$lib/services/api/registries';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { toggleLocale } from '$lib/services/contents/draft/update/locale';
+  import {
+    getFieldAlignedScrollTop,
+    getProportionalScrollTop,
+  } from '$lib/services/contents/editor/scroll';
   import { entryEditorSettings } from '$lib/services/contents/editor/settings';
   import { getLocaleLabel } from '$lib/services/contents/i18n';
 
@@ -75,8 +79,6 @@
       const isIframe = thisPaneContentArea !== contentArea;
       const { x, y } = isIframe ? { x: 0, y: 0 } : thisPaneContentArea.getBoundingClientRect();
       const { ownerDocument, scrollTop, scrollHeight, clientHeight } = thisPaneContentArea;
-      const scrollTopMax = scrollHeight - clientHeight;
-      const scrollRatio = scrollTop / scrollTopMax;
 
       // Find the field section in the top left corner of the content area. Use `findLast` to
       // capture the topmost element; otherwise the List field sticky headers will interfere with
@@ -88,7 +90,13 @@
 
       if (!thisElement) {
         // Calculate the scroll position based on the current scroll position of the this pane
-        thatPaneContentArea.scrollTop = thatPaneContentArea.scrollHeight * scrollRatio;
+        thatPaneContentArea.scrollTop = getProportionalScrollTop({
+          scrollTop,
+          scrollHeight,
+          clientHeight,
+          targetScrollHeight: thatPaneContentArea.scrollHeight,
+          targetClientHeight: thatPaneContentArea.clientHeight,
+        });
 
         return;
       }
@@ -96,19 +104,26 @@
       // The element was found by that very attribute, so the key path is there
       const { keyPath } = /** @type {{ keyPath: string }} */ (thisElement.dataset);
       const { top, height } = thisElement.getBoundingClientRect();
-      const ratio = (y - top) / height;
 
       const thatElement = /** @type {HTMLElement | undefined} */ (
         thatPaneContentArea.querySelector(`[data-key-path="${CSS.escape(keyPath)}"]`)
       );
 
-      if (ratio < 0 || ratio > 1 || !thatElement) {
-        return;
-      }
-
       // Scroll the other pane to the corresponding element, adjusting for the current scroll
       // position and the ratio of the scroll position within the element.
-      thatPaneContentArea.scrollTop = thatElement.offsetTop - y + thatElement.clientHeight * ratio;
+      const thatScrollTop = thatElement
+        ? getFieldAlignedScrollTop({
+            y,
+            top,
+            height,
+            targetOffsetTop: thatElement.offsetTop,
+            targetHeight: thatElement.clientHeight,
+          })
+        : undefined;
+
+      if (thatScrollTop !== undefined) {
+        thatPaneContentArea.scrollTop = thatScrollTop;
+      }
     });
   };
 
@@ -212,14 +227,18 @@
       thisPaneContentArea = contentArea;
     }
 
-    if (thisPaneContentArea) {
-      scrollEventTarget = iframe ? thisPaneContentArea.ownerDocument : thisPaneContentArea;
-      thisPaneContentArea.scrollTop = 0;
-      // Add event listeners manually to use passive mode
-      thisPaneContentArea.addEventListener('wheel', markScrollSource, eventOptions);
-      thisPaneContentArea.addEventListener('touchstart', markScrollSource, eventOptions);
-      scrollEventTarget.addEventListener('scroll', onScroll, scrollEventOptions);
+    // A preview frame removed while its content was loading has no document left to listen to
+    /* v8 ignore next 3 -- a test can’t detach the frame within that moment */
+    if (!thisPaneContentArea) {
+      return;
     }
+
+    scrollEventTarget = iframe ? thisPaneContentArea.ownerDocument : thisPaneContentArea;
+    thisPaneContentArea.scrollTop = 0;
+    // Add event listeners manually to use passive mode
+    thisPaneContentArea.addEventListener('wheel', markScrollSource, eventOptions);
+    thisPaneContentArea.addEventListener('touchstart', markScrollSource, eventOptions);
+    scrollEventTarget.addEventListener('scroll', onScroll, scrollEventOptions);
   };
 
   $effect(() => {

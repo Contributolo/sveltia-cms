@@ -5,21 +5,26 @@ import {
   externalAssets,
   externalAssetSearchTerms,
   externalFolders,
-  focusedExternalAsset,
+  focusedExternalSubfolder,
   hasFolderSupport,
+  pruneExternalAssetSelection,
   selectedCloudService,
-  selectedExternalAssets,
   selectedExternalDirPath,
 } from '$lib/services/assets/external';
 import { LINKED_FILES_SERVICE_ID } from '$lib/services/assets/external/linked';
 import { getDirName, listSubfolders } from '$lib/services/assets/subfolders';
 import { currentView } from '$lib/services/assets/view/settings';
 import { groupItems, sortItemsByKey } from '$lib/services/common/view';
-import { normalize } from '$lib/services/search/util';
-import { createDerivedState, createRootEffect } from '$lib/services/utils/state.svelte';
+import { getNormalizedValueCache, hasMatch, normalize } from '$lib/services/search/util';
+import {
+  createDerivedState,
+  createRootEffect,
+  createStableDerivedState,
+} from '$lib/services/utils/state.svelte';
 
 /**
  * @import {
+ * AssetFolderSummary,
  * AssetSubfolder,
  * ExternalAsset,
  * FilteringConditions,
@@ -166,11 +171,15 @@ export const searchExternalAssets = (assets, terms) => {
     return assets;
   }
 
-  return assets.filter(
-    ({ fileName, description }) =>
-      normalize(fileName).includes(normalizedTerms) ||
-      normalize(description).includes(normalizedTerms),
-  );
+  // The normalized names are kept with each asset, as the search runs on every keystroke
+  return assets.filter((asset) => {
+    const normalizedValueCache = getNormalizedValueCache(asset);
+
+    return (
+      hasMatch({ value: asset.fileName, terms: normalizedTerms, normalizedValueCache }) ||
+      hasMatch({ value: asset.description, terms: normalizedTerms, normalizedValueCache })
+    );
+  });
 };
 
 /**
@@ -245,25 +254,87 @@ export const listedExternalSubfolders = createDerivedState(() => {
 });
 
 /**
- * Sorted, filtered and searched assets on the selected cloud storage service. The Asset Library’s
- * {@link currentView} is shared with repository folders, so the view type, sort order and file
- * type filter are remembered per service just like per folder. While the service is browsed folder
- * by folder, only the assets right in the folder being browsed are listed.
+ * Sorting conditions of the current view. This and the filtering conditions below are picked out
+ * of {@link currentView} one by one, so replacing the view to switch between list and grid, or to
+ * group the assets, doesn’t sort and filter them all over again.
+ */
+const sortConditions = createStableDerivedState(() => currentView.current.sort);
+/**
+ * Filtering conditions of the current view. See {@link sortConditions}.
+ */
+const filterConditions = createStableDerivedState(() => currentView.current.filter);
+
+/**
+ * Sorted and filtered assets on the selected cloud storage service. While the service is browsed
+ * folder by folder, only the assets right in the folder being browsed are listed. Sorting is the
+ * costliest step, so it’s done here rather than after the search, which runs on every keystroke.
  * @type {{ readonly current: ExternalAsset[] }}
  */
-export const listedExternalAssets = createDerivedState(() => {
-  const { sort, filter } = currentView.current;
+const sortedExternalAssets = createDerivedState(() => {
   let assets = externalAssets.current ?? [];
 
   if (browsingExternalFolders.current) {
     assets = getExternalAssetsInDir({ dirPath: selectedExternalDirPath.current, assets });
   }
 
-  assets = sortExternalAssets(assets, sort);
-  assets = filterExternalAssets(assets, filter);
-  assets = searchExternalAssets(assets, externalAssetSearchTerms.current);
+  return filterExternalAssets(
+    sortExternalAssets(assets, sortConditions.current),
+    filterConditions.current,
+  );
+});
 
-  return assets;
+/**
+ * Sorted, filtered and searched assets on the selected cloud storage service. The Asset Library’s
+ * {@link currentView} is shared with repository folders, so the view type, sort order and file
+ * type filter are remembered per service just like per folder.
+ * @type {{ readonly current: ExternalAsset[] }}
+ */
+export const listedExternalAssets = createDerivedState(() =>
+  searchExternalAssets(sortedExternalAssets.current, externalAssetSearchTerms.current),
+);
+
+/**
+ * What the folder info panel describes: the focused subfolder, or the folder being browsed on the
+ * selected cloud storage service — the service itself at the root.
+ * @type {{ readonly current: AssetFolderSummary | undefined }}
+ */
+export const externalFolderSummary = createDerivedState(() => {
+  const subfolder = focusedExternalSubfolder.current;
+
+  if (subfolder) {
+    const { name, path } = subfolder;
+    const assets = externalAssets.current ?? [];
+
+    return {
+      name,
+      path,
+      folderCount: getExternalSubfolders({
+        dirPath: path,
+        assets,
+        folders: externalFolders.current,
+      }).length,
+      assetCount: getExternalAssetsInDir({ dirPath: path, assets }).length,
+    };
+  }
+
+  const service = selectedCloudService.current;
+
+  // The panel is only shown with a service selected
+  if (!service) {
+    return undefined;
+  }
+
+  // A search looks through the whole service rather than the folder being browsed
+  const browsing = browsingExternalFolders.current;
+  const dirPath = browsing ? selectedExternalDirPath.current : '';
+
+  return {
+    name: dirPath.split('/').at(-1) || service.serviceLabel,
+    // The service root has no path of its own
+    path: dirPath || undefined,
+    folderCount: browsing ? listedExternalSubfolders.current.length : undefined,
+    assetCount: listedExternalAssets.current.length,
+  };
 });
 
 /**
@@ -282,18 +353,7 @@ export const externalAssetGroups = createDerivedState(() =>
 export const pruneHiddenAssets = () => {
   const listedIds = new Set(listedExternalAssets.current.map(({ id }) => id));
 
-  untrack(() => {
-    const selected = selectedExternalAssets.current;
-    const visible = selected.filter(({ id }) => listedIds.has(id));
-
-    if (visible.length !== selected.length) {
-      selectedExternalAssets.current = visible;
-    }
-
-    if (focusedExternalAsset.current && !listedIds.has(focusedExternalAsset.current.id)) {
-      focusedExternalAsset.current = undefined;
-    }
-  });
+  untrack(() => pruneExternalAssetSelection((id) => listedIds.has(id)));
 };
 
 createRootEffect(pruneHiddenAssets);

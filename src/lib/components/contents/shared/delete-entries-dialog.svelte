@@ -3,12 +3,12 @@
   import { Alert, ConfirmationDialog, Toast } from '@sveltia/ui';
 
   import CascadeDeleteNote from '$lib/components/common/cascade-delete-note.svelte';
+  import { getErrorMessage } from '$lib/services/backends/git/shared/errors';
   import { selectedCollection } from '$lib/services/contents/collection';
   import {
     contentUpdatesToast,
     UPDATE_TOAST_DEFAULT_STATE,
   } from '$lib/services/contents/collection/data';
-  import { deleteEntries } from '$lib/services/contents/collection/data/delete';
   import { selectedEntries } from '$lib/services/contents/collection/entries';
   import { listedEntries, listedUnpublishedEntries } from '$lib/services/contents/collection/view';
   import { getEntryRelativeAssets } from '$lib/services/contents/entry/assets';
@@ -17,7 +17,7 @@
     planCascadeDelete,
   } from '$lib/services/contents/entry/relations/cascade/delete';
   import { isWorkflowEnabled } from '$lib/services/workflow';
-  import { deleteWorkflowEntries, discardWorkflowEntries } from '$lib/services/workflow/save';
+  import { deleteOrDiscardEntries } from '$lib/services/workflow/delete';
 
   /**
    * @import { Entry, UnpublishedEntry } from '$lib/types/private';
@@ -32,6 +32,7 @@
   let { open = $bindable(false) } = $props();
 
   let showErrorToast = $state(false);
+  let errorMessage = $state('');
 
   // Deleting an unpublished entry discards the draft instead of committing a deletion, so the two
   // kinds of entries have to be handled separately
@@ -57,13 +58,15 @@
 
   // Assets committed alongside an unpublished entry don’t exist on the configured branch yet, so
   // only look at the published entries here
-  const associatedAssets = $derived.by(() => {
+  const publishedEntryAssets = $derived.by(() => {
     const collectionName = selectedCollection.current?.name;
 
-    return collectionName
-      ? publishedEntries.flatMap((entry) => getEntryRelativeAssets({ entry, collectionName }))
-      : [];
+    return publishedEntries.map((entry) => ({
+      entry,
+      assets: collectionName ? getEntryRelativeAssets({ entry, collectionName }) : [],
+    }));
   });
+  const associatedAssets = $derived(publishedEntryAssets.flatMap(({ assets }) => assets));
 
   /**
    * Delete the selected entries, discarding any unpublished draft rather than committing a deletion
@@ -71,36 +74,20 @@
    */
   const deleteSelectedEntries = async () => {
     try {
-      if (draftEntries.length) {
-        await discardWorkflowEntries(draftEntries);
-      }
+      const collection = selectedCollection.current;
 
-      if (publishedEntries.length) {
-        const collection = selectedCollection.current;
+      const toastState = await deleteOrDiscardEntries({
+        drafts: draftEntries,
+        items: publishedEntryAssets,
+        collection,
+        useWorkflow: isWorkflowEnabled(collection),
+      });
 
-        if (collection && isWorkflowEnabled(collection)) {
-          // Committing the removals straight to the configured branch would bypass review and be
-          // rejected outright when the branch is protected
-          // @see https://github.com/decaporg/decap-cms/issues/6610
-          await deleteWorkflowEntries(
-            publishedEntries.map((entry) => ({
-              entry,
-              collection: /** @type {any} */ (collection),
-              assets: getEntryRelativeAssets({ entry, collectionName: collection.name }),
-            })),
-          );
-
-          contentUpdatesToast.current = {
-            ...UPDATE_TOAST_DEFAULT_STATE,
-            deleted: true,
-            deletionPending: true,
-            count: publishedEntries.length,
-          };
-        } else {
-          await deleteEntries(publishedEntries, associatedAssets);
-        }
+      if (toastState) {
+        contentUpdatesToast.current = { ...UPDATE_TOAST_DEFAULT_STATE, ...toastState };
       }
     } catch (/** @type {any} */ ex) {
+      errorMessage = getErrorMessage(ex, 'deleting_entry_failed');
       showErrorToast = true;
       // eslint-disable-next-line no-console
       console.error(ex);
@@ -152,5 +139,5 @@
 </ConfirmationDialog>
 
 <Toast bind:show={showErrorToast}>
-  <Alert status="error">{_('deleting_entry_failed')}</Alert>
+  <Alert status="error">{errorMessage}</Alert>
 </Toast>
