@@ -597,6 +597,8 @@ new_folder_description: Der neue Ordner wird in „{$folder}“ angelegt.
 new_folder_error:
   empty: Der Ordnername darf nicht leer sein.
   invalid: Der Ordnername darf keine Schrägstriche enthalten und nicht mit einem Punkt beginnen.
+  # A name the CMS itself is usually served from, e.g. `admin` or `cms`
+  reserved: Die Dateien in einem Ordner mit diesem Namen sind schreibgeschützt, da das CMS selbst üblicherweise aus diesem Ordner ausgeliefert wird.
   duplicate: Ein Ordner oder eine Datei mit diesem Namen existiert hier bereits.
 # Progress and error messages while the folder is being created
 creating_folder: Ordner wird angelegt …
@@ -667,6 +669,9 @@ enter_new_name_for_asset_error:
   empty: Der Dateiname darf nicht leer sein.
   character: Der Dateiname darf keine Sonderzeichen enthalten.
   duplicate: Dieser Dateiname wird bereits von einem anderen Medium verwendet.
+# Shown while renaming a file whose name will be changed on saving, e.g. by the `slugify_filename`
+# media library option
+file_will_be_saved_as: Die Datei wird als „{$name}“ gespeichert.
 # Confirmation dialog shown when the file extension is changed while renaming an asset
 change_file_extension: Dateiendung ändern
 # {$oldExtension} and {$newExtension} are file extensions without a leading dot, e.g. png
@@ -1797,6 +1802,8 @@ config:
     i18n_invalid_default_locale: Die Option `default_locale` ist auf `{$locale}` gesetzt, in `locales` ist diese Sprache aber nicht enthalten.
     # {$locale} is the locale code from the configuration; Don’t localize `initial_locales` and `locales`
     i18n_invalid_initial_locale: Die Option `initial_locales` enthält `{$locale}`, in `locales` ist diese Sprache aber nicht enthalten.
+    # Don’t localize `i18n`
+    i18n_no_collections: 'Die Option `i18n` ist auf der obersten Ebene konfiguriert, aber keine Sammlung und keine Einzeldatei hat die Option `i18n`, daher lassen sich keine Inhalte übersetzen. Ergänzen Sie `i18n: true` bei den Sammlungen und Einzeldateien, die übersetzt werden sollen.'
     # {$key} is the unsupported key found in the option map; Don’t localize `transformations`, `raster_image` and `svg`
     invalid_transformation_key: Die Option `transformations` enthält den nicht unterstützten Schlüssel `{$key}`. Erlaubt sind `raster_image`, `svg` oder ein unterstütztes Rasterbildformat.
     # {$key} is the transformation key; Don’t localize `quality`
@@ -1884,6 +1891,12 @@ config:
     invalid_collection_folder_locale: Der Pfad `folder` `{$folder}` ist ungültig. Der Platzhalter `locale` darf nur einmal und nur als ganzer Ordnername vorkommen, etwa `content/\{\{locale\}\}/posts`.
     # Don’t localize `i18n`, `locale` and `file`
     collection_file_i18n_required: Für die Sammlungsdatei muss die Option `i18n` definiert sein, wenn im Pfad `file` der Platzhalter `locale` verwendet wird.
+    # Don’t localize `i18n`, `i18n: true` and `i18n: duplicate`
+    collection_i18n_no_fields: 'Die Sammlung hat die Option `i18n`, aber keines ihrer Felder hat die Option `i18n`, daher lässt sich kein Feld übersetzen. Ergänzen Sie `i18n: true` oder `i18n: duplicate` bei den Feldern, die übersetzt werden sollen.'
+    # Don’t localize `i18n` and `i18n: true`
+    collection_i18n_no_files: 'Die Sammlung hat die Option `i18n`, aber keine ihrer Dateien hat die Option `i18n`, daher lässt sich keine Datei übersetzen. Ergänzen Sie `i18n: true` bei den Dateien, die übersetzt werden sollen.'
+    # Don’t localize `i18n`, `i18n: true` and `i18n: duplicate`
+    collection_file_i18n_no_fields: 'Die Sammlungsdatei hat die Option `i18n`, aber keines ihrer Felder hat die Option `i18n`, daher lässt sich kein Feld übersetzen. Ergänzen Sie `i18n: true` oder `i18n: duplicate` bei den Feldern, die übersetzt werden sollen.'
     # {$count} is the 1-based field index in the current fields array; Don’t localize `name`
     missing_field_name: Für das Feld {$count} muss die Option `name` als nicht leere Zeichenkette definiert sein.
     # {$name} is the invalid or duplicate field name
@@ -1895,6 +1908,8 @@ config:
     invalid_variable_type: Der Name des variablen Typs `{$name}` ist ungültig. Er darf keine Sonderzeichen enthalten.
     duplicate_variable_type: Namen variabler Typen müssen eindeutig sein, aber `{$name}` wird mehrfach verwendet.
     date_field_type: 'Der veraltete Feldtyp Date wird in Sveltia CMS nicht unterstützt. Verwenden Sie stattdessen den Feldtyp DateTime mit der Option `type: date`.'
+    # curly brackets in the placeholder are escaped with backslashes for MessageFormat 2
+    hidden_field_locale_without_i18n: Die Option `default` eines Felds vom Typ Hidden verwendet den Platzhalter `\{\{locale\}\}`, für die Sammlung ist i18n aber nicht aktiviert, daher gibt es keine Sprache, mit der er gefüllt werden kann.
     # {$timeZone} is the invalid IANA timezone identifier from the configuration
     invalid_timezone: 'Ungültige Zeitzone: {$timeZone}. Es muss eine gültige IANA-Zeitzonen-Kennung wie `America/New_York` oder `Asia/Tokyo` sein.'
     # {$prop} is the deprecated option name and {$newProp} is the supported replacement option
@@ -2009,6 +2024,8 @@ config:
     slug_i18n_ineffective: Die Option `i18n` von `slug` hat keine Wirkung, weil die Sammlung nicht die i18n-Struktur `multiple_files`, `multiple_folders` oder `multiple_root_folders` verwendet, bei der jede Sprache eine eigene Datei hat.
     # Don’t localize `i18n`
     i18n_not_configured: Die Option `i18n` ist aktiviert, i18n ist aber weder auf der obersten Ebene der Konfiguration noch in der Sammlung konfiguriert, deshalb hat die Option keine Wirkung.
+    # Don’t localize `public_folder` and `media_folder`
+    empty_public_folder: Die Option `public_folder` ist eine leere Zeichenkette, daher wird für die in Einträgen gespeicherten Medienpfade stattdessen der Pfad aus `media_folder` verwendet. Entfernen Sie die Option oder setzen Sie sie auf den gewünschten Pfad, etwa `/images`.
     # {$option} is an option path from the configuration, such as `filter.Regulation`
     schema_unknown_option: Die Option `{$option}` ist im Konfigurationsschema von Sveltia CMS nicht definiert. Sie wird ignoriert. Prüfen Sie auf einen Tippfehler oder einen Syntaxfehler.
 
@@ -2142,6 +2159,8 @@ workflow:
     .match $count
       one {{ Einer davon wurde noch nicht veröffentlicht, daher werden die unveröffentlichten Änderungen verworfen. Eine bereits veröffentlichte Version bleibt veröffentlicht. }}
       *   {{ {$count} davon wurden noch nicht veröffentlicht, daher werden die unveröffentlichten Änderungen verworfen. Bereits veröffentlichte Versionen bleiben veröffentlicht. }}
+  # Confirmation dialog shown before merging the pull request. Keep the wording free of Git jargon.
+  confirm_publishing_entry_after_build: Soll dieser Eintrag wirklich veröffentlicht werden? Die Änderungen werden wirksam, sobald die Website neu erstellt wurde.
   # Workflow page: toast notifications shown while an entry is being published from a card, and
   # once publishing has completed
   publishing_entry: Eintrag wird veröffentlicht…
@@ -2153,6 +2172,17 @@ workflow:
   entry_deleted: Eintrag gelöscht.
   # Error notification when publishing fails
   publishing_entry_failed: Der Eintrag konnte nicht veröffentlicht werden. Bitte erneut versuchen.
+  # Error notification when an entry can’t be published from the CMS, because its request also
+  # changes files that aren’t part of the entry and that the CMS doesn’t show, goes somewhere other
+  # than the site’s branch, or is too large to check. Keep the wording free of Git jargon
+  publish_refused_other_changes: Dieser Eintrag kann hier nicht veröffentlicht werden, weil er weitere Änderungen mitbringt, die das CMS nicht anzeigen kann. Bitten Sie die Entwicklung, ihn zu prüfen.
+  # Error notification when an entry can’t be published because its branch has been committed to
+  # since the entry was opened, so what would be published isn’t what was reviewed
+  publish_refused_entry_changed: Der Eintrag wurde geändert, seit Sie ihn geöffnet haben. Laden Sie die Seite neu, um vor dem Veröffentlichen die aktuelle Fassung zu prüfen.
+  # Error shown in the save error dialog when an entry can’t be saved for review, because a request
+  # the CMS doesn’t show is already open from the branch the entry would be saved to. `{$number}` is
+  # the request number, e.g. `#12` on GitHub or `!12` on GitLab. Keep the wording free of Git jargon
+  branch_in_use: Für diesen Eintrag ist außerhalb des CMS bereits eine andere Anfrage ({$number}) offen. Bitten Sie die Entwicklung, sie zuerst zu schließen.
   # Workflow page: empty column message
   no_entries: Keine Einträge.
   # Workflow page: aria-label for a draggable entry card
@@ -2173,6 +2203,10 @@ open_authoring:
   fork_declined: Um Änderungen vorzuschlagen, wird ein Fork des Repositorys in Ihrem Konto benötigt.
   # Error shown when the fork couldn’t be created. {$repo} is the repository identifier
   fork_failed: Es konnte kein Fork des Repositorys „{$repo}“ in Ihrem Konto angelegt werden.
+  # Error shown when the user’s fork doesn’t have the branch the CMS is configured with, so there’s
+  # nothing to start their changes from. {$fork} and {$repo} are repository identifiers in
+  # owner/repo format, {$branch} is the branch name
+  fork_branch_missing: Ihr Fork „{$fork}“ hat keinen Branch „{$branch}“. Aktualisieren Sie den Fork aus dem Repository „{$repo}“ und melden Sie sich dann erneut an.
   # Error shown when the CMS couldn’t work out whether the user can write to the repository, e.g.
   # because the API rate limit is exhausted. {$repo} is the repository identifier
   permission_check_failed: Ihr Zugriff auf das Repository „{$repo}“ konnte nicht geprüft werden. Bitte gleich erneut versuchen.
@@ -2187,6 +2221,10 @@ open_authoring:
   private_repo_scope_required: Ihre Anmeldung umfasst keinen Zugriff auf private Repositorys, daher kann das Repository „{$repo}“ nicht gelesen werden. Bitten Sie die Projektbetreuung, die Authentifizierungseinstellungen des CMS zu prüfen.
   # Error shown when a contributor tries to publish an entry, which only a maintainer can do
   publish_unsupported: Nur die Projektbetreuung kann Änderungen an dieser Website veröffentlichen. Setzen Sie Ihren Eintrag stattdessen auf „In Prüfung“, dann sieht ihn sich jemand an.
+  # Error shown when a contributor changes the status of an entry whose request a maintainer has
+  # published since the page was loaded, leaving nothing to review. The entry then leaves the
+  # Editorial Workflow board and the editor closes. Keep the wording free of Git jargon
+  entry_already_published: Die Projektbetreuung hat diesen Eintrag bereits veröffentlicht, es gibt also nichts mehr zu prüfen.
   # Error shown when a change would go straight to the site instead of being reviewed, which a
   # contributor can’t do. It covers media library uploads and deletions, and entry reordering
   direct_commit_unsupported: Diese Änderung kann nicht direkt vorgenommen werden. Nur Bearbeitungen von Einträgen können zur Prüfung vorgeschlagen werden.
