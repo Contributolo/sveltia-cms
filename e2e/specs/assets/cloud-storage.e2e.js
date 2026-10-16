@@ -4,6 +4,7 @@ import { MockS3 } from '../../fixtures/cloud/s3.js';
 import { MockUploadcare } from '../../fixtures/cloud/uploadcare.js';
 import { createPNG } from '../../fixtures/files.js';
 import { expect, test } from '../../fixtures/test.js';
+import { getEditor } from '../../fixtures/ui.js';
 
 /**
  * @import { Locator, Page } from '@playwright/test';
@@ -49,7 +50,7 @@ const createConfig = (mediaLibraries, extraFields = []) => ({
 const openSelectImageDialog = async (page, service) => {
   await page.getByRole('button', { name: 'Create New Entry' }).first().click();
 
-  const editor = page.getByRole('group', { name: 'Content Editor' });
+  const editor = getEditor(page);
   const cover = editor.getByRole('group', { name: '“\u2068Cover\u2069” Field' });
   const dialog = page.getByRole('dialog', { name: 'Select Image' });
 
@@ -81,6 +82,11 @@ const selectOption = async (option) => {
   await expect(option).toHaveAttribute('aria-selected', 'true');
 };
 
+/**
+ * URL the Amazon S3 bucket is served at.
+ */
+const S3_URL = 'https://e2e-bucket.s3.eu-west-3.amazonaws.com';
+
 test.describe('Amazon S3', () => {
   test.use({
     config: createConfig({
@@ -105,6 +111,10 @@ test.describe('Amazon S3', () => {
     s3.put({ 'uploads/sunset.png': SUNSET, 'uploads/trips/': '', 'uploads/trips/map.png': KITE });
     await s3.install(page);
     await cms.open();
+    // An entry links to a file in a folder of the bucket
+    await cms.seed({
+      'content/posts/hike.md': `---\ntitle: Hike\ncover: ${S3_URL}/uploads/trips/map.png\n---\n`,
+    });
     await cms.signIn();
   });
 
@@ -224,6 +234,49 @@ test.describe('Amazon S3', () => {
       await expect(page.getByRole('row', { name: 'dusk.png' })).toBeVisible();
     });
 
+    test('warns that renaming a file breaks the links of the entries using it', async ({
+      cms,
+      page,
+    }) => {
+      await page.getByRole('row', { name: 'trips' }).dblclick();
+      await page.getByRole('row', { name: 'map.png' }).click();
+      await page.getByRole('button', { name: 'Show Edit Options' }).click();
+      await page.getByRole('menuitem', { name: /^Rename/ }).click();
+
+      const dialog = page.getByRole('dialog', { name: /Rename/ });
+
+      await expect(dialog.getByRole('alert')).toHaveText(
+        'An entry links to this file. The entry won’t be updated, so the link will break once ' +
+          'the file is renamed.',
+      );
+
+      // The file can still be renamed, leaving the entry as is
+      await dialog.getByRole('textbox').fill('route.png');
+      await dialog.getByRole('button', { name: 'Rename' }).click();
+      await expect.poll(() => s3.objects.has('uploads/trips/route.png')).toBe(true);
+      expect((await cms.readRepo())['content/posts/hike.md']).toContain('trips/map.png');
+    });
+
+    test('warns that renaming a folder breaks the links of the entries using its files', async ({
+      page,
+    }) => {
+      await page
+        .getByRole('row', { name: 'trips' })
+        .getByRole('button', { name: 'Show Folder Options' })
+        .click();
+      await page.getByRole('menuitem', { name: 'Rename Folder' }).click();
+
+      const dialog = page.getByRole('dialog', { name: /Rename/ });
+
+      await expect(dialog.getByRole('alert')).toHaveText(
+        'An entry links to a file in this folder. The entry won’t be updated, so the link will ' +
+          'break once the folder is renamed.',
+      );
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(s3.objects.has('uploads/trips/map.png')).toBe(true);
+    });
+
     test('creates a folder', async ({ page }) => {
       await page.getByRole('button', { name: 'New Folder' }).click();
 
@@ -238,6 +291,135 @@ test.describe('Amazon S3', () => {
         .toBe('application/x-directory');
       await expect(page.getByRole('row', { name: 'beach' })).toBeVisible();
     });
+  });
+});
+
+test.describe('Amazon S3 bucket holding more files than listed at once', () => {
+  test.use({
+    config: createConfig({
+      aws_s3: {
+        access_key_id: 'AKIAE2ETESTKEY000000',
+        bucket: 'e2e-bucket',
+        region: 'eu-west-3',
+        prefix: 'uploads/',
+      },
+    }),
+  });
+
+  /** @type {MockS3} */
+  let s3;
+
+  test.beforeEach(async ({ cms, page }) => {
+    s3 = new MockS3({ bucket: 'e2e-bucket', region: 'eu-west-3', baseURL: S3_URL });
+    // A page holds a single object, so the 10 pages listed at once leave the end of the folder out
+    s3.pageSize = 1;
+    s3.put({
+      'uploads/sunset.png': SUNSET,
+      'uploads/trips/': '',
+      ...Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [
+          `uploads/trips/day${String(index + 1).padStart(2, '0')}.png`,
+          KITE,
+        ]),
+      ),
+      'uploads/trips/summer/map.png': KITE,
+    });
+    await s3.install(page);
+    await cms.open();
+    await cms.signIn();
+    await page.getByRole('radio', { name: 'Assets' }).click();
+    await page.getByRole('option', { name: /^Amazon S3/ }).click();
+    await enterCredential(page.getByRole('main'), 'Amazon S3', s3.secretAccessKey);
+  });
+
+  test('says some files are left out, and deletes a folder in full', async ({ page }) => {
+    await expect(page.getByRole('main').getByRole('alert')).toHaveText(
+      /There are too many files on the service to list them all/,
+    );
+
+    await page
+      .getByRole('row', { name: 'trips' })
+      .getByRole('button', { name: 'Show Folder Options' })
+      .click();
+    await page.getByRole('menuitem', { name: 'Delete Folder' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+
+    // The files left out of the list are deleted too, along with the placeholder
+    await expect
+      .poll(() => [...s3.objects.keys()], { timeout: 15_000 })
+      .toEqual(['uploads/sunset.png']);
+  });
+
+  test('renames a folder in full', async ({ page }) => {
+    await page
+      .getByRole('row', { name: 'trips' })
+      .getByRole('button', { name: 'Show Folder Options' })
+      .click();
+    await page.getByRole('menuitem', { name: 'Rename Folder' }).click();
+
+    const dialog = page.getByRole('dialog', { name: /Rename/ });
+
+    await dialog.getByRole('textbox').fill('journeys');
+    await dialog.getByRole('button', { name: 'Rename' }).click();
+
+    // The files left out of the list are moved too
+    await expect
+      .poll(() => [...s3.objects.keys()].filter((key) => key.startsWith('uploads/trips/')), {
+        timeout: 15_000,
+      })
+      .toEqual([]);
+    expect(s3.objects.has('uploads/journeys/summer/map.png')).toBe(true);
+    expect(s3.objects.has('uploads/journeys/day10.png')).toBe(true);
+  });
+});
+
+test.describe('Self-hosted S3-compatible storage', () => {
+  test.use({
+    config: createConfig({
+      aws_s3: {
+        access_key_id: 'GKe2e0000000000000000000000',
+        bucket: 'e2e-bucket',
+        region: 'garage',
+        endpoint: 'https://s3.example.com',
+        public_url: 'https://web.example.com',
+      },
+    }),
+  });
+
+  test('accepts a secret key longer than an Amazon S3 one, and picks an image', async ({
+    cms,
+    page,
+  }) => {
+    // A Garage server is addressed with the bucket in the path, and its secret keys are 64 hex
+    // digits rather than the 40 characters of Amazon S3
+    const garage = new MockS3({
+      bucket: 'e2e-bucket',
+      region: 'garage',
+      baseURL: 'https://s3.example.com/e2e-bucket',
+      publicURL: 'https://web.example.com',
+    });
+
+    garage.accessKeyId = 'GKe2e0000000000000000000000';
+    garage.secretAccessKey = '0123456789abcdef'.repeat(4);
+    garage.put({ 'sunset.png': SUNSET });
+    await garage.install(page);
+    await cms.open();
+    await cms.signIn();
+
+    const { cover, dialog } = await openSelectImageDialog(page, 'Amazon S3');
+
+    await enterCredential(dialog, 'Amazon S3', garage.secretAccessKey);
+    await selectOption(
+      dialog
+        .getByRole('listbox', { name: 'Available Images' })
+        .getByRole('option', { name: 'sunset.png' }),
+    );
+    await dialog.getByRole('button', { name: 'Insert' }).click();
+
+    await expect(cover.getByRole('textbox', { name: 'Cover' })).toHaveText(
+      'https://web.example.com/sunset.png',
+    );
+    expect(garage.refused).toEqual([]);
   });
 });
 

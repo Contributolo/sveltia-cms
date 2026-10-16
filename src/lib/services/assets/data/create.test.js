@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createMockAssetFolder } from '$lib/test/factories';
+
 import { createFileList, saveAssets, updateStores } from './create.js';
 
 // Mock dependencies
@@ -137,13 +139,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -165,13 +165,7 @@ describe('assets/data/create', () => {
 
       const result = createFileList({
         files: [mockFile],
-        folder: {
-          internalPath: 'images',
-          collectionName: undefined,
-          publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        folder: createMockAssetFolder({ internalPath: 'images', publicPath: '/images' }),
         subfolderPath: '2024/summer',
       });
 
@@ -185,13 +179,7 @@ describe('assets/data/create', () => {
 
       const result = createFileList({
         files: [mockFile],
-        folder: {
-          internalPath: '',
-          collectionName: undefined,
-          publicPath: '/',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        folder: createMockAssetFolder({ internalPath: '', publicPath: '/' }),
       });
 
       expect(getAssetsByDirName).toHaveBeenCalledWith('');
@@ -204,13 +192,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -222,13 +208,11 @@ describe('assets/data/create', () => {
           sha: 'abc123',
           size: 1024,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
         {
           name: 'another.jpg',
@@ -236,13 +220,11 @@ describe('assets/data/create', () => {
           sha: 'def456',
           size: 2048,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
       ]);
 
@@ -258,13 +240,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: [
           {
             name: 'original.jpg',
@@ -272,13 +252,11 @@ describe('assets/data/create', () => {
             sha: 'abc123',
             size: 1024,
             kind: /** @type {import('$lib/types/private').AssetKind} */ ('image'),
-            folder: {
-              internalPath: '/images',
+            folder: createMockAssetFolder({
               collectionName: 'assets',
+              internalPath: '/images',
               publicPath: '/images',
-              entryRelative: false,
-              hasTemplateTags: false,
-            },
+            }),
           },
         ],
       };
@@ -300,13 +278,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: [
           {
             name: 'original.jpg',
@@ -314,13 +290,11 @@ describe('assets/data/create', () => {
             sha: 'abc123',
             size: 1024,
             kind: /** @type {import('$lib/types/private').AssetKind} */ ('image'),
-            folder: {
-              internalPath: '/images',
+            folder: createMockAssetFolder({
               collectionName: 'assets',
+              internalPath: '/images',
               publicPath: '/images',
-              entryRelative: false,
-              hasTemplateTags: false,
-            },
+            }),
           },
         ],
       };
@@ -347,13 +321,11 @@ describe('assets/data/create', () => {
           sha: 'abc123',
           size: 1024,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
       ]);
 
@@ -361,13 +333,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         replaceDuplicates: true,
       };
 
@@ -383,6 +353,52 @@ describe('assets/data/create', () => {
       ]);
     });
 
+    it('should only overwrite a same-named asset with the first of the same-named files', async () => {
+      const { getAssetsByDirName } = await import('$lib/services/assets');
+      const { formatFileName } = await import('$lib/services/assets/file-name');
+
+      /** @type {any} */
+      const folder = createMockAssetFolder({
+        collectionName: 'assets',
+        internalPath: '/images',
+        publicPath: '/images',
+      });
+
+      vi.mocked(getAssetsByDirName).mockReturnValue([
+        {
+          name: 'ocean.png',
+          path: '/images/ocean.png',
+          sha: 'abc',
+          size: 1,
+          kind: 'image',
+          folder,
+        },
+      ]);
+      // Same as the actual implementation: add a suffix to a name that’s taken
+      vi.mocked(formatFileName).mockImplementation((name, { assetNamesInSameFolder = [] } = {}) =>
+        assetNamesInSameFolder.some((n) => n.toLowerCase() === name.toLowerCase())
+          ? name.replace('.', '-1.')
+          : name,
+      );
+
+      // Two different files with the same name, e.g. from two subfolders of a dropped folder
+      const firstFile = new File(['first'], 'ocean.png', { type: 'image/png' });
+      const secondFile = new File(['second'], 'Ocean.png', { type: 'image/png' });
+
+      const result = createFileList({
+        files: [firstFile, secondFile],
+        folder,
+        replaceDuplicates: true,
+      });
+
+      expect(result).toEqual([
+        { action: 'update', name: 'ocean.png', path: '/images/ocean.png', file: firstFile },
+        { action: 'create', name: 'Ocean-1.png', path: '/images/Ocean-1.png', file: secondFile },
+      ]);
+
+      vi.mocked(formatFileName).mockImplementation((fileName) => fileName);
+    });
+
     it('should keep a same-named asset when replaceDuplicates is disabled', async () => {
       const { getAssetsByDirName } = await import('$lib/services/assets');
       const { formatFileName } = await import('$lib/services/assets/file-name');
@@ -394,13 +410,11 @@ describe('assets/data/create', () => {
           sha: 'abc123',
           size: 1024,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
       ]);
 
@@ -408,13 +422,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
       };
 
       const result = createFileList(uploadingAssets);
@@ -432,13 +444,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: [
           {
             name: 'photo.jpg',
@@ -446,13 +456,11 @@ describe('assets/data/create', () => {
             sha: 'abc123',
             size: 1024,
             kind: /** @type {import('$lib/types/private').AssetKind} */ ('image'),
-            folder: {
-              internalPath: '/images',
+            folder: createMockAssetFolder({
               collectionName: 'assets',
+              internalPath: '/images',
               publicPath: '/images',
-              entryRelative: false,
-              hasTemplateTags: false,
-            },
+            }),
           },
         ],
       };
@@ -479,13 +487,11 @@ describe('assets/data/create', () => {
           sha: 'abc123',
           size: 1024,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
       ]);
 
@@ -494,13 +500,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [file1, file2],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: [
           {
             name: 'existing.jpg',
@@ -508,13 +512,11 @@ describe('assets/data/create', () => {
             sha: 'abc123',
             size: 1024,
             kind: /** @type {import('$lib/types/private').AssetKind} */ ('image'),
-            folder: {
-              internalPath: '/images',
+            folder: createMockAssetFolder({
               collectionName: 'assets',
+              internalPath: '/images',
               publicPath: '/images',
-              entryRelative: false,
-              hasTemplateTags: false,
-            },
+            }),
           },
         ],
       };
@@ -542,13 +544,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile1, mockFile2],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -570,13 +570,11 @@ describe('assets/data/create', () => {
           sha: 'abc123',
           size: 1024,
           kind: 'image',
-          folder: {
-            internalPath: '/images',
+          folder: createMockAssetFolder({
             collectionName: 'assets',
+            internalPath: '/images',
             publicPath: '/images',
-            entryRelative: false,
-            hasTemplateTags: false,
-          },
+          }),
         },
       ]);
 
@@ -584,13 +582,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -608,13 +604,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: undefined,
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: undefined,
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -811,13 +805,11 @@ describe('assets/data/create', () => {
 
       const uploadingAssets = {
         files: [mockFile],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 
@@ -847,13 +839,11 @@ describe('assets/data/create', () => {
             path: '/images/test.jpg',
             size: mockFile.size,
             kind: 'image',
-            folder: {
-              internalPath: '/images',
+            folder: createMockAssetFolder({
               collectionName: 'assets',
+              internalPath: '/images',
               publicPath: '/images',
-              entryRelative: false,
-              hasTemplateTags: false,
-            },
+            }),
           },
         ],
         options: { commitType: 'create' },
@@ -863,13 +853,11 @@ describe('assets/data/create', () => {
     it('should handle empty file list', async () => {
       const uploadingAssets = {
         files: [],
-        folder: {
-          internalPath: '/images',
+        folder: createMockAssetFolder({
           collectionName: 'assets',
+          internalPath: '/images',
           publicPath: '/images',
-          entryRelative: false,
-          hasTemplateTags: false,
-        },
+        }),
         originalAssets: undefined,
       };
 

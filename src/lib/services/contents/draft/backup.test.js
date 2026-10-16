@@ -35,6 +35,9 @@ vi.mock('$lib/services/contents/draft', async () => ({
 vi.mock('$lib/services/contents/draft/create/proxy.svelte', () => ({
   createProxy: vi.fn(({ target }) => target),
 }));
+vi.mock('$lib/services/contents/draft/create/versioned-map.svelte', () => ({
+  createValueMap: vi.fn((target) => target),
+}));
 vi.mock('$lib/services/contents/collection/entries/reorder/config', () => ({
   getOrderFieldKey: vi.fn(() => undefined),
 }));
@@ -69,6 +72,7 @@ describe('draft/backup', () => {
   let showBackupToastIfNeeded;
   let resetBackupToastState;
   let scheduleBackup;
+  let cancelBackup;
 
   // Mock IndexedDB constructor to return our mock (must happen before importing backup module)
   // Vitest 4 requires proper constructor with 'class' keyword
@@ -109,6 +113,7 @@ describe('draft/backup', () => {
       showBackupToastIfNeeded,
       resetBackupToastState,
       scheduleBackup,
+      cancelBackup,
     } = backupModule);
 
     // Mock stores
@@ -1588,6 +1593,35 @@ describe('draft/backup', () => {
     });
   });
 
+  describe('cancelBackup', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.mocked(isDraftModified).mockReturnValue(true);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should drop a pending backup', async () => {
+      scheduleBackup({
+        collectionName: 'posts',
+        originalEntry: { slug: 'test-post' },
+        currentValues: { en: { title: 'Hello' } },
+        files: {},
+        interacted: true,
+      });
+      cancelBackup();
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(mockBackupDB.put).not.toHaveBeenCalled();
+    });
+
+    it('should do nothing when no backup is pending', () => {
+      expect(() => cancelBackup()).not.toThrow();
+    });
+  });
+
   describe('backend effect', () => {
     it('should not use a database when the backend has no repository', async () => {
       // Re-import to get a fresh backend effect
@@ -1626,6 +1660,70 @@ describe('draft/backup', () => {
       await _deleteBackup('posts', 'my-post');
 
       expect(mockBackupDB.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('backend switch', () => {
+    it('should open the database of the new backend when the backend changes', async () => {
+      vi.resetModules();
+
+      // Create the box with the fresh module graph, so the effect of the fresh module tracks it
+      vi.doMock('$lib/services/backends', async () => ({
+        backend: (await import('$lib/services/utils/state.svelte')).createRawState({
+          repository: { databaseName: 'github:a/b' },
+        }),
+      }));
+
+      const { backend: _backend } = await import('$lib/services/backends');
+      const { IndexedDB: _IndexedDB } = await import('@sveltia/utils/storage');
+
+      vi.mocked(_IndexedDB).mockImplementation(MockIndexedDB);
+
+      const { deleteBackup: _deleteBackup } = await import('./backup');
+
+      await new Promise((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(_IndexedDB).toHaveBeenCalledTimes(1);
+      expect(_IndexedDB).toHaveBeenLastCalledWith('github:a/b', 'draft-backups', {
+        keyPath: ['collectionName', 'slug'],
+      });
+
+      _backend.current = { repository: { databaseName: 'local:a/b' } };
+
+      await new Promise((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(_IndexedDB).toHaveBeenCalledTimes(2);
+      expect(_IndexedDB).toHaveBeenLastCalledWith('local:a/b', 'draft-backups', {
+        keyPath: ['collectionName', 'slug'],
+      });
+
+      await _deleteBackup('posts', 'my-post');
+
+      expect(mockBackupDB.delete).toHaveBeenCalledWith(['posts', 'my-post']);
+
+      // Another backend object with the same database reuses the open handle
+      _backend.current = { repository: { databaseName: 'local:a/b' } };
+
+      await new Promise((resolve) => {
+        setTimeout(resolve);
+      });
+
+      expect(_IndexedDB).toHaveBeenCalledTimes(2);
+
+      // Signing out closes it
+      _backend.current = undefined;
+
+      await new Promise((resolve) => {
+        setTimeout(resolve);
+      });
+
+      await _deleteBackup('posts', 'my-post');
+
+      expect(mockBackupDB.delete).toHaveBeenCalledTimes(1);
     });
   });
 

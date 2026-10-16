@@ -12,8 +12,10 @@ import { getCollection } from '$lib/services/contents/collection';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
 import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
+import { getOwnedEntryFolderPath } from '$lib/services/contents/draft/save/assets';
 import { fillEntryPathTemplate } from '$lib/services/contents/entry';
 import { getField } from '$lib/services/contents/entry/fields';
+import { getEntryDisplayLocale } from '$lib/services/contents/entry/paths';
 import { MEDIA_FIELD_TYPES } from '$lib/services/contents/fields';
 import { getOrCreate, memoizeOnSource } from '$lib/services/utils/cache';
 import { getEntryAssetVersion } from '$lib/services/workflow/assets';
@@ -71,7 +73,7 @@ export const getEntryThumbnail = async (collection, entry) => {
   } = collection;
 
   const { locales } = entry;
-  const locale = defaultLocale in locales ? defaultLocale : Object.keys(locales)[0];
+  const locale = /** @type {string} */ (getEntryDisplayLocale(locales, defaultLocale));
   const { content, slug, path: entryFilePath } = locales[locale] ?? {};
 
   if (!content) {
@@ -120,7 +122,7 @@ export const getEntryThumbnail = async (collection, entry) => {
   // Cannot use `Promise.all` or `Promise.any` here because we need the first available URL
   // eslint-disable-next-line no-restricted-syntax
   for (const { value, keyPath } of candidates) {
-    const args = { value, entry, collectionName, typedKeyPath: keyPath };
+    const args = { value, entry, collectionName, typedKeyPath: keyPath, locale };
     const { asset } = (value && getMediaFieldSource(args)) || {};
 
     // Skip a file without a thumbnail, like a document, rather than show it as a broken image, and
@@ -300,8 +302,8 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
 
   const assets = /** @type {Asset[]} */ (
     unique(
-      Object.values(locales)
-        .flatMap(({ content }) =>
+      Object.entries(locales)
+        .flatMap(([locale, { content }]) =>
           Object.entries(content ?? {}).map(([keyPath, value]) => {
             if (typeof value === 'string' && (relative ? isRelativePath(value) : true)) {
               const widget =
@@ -311,7 +313,7 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
                 return undefined;
               }
 
-              const asset = getAssetByPath({ value, entry, collectionName, fileName });
+              const asset = getAssetByPath({ value, entry, collectionName, fileName, locale });
 
               if (
                 asset &&
@@ -336,11 +338,13 @@ export const getAssociatedAssets = ({ entry, collectionName, fileName, relative 
   // Add orphaned/unused entry-relative assets
   if (relative && getAssetFolder({ collectionName, fileName })?.entryRelative) {
     // With the `multiple_folders` and `multiple_root_folders` i18n structures, each locale has a
-    // folder of its own, so the entry’s assets are spread across all of them
+    // folder of its own, so the entry’s assets are spread across all of them. Only a folder the
+    // entry occupies by itself counts: when entries are files sharing a folder, the other files in
+    // it can belong to any of them, so none of those is this entry’s to move or delete
     const entryFolderPaths = new Set(
       /** @type {string[]} */ (
         Object.values(entry.locales)
-          .map(({ path }) => getPathInfo(path).dirname)
+          .map(({ path }) => getOwnedEntryFolderPath(collection, path))
           .filter((dirPath) => dirPath !== undefined)
       ),
     );

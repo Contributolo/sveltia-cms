@@ -3,13 +3,15 @@ import { fetchAPI } from '$lib/services/backends/git/shared/api';
 import {
   createLocalizedError,
   NOT_COLLABORATOR_ERROR_MESSAGE,
+  toRepositoryAccessError,
 } from '$lib/services/backends/git/shared/errors';
 import {
   applyDefaultBranch,
   REPOSITORY_INFO_PLACEHOLDER,
 } from '$lib/services/backends/git/shared/repository';
-import { encodePath } from '$lib/services/backends/git/shared/url';
 import { user } from '$lib/services/user/account.svelte';
+import { getOrCreateAsync } from '$lib/services/utils/cache';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import { RepositoryBaseURLs, RepositoryInfo } from '$lib/types/private';
@@ -23,12 +25,12 @@ export const repository = { ...REPOSITORY_INFO_PLACEHOLDER };
 
 /**
  * Cache for repository information to avoid multiple API calls. The information includes the
- * signed-in user’s permissions, so it’s kept along with the ID of the user it was fetched for. The
- * request is cached rather than its result, so callers asking at the same time, like the access
- * check and the default branch lookup, share one request.
- * @type {{ userId: number | undefined, promise: Promise<Record<string, any>> } | null}
+ * signed-in user’s permissions, so it’s keyed by the ID of the user it was fetched for, and only
+ * the current user’s is kept. The request is cached rather than its result, so callers asking at
+ * the same time, like the access check and the default branch lookup, share one request.
+ * @type {Map<number | undefined, Promise<Record<string, any>>>}
  */
-let repositoryInfoCache = null;
+const repositoryInfoCache = new Map();
 /**
  * Last response of the branch endpoint, along with the branch and user it was fetched for. The
  * last commit and the user’s branch permissions come from the same endpoint, and the permissions
@@ -41,8 +43,8 @@ let lastBranchResponse;
 /**
  * Reset the repository info cache. Used for testing.
  */
-export const resetRepositoryInfoCache = () => {
-  repositoryInfoCache = null;
+export const _resetRepositoryInfoCache = () => {
+  repositoryInfoCache.clear();
   lastBranchResponse = undefined;
 };
 
@@ -71,24 +73,16 @@ export const getRepositoryInfo = () => {
 
   // Another user may have signed in on the same page, e.g. after a read-only account was refused,
   // and their permissions are not the previous user’s
-  if (repositoryInfoCache && repositoryInfoCache.userId === userId) {
-    return repositoryInfoCache.promise;
+  if (!repositoryInfoCache.has(userId)) {
+    repositoryInfoCache.clear();
   }
 
-  const promise = /** @type {Promise<Record<string, any>>} */ (
-    fetchAPI(`/repos/${owner}/${repo}`)
-  ).catch((ex) => {
-    // A failure isn’t remembered, so a later call can try again
-    if (repositoryInfoCache?.promise === promise) {
-      repositoryInfoCache = null;
-    }
-
-    throw ex;
-  });
-
-  repositoryInfoCache = { userId, promise };
-
-  return promise;
+  // A failure isn’t remembered, so a later call can try again
+  return getOrCreateAsync(
+    repositoryInfoCache,
+    userId,
+    () => /** @type {Promise<Record<string, any>>} */ (fetchAPI(`/repos/${owner}/${repo}`)),
+  );
 };
 
 /**
@@ -103,7 +97,7 @@ export const fetchBranch = async () => {
   const userId = user.account?.id;
 
   const result = /** @type {Record<string, any>} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePath(branch)}`)
+    await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePathSegments(branch)}`)
   );
 
   lastBranchResponse = { branch, userId, result };
@@ -113,26 +107,23 @@ export const fetchBranch = async () => {
 
 /**
  * Check if the user has write access to the current repository, like Netlify/Decap CMS requires.
- * @throws {Error} If the user can’t push to the repository.
+ * @throws {Error} If the user can’t push to the repository, the repository doesn’t exist, or the
+ * access couldn’t be checked.
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGet
  */
 export const checkRepositoryAccess = async () => {
   const { repo } = repository;
+  /** @type {Record<string, any>} */
+  let result;
 
   try {
-    const { permissions } = await getRepositoryInfo();
+    result = await getRepositoryInfo();
+  } catch (/** @type {any} */ ex) {
+    throw toRepositoryAccessError(repository, ex?.cause?.status, { reportNotFound: true });
+  }
 
-    if (!permissions?.push) {
-      throw createLocalizedError(NOT_COLLABORATOR_ERROR_MESSAGE, 'repository_no_access', { repo });
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === NOT_COLLABORATOR_ERROR_MESSAGE) {
-      throw error;
-    }
-
-    throw createLocalizedError('Failed to check repository access', 'repository_not_found', {
-      repo,
-    });
+  if (!result.permissions?.push) {
+    throw createLocalizedError(NOT_COLLABORATOR_ERROR_MESSAGE, 'repository_no_access', { repo });
   }
 };
 
@@ -156,7 +147,7 @@ export const checkBranchAccess = async () => {
     const result = /** @type {{ user_can_push?: boolean, user_can_merge?: boolean }} */ (
       cached?.branch === _branch && cached.userId === user.account?.id
         ? cached.result
-        : await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePath(_branch)}`)
+        : await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePathSegments(_branch)}`)
     );
 
     return { canPush: result.user_can_push, canMerge: result.user_can_merge };

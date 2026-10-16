@@ -1,6 +1,6 @@
 <script>
   import { _, locale as appLocale } from '@sveltia/i18n';
-  import { Infobar } from '@sveltia/ui';
+  import { Alert, Infobar, Toast } from '@sveltia/ui';
 
   import DeleteAssetsButton from '$lib/components/assets/list/delete-assets-button.svelte';
   import DownloadAssetsButton from '$lib/components/assets/list/download-assets-button.svelte';
@@ -10,7 +10,7 @@
   import UploadAssetsButton from '$lib/components/assets/list/internal/upload-assets-button.svelte';
   import PreviewAssetButton from '$lib/components/assets/list/preview-asset-button.svelte';
   import PrimaryToolbar from '$lib/components/assets/list/primary-toolbar.svelte';
-  import { encodeRoutePath, goBack, goto } from '$lib/services/app/navigation';
+  import { goBack, goto } from '$lib/services/app/navigation';
   import { planAssetDeletion } from '$lib/services/assets/data/cascade';
   import { deleteAssets } from '$lib/services/assets/data/delete';
   import {
@@ -22,13 +22,18 @@
   } from '$lib/services/assets/folders';
   import { getAssetBlob } from '$lib/services/assets/info';
   import { canPreviewAsset } from '$lib/services/assets/kinds';
+  import { getAssetFolderHistoryState } from '$lib/services/assets/navigation';
   import { focusedAsset, selectedOrFocusedAssets } from '$lib/services/assets/state';
   import { browsingCmsFolder, selectedSubfolderPath } from '$lib/services/assets/subfolders';
   import { getFolderLabelByCollection, listedAssets } from '$lib/services/assets/view';
   import { lockedBranch } from '$lib/services/backends/branch-access';
+  import { runCommit } from '$lib/services/backends/commit-prompt';
   import { getReadonlyMessage } from '$lib/services/config/readonly';
   import { env } from '$lib/services/user/env.svelte';
   import { createPath } from '$lib/services/utils/file';
+  import { encodePathSegments } from '$lib/services/utils/url';
+
+  let deletingFailed = $state(false);
 
   const folder = $derived(selectedAssetFolder.current);
   // `appLocale.current` is a key, because `getFolderLabelByCollection` can return a localized label
@@ -63,7 +68,7 @@
    * as the back button on small screens does.
    */
   const browseAncestor = (depth, back) => {
-    const path = encodeRoutePath(
+    const path = encodePathSegments(
       `/assets/${createPath([folder?.internalPath, ...subfolderNames.slice(0, depth)])}`,
     );
 
@@ -89,8 +94,9 @@
 <PrimaryToolbar rootLabel={folderLabel} {subfolderNames} onBrowse={browseAncestor}>
   {#snippet actions()}
     <PreviewAssetButton
-      path={asset ? encodeRoutePath(`/assets/${asset.path}`) : undefined}
+      path={asset ? encodePathSegments(`/assets/${asset.path}`) : undefined}
       disabled={!asset || !canPreviewAsset(asset)}
+      state={getAssetFolderHistoryState()}
     />
     <CopyAssetsButton assets={asset ? [asset] : []} />
     <DownloadAssetsButton {assets} getName={(a) => a.name} getBlob={getAssetBlob} />
@@ -102,9 +108,13 @@
     <DeleteAssetsButton
       {assets}
       disabled={assetsLocked.current || hasReadonlyAsset(assets)}
-      deleteAssets={(_assets) => {
-        // Don’t wait for the commit; the list is updated optimistically
-        deleteAssets(_assets);
+      deleteAssets={async (_assets) => {
+        const { ok, cancelled } = await runCommit(() => deleteAssets(_assets));
+
+        // A cancellation at the commit message prompt isn’t a failure
+        if (!ok && !cancelled) {
+          deletingFailed = true;
+        }
       }}
       planDeletion={planAssetDeletion}
       buttonDescription={_('delete_selected_assets', { values: { count: assets.length } })}
@@ -126,3 +136,7 @@
     {/if}
   {/snippet}
 </PrimaryToolbar>
+
+<Toast bind:show={deletingFailed}>
+  <Alert status="error">{_('deleting_assets_failed')}</Alert>
+</Toast>

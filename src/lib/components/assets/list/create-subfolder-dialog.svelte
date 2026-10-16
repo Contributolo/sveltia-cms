@@ -10,6 +10,7 @@
 
   import SubfolderNameDialog from '$lib/components/assets/list/subfolder-name-dialog.svelte';
   import { createSubfolder } from '$lib/services/assets/data/subfolder';
+  import { runCommit } from '$lib/services/backends/commit-prompt';
   import { createPath } from '$lib/services/utils/file';
 
   /**
@@ -41,14 +42,13 @@
   const create = async (name) => {
     creating = true;
 
-    try {
-      await createSubfolder(createPath([dirPath, name]));
-    } catch (/** @type {any} */ ex) {
+    const { ok, cancelled } = await runCommit(() => createSubfolder(createPath([dirPath, name])));
+
+    creating = false;
+
+    // A cancellation at the commit message prompt isn’t a failure
+    if (!ok && !cancelled) {
       creationFailed = true;
-      // eslint-disable-next-line no-console
-      console.error(ex);
-    } finally {
-      creating = false;
     }
   };
 </script>

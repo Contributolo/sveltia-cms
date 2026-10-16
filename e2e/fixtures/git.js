@@ -113,6 +113,12 @@ export class MockGitRepository {
   unhandled = [];
 
   /**
+   * The signed-in user’s fork of the repository, once {@link createFork} has made it.
+   * @type {{ owner: string, repo: string } | undefined}
+   */
+  fork = undefined;
+
+  /**
    * Create a repository with an empty initial commit on the default branch.
    */
   constructor() {
@@ -125,6 +131,45 @@ export class MockGitRepository {
    */
   get head() {
     return this.getHead(this.branch);
+  }
+
+  /**
+   * Fork the repository onto the signed-in user’s account, with a copy of the default branch. Like
+   * a fork on the hosting service, it shares the commits and blobs of the repository, and only its
+   * branches are its own.
+   * @param {object} [options] Options.
+   * @param {string} [options.repo] Name of the fork, the repository’s own by default. A fork has
+   * another name when it was renamed, or when the user already had a repository of that name.
+   * @returns {{ owner: string, repo: string }} Fork.
+   */
+  createFork({ repo = this.repo } = {}) {
+    this.fork = { owner: this.user.login, repo };
+    this.refs.set(this.forkBranch(this.branch), this.head.oid);
+
+    return this.fork;
+  }
+
+  /**
+   * Get the key of a branch in the fork, for {@link refs}, {@link commit}, {@link readFile} and
+   * the head of a pull request.
+   * @param {string} branch Branch name.
+   * @returns {string} Key, e.g. `mona:main`.
+   */
+  forkBranch(branch) {
+    return `${this.user.login}:${branch}`;
+  }
+
+  /**
+   * Get the branches holding Editorial Workflow entries, in the repository and, with
+   * `includeFork`, in the fork.
+   * @param {object} [options] Options.
+   * @param {boolean} [options.includeFork] Whether to include the fork’s branches.
+   * @returns {string[]} Branch keys, as {@link refs} has them.
+   */
+  getWorkflowBranches({ includeFork = false } = {}) {
+    const pattern = includeFork ? /^(\w+:)?cms\// : /^cms\//;
+
+    return [...this.refs.keys()].filter((key) => pattern.test(key));
   }
 
   /**
@@ -227,6 +272,24 @@ export class MockGitRepository {
     this.refs.set(branch, commit.oid);
 
     return commit;
+  }
+
+  /**
+   * Get a tree SHA for a directory of a file tree. Like Git’s, it’s made from the files in the
+   * directory, so it stays the same across commits that leave the directory alone.
+   * @param {Map<string, string>} tree File tree.
+   * @param {string} dir Directory path, without a trailing slash.
+   * @returns {string | undefined} SHA, or `undefined` if the tree has no file in the directory.
+   */
+  static getDirSHA(tree, dir) {
+    const prefix = `${dir}/`;
+    const files = [...tree].filter(([path]) => path.startsWith(prefix)).sort();
+
+    return files.length
+      ? createHash('sha1')
+          .update(`tree ${JSON.stringify(files)}`)
+          .digest('hex')
+      : undefined;
   }
 
   /**

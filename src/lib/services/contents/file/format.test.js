@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { cmsConfig } from '$lib/services/config';
 import {
@@ -8,6 +8,7 @@ import {
   formatTOML,
   formatYAML,
 } from '$lib/services/contents/file/format';
+import { _resetUnsafeIntegerSources, toNumber } from '$lib/services/contents/file/integers';
 
 /**
  * @import { FileConfig } from '$lib/types/private';
@@ -109,6 +110,49 @@ describe('Test formatJSON()', () => {
 }
 `.trim(),
     );
+  });
+});
+
+describe('Test formatting integers a number can’t represent exactly', () => {
+  const content = { big: 12345678901234567000, list: [12345678901234567000, 1.5], small: 3 };
+
+  afterEach(() => {
+    _resetUnsafeIntegerSources();
+  });
+
+  test('writes them as they were read', () => {
+    _resetUnsafeIntegerSources();
+    // The number the integer is read as, which `formatJSON()` writes as the number
+    expect(formatJSON(content)).toContain('"big": 12345678901234567000,');
+
+    toNumber(12345678901234567890n);
+
+    expect(formatJSON(content)).toBe(
+      '{\n  "big": 12345678901234567890,\n  "list": [\n    12345678901234567890,\n    1.5\n  ],\n  "small": 3\n}',
+    );
+    expect(formatYAML(content)).toBe(
+      'big: 12345678901234567890\nlist:\n  - 12345678901234567890\n  - 1.5\nsmall: 3',
+    );
+    expect(formatTOML(content)).toBe(
+      'big = 12345678901234567890\nlist = [ 12345678901234567890, 1.5 ]\nsmall = 3',
+    );
+    // The content is left as it is
+    expect(content.big).toBe(12345678901234567000);
+  });
+
+  test('writes the number in a browser without `JSON.rawJSON()`', () => {
+    // TypeScript doesn’t know `JSON.rawJSON()` yet
+    const json = /** @type {any} */ (JSON);
+    const { rawJSON } = json;
+
+    toNumber(12345678901234567890n);
+    delete json.rawJSON;
+
+    try {
+      expect(formatJSON(content)).toContain('"big": 12345678901234567000,');
+    } finally {
+      json.rawJSON = rawJSON;
+    }
   });
 });
 
@@ -341,6 +385,73 @@ image:
   });
 });
 
+describe('Test formatYAML() with strings a YAML 1.1 parser misreads', () => {
+  test('quotes the strings read as booleans', () => {
+    const words = ['y', 'Y', 'yes', 'Yes', 'YES', 'n', 'N', 'no', 'No', 'NO', 'on', 'On', 'ON'];
+    const moreWords = ['off', 'Off', 'OFF', 'True', 'FALSE'];
+
+    expect(formatYAML({ list: [...words, ...moreWords] })).toBe(
+      `list:\n${[...words, ...moreWords].map((word) => `  - '${word}'`).join('\n')}`,
+    );
+    // A real boolean is left alone, and so is a word that is no boolean in YAML 1.1 either
+    expect(formatYAML({ a: true, b: false, c: 'yeah', d: 'Norway', e: 'oN' })).toBe(
+      'a: true\nb: false\nc: yeah\nd: Norway\ne: oN',
+    );
+  });
+
+  test('quotes the strings read as numbers', () => {
+    expect(
+      formatYAML({
+        sexagesimal: '1:20',
+        time: '12:30:45',
+        sexagesimalFloat: '-1:20.5',
+        underscore: '1_000',
+        floatUnderscore: '1_000.5',
+        comma: '1,000',
+        binary: '0b1010',
+        octal: '0_17',
+        hex: '0xFF_FF',
+      }),
+    ).toBe(
+      [
+        "sexagesimal: '1:20'",
+        "time: '12:30:45'",
+        "sexagesimalFloat: '-1:20.5'",
+        "underscore: '1_000'",
+        "floatUnderscore: '1_000.5'",
+        "comma: '1,000'",
+        "binary: '0b1010'",
+        "octal: '0_17'",
+        "hex: '0xFF_FF'",
+      ].join('\n'),
+    );
+    // A real number is left alone, and so are strings that are no numbers in YAML 1.1 either
+    expect(formatYAML({ a: 80, b: 1.5, c: '1:2:3a', d: 'v1.2', e: 'a_1', f: '1:60' })).toBe(
+      'a: 80\nb: 1.5\nc: 1:2:3a\nd: v1.2\ne: a_1\nf: 1:60',
+    );
+  });
+
+  test('leaves dates alone', () => {
+    expect(formatYAML({ date: '2024-01-02', datetime: '2024-01-02T03:04:05Z' })).toBe(
+      'date: 2024-01-02\ndatetime: 2024-01-02T03:04:05Z',
+    );
+  });
+
+  test('quotes the keys', () => {
+    expect(formatYAML({ labels: { yes: 'Agree', no: 'Disagree', '1:20': 'x', ok: 'OK' } })).toBe(
+      "labels:\n  'yes': Agree\n  'no': Disagree\n  '1:20': x\n  ok: OK",
+    );
+  });
+
+  test('uses the configured quotes', () => {
+    expect(formatYAML({ no: 'yes' }, { quote: 'single' })).toBe("'no': 'yes'");
+    expect(formatYAML({ no: 'yes', title: 'Hi' }, { quote: 'double' })).toBe(
+      '"no": "yes"\ntitle: "Hi"',
+    );
+    expect(formatYAML({ no: 'yes' }, {}, { quote: true })).toBe('"no": "yes"');
+  });
+});
+
 describe('Test formatYAML() with comments', () => {
   test('writes a comment before a top-level key, including the first one', () => {
     expect(formatYAML({ title: 'Hello', draft: false }, {}, {}, { title: 'Title' })).toBe(
@@ -385,6 +496,13 @@ describe('Test formatYAML() with comments', () => {
 
   test('ignores a comment for a key that is not there', () => {
     expect(formatYAML({ title: 'Hello' }, {}, {}, { body: 'Body' })).toBe('title: Hello');
+  });
+
+  test('ignores a key named after an `Object.prototype` member without a comment', () => {
+    // `Object.prototype.toString` was taken for the comment, and `comment.split` threw
+    expect(formatYAML({ toString: 'a', o: { constructor: 'b' } }, {}, {}, {})).toBe(
+      'toString: a\no:\n  constructor: b',
+    );
   });
 
   test('ignores the comments when the document is not a map', () => {
@@ -596,6 +714,22 @@ published: true
 title: My Post
 ---
 `,
+    );
+  });
+
+  test('non-text body content is kept in the front matter', () => {
+    /** @type {import('$lib/types/private').FileConfig} */
+    const _file = { format: 'frontmatter', extension: '.md' };
+
+    // The values were thrown away
+    expect(formatFrontMatter({ content: { title: 'A', body: { a: 1 } }, _file })).toBe(
+      '---\ntitle: A\nbody:\n  a: 1\n---\n',
+    );
+    expect(formatFrontMatter({ content: { title: 'A', body: ['x'] }, _file })).toBe(
+      '---\ntitle: A\nbody:\n  - x\n---\n',
+    );
+    expect(formatFrontMatter({ content: { title: 'A', body: 42 }, _file })).toBe(
+      '---\ntitle: A\nbody: 42\n---\n',
     );
   });
 

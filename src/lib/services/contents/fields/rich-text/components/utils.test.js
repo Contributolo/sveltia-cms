@@ -4,12 +4,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  escapeTitle,
+  getParentComponentNames,
   getSelectorTagNames,
   isMultiLinePattern,
   isValidSelector,
   normalizeProps,
-  replaceQuotes,
   supportsHTML,
+  unescapeTitle,
 } from './utils.js';
 
 describe('utils', () => {
@@ -79,6 +81,12 @@ describe('utils', () => {
   });
 
   describe('normalizeProps', () => {
+    it('should keep the keys with a dot as they are', () => {
+      expect(normalizeProps({ kv: { 'example.com': 'a' }, __sc_component_name: 'x' })).toEqual({
+        kv: { 'example.com': 'a' },
+      });
+    });
+
     it('should remove properties starting with __sc_', () => {
       const props = {
         title: 'Test Title',
@@ -173,54 +181,43 @@ describe('utils', () => {
     });
   });
 
-  describe('replaceQuotes', () => {
-    it('should replace double quotes with single quotes', () => {
-      const input = 'Hello "world" and "everyone"';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe("Hello 'world' and 'everyone'");
+  describe('unescapeTitle', () => {
+    it('should unescape the ASCII punctuation characters', () => {
+      expect(unescapeTitle('T \\"q\\" \\\\ \\* \\(x\\)')).toBe('T "q" \\ * (x)');
     });
 
-    it('should handle strings without quotes', () => {
-      const input = 'Hello world';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe('Hello world');
+    it('should keep a backslash before any other character', () => {
+      expect(unescapeTitle('C:\\Users\\me é\\é')).toBe('C:\\Users\\me é\\é');
     });
 
-    it('should handle strings with only single quotes', () => {
-      const input = "Hello 'world'";
-      const result = replaceQuotes(input);
+    it('should handle a title without escapes', () => {
+      expect(unescapeTitle('')).toBe('');
+      expect(unescapeTitle("It's a title")).toBe("It's a title");
+    });
+  });
 
-      expect(result).toBe("Hello 'world'");
+  describe('escapeTitle', () => {
+    it('should escape double quotes', () => {
+      expect(escapeTitle('Hello "world"')).toBe('Hello \\"world\\"');
     });
 
-    it('should handle empty strings', () => {
-      const input = '';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe('');
+    it('should escape a backslash before a punctuation character or at the end', () => {
+      expect(escapeTitle('a\\" b\\* c\\')).toBe('a\\\\\\" b\\\\* c\\\\');
     });
 
-    it('should handle strings with mixed quotes', () => {
-      const input = 'Hello "world" and \'everyone\'';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe("Hello 'world' and 'everyone'");
+    it('should keep a backslash before any other character as is', () => {
+      expect(escapeTitle('C:\\Users\\me')).toBe('C:\\Users\\me');
     });
 
-    it('should handle multiple consecutive double quotes', () => {
-      const input = 'Test ""double"" quotes';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe("Test ''double'' quotes");
+    it('should handle a title without quotes or backslashes', () => {
+      expect(escapeTitle('')).toBe('');
+      expect(escapeTitle("It's a title")).toBe("It's a title");
     });
 
-    it('should handle strings that are just quotes', () => {
-      const input = '"""';
-      const result = replaceQuotes(input);
-
-      expect(result).toBe("'''");
+    it('should be the counterpart of unescapeTitle', () => {
+      ['T "q"', 'a\\"b', 'end\\', 'C:\\Users', '\\\\"', '"""'].forEach((title) => {
+        expect(unescapeTitle(escapeTitle(title))).toBe(title);
+      });
     });
   });
 });
@@ -269,5 +266,25 @@ describe('supportsHTML', () => {
     expect(supportsHTML({ ...def, ...htmlOptions, htmlSelector: undefined })).toBe(false);
     expect(supportsHTML({ ...def, ...htmlOptions, fromBlockHTML: undefined })).toBe(false);
     expect(supportsHTML({ ...def, ...htmlOptions, toBlockHTML: undefined })).toBe(false);
+  });
+});
+
+describe('getParentComponentNames', () => {
+  it('should read the names from the closest component’s fields, but not its own', () => {
+    // A YouTube component in a Details component, in a Callout component in a dialog: the dialog is
+    // rendered elsewhere, so only the elements holding the fields tell where a component is
+    document.body.innerHTML =
+      '<div data-component-path=\'["x-callout"]\'>' +
+      '<div data-component-path=\'["x-callout","x-details"]\'>' +
+      '<p><span id="youtube" data-component-path=\'["x-callout","x-details","x-youtube"]\'>' +
+      '</span></p></div></div>' +
+      '<span id="top" data-component-path=\'["x-image"]\'></span>';
+
+    expect(getParentComponentNames(document.querySelector('#youtube') ?? undefined)).toEqual([
+      'x-callout',
+      'x-details',
+    ]);
+    expect(getParentComponentNames(document.querySelector('#top') ?? undefined)).toEqual([]);
+    expect(getParentComponentNames(undefined)).toEqual([]);
   });
 });

@@ -20,12 +20,17 @@ import {
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
+import { checkPublishAllowed } from '$lib/services/backends/git/shared/fork';
 import {
-  checkPublishAllowed,
-  createDraftPullRequest,
-} from '$lib/services/backends/git/shared/fork';
-import { encodePath } from '$lib/services/backends/git/shared/url';
-import { isSquashMergeEnabled } from '$lib/services/backends/git/shared/workflow';
+  getMovedHeadMergeState,
+  getParentDirs,
+  isPullRequestMerged,
+  isSquashMergeEnabled,
+  openWorkflowPullRequest,
+  toChangedFilesWithModes,
+  updateLabelledStatus,
+} from '$lib/services/backends/git/shared/workflow';
+import { encodePathSegments } from '$lib/services/utils/url';
 import { getAllStatusLabels, getStatusFromLabels } from '$lib/services/workflow/labels';
 import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
@@ -279,7 +284,7 @@ const fetchOpenPullRequests = async (branch) => {
 const resetBranch = async (branch, sha) => {
   const { owner, repo } = repository;
 
-  await fetchAPI(`/repos/${owner}/${repo}/git/refs/heads/${encodePath(branch)}`, {
+  await fetchAPI(`/repos/${owner}/${repo}/git/refs/heads/${encodePathSegments(branch)}`, {
     method: 'PATCH',
     body: { sha, force: true },
   });
@@ -380,23 +385,8 @@ export const createBranch = async (branch) => {
  * @param {WorkflowStatus} status New status.
  * @returns {Promise<WorkflowPullRequest>} Updated pull request.
  */
-export const updateStatus = async (pullRequest, status) => {
-  if (openAuthoring.current) {
-    return updateForkStatus(pullRequest, status);
-  }
-
-  const isDraft = status === 'draft';
-
-  await updateLabels(pullRequest, status);
-
-  // Only the transitions into and out of the `draft` status change the draft state, so moving
-  // between the review and ready stages needs no mutation at all
-  if (isDraft !== (pullRequest.status === 'draft')) {
-    await updateDraftState(pullRequest, isDraft);
-  }
-
-  return { ...pullRequest, status, updatedDate: new Date() };
-};
+export const updateStatus = (pullRequest, status) =>
+  updateLabelledStatus(pullRequest, status, { updateForkStatus, updateLabels, updateDraftState });
 
 /**
  * Commit the given changes on the workflow branch, creating the branch and the pull request if they
@@ -441,13 +431,16 @@ export const savePullRequest = async ({ changes, options, branch, title, status,
     return { commit, pullRequest };
   }
 
-  // A removal has no review stages to move through, so its pull request is opened right away like
-  // it is in the regular flow
-  if (openAuthoring.current && status === 'draft') {
-    return { commit, pullRequest: createDraftPullRequest({ commit, branch, title }) };
-  }
-
-  return { commit, pullRequest: await createPullRequest({ branch, title, status }) };
+  return {
+    commit,
+    pullRequest: await openWorkflowPullRequest({
+      commit,
+      branch,
+      title,
+      status,
+      createPullRequest,
+    }),
+  };
 };
 
 /**
@@ -480,7 +473,7 @@ const REST_FILE_STATUSES = {
  * @see https://docs.github.com/en/graphql/reference/objects#treeentry
  */
 const fetchFileModes = async ({ headSHA, paths }) => {
-  const dirs = [...new Set(paths.map((path) => path.slice(0, Math.max(path.lastIndexOf('/'), 0))))];
+  const dirs = getParentDirs(paths);
 
   const trees = await fetchAliasedBatch({
     items: dirs,
@@ -544,27 +537,26 @@ export const fetchMergeState = async (pullRequest) => {
     return { headSHA, onConfiguredBranches: false, files: [], complete: false };
   }
 
+  const movedHeadState = getMovedHeadMergeState(pullRequest, headSHA);
+
+  if (movedHeadState) {
+    return movedHeadState;
+  }
+
+  const encodedBranch = encodePathSegments(/** @type {string} */ (branch));
+
   const { files = [] } = /** @type {{ files?: Record<string, any>[] }} */ (
-    await fetchAPI(
-      `/repos/${owner}/${repo}/compare/${encodePath(/** @type {string} */ (branch))}...${headSHA}`,
-    )
+    await fetchAPI(`/repos/${owner}/${repo}/compare/${encodedBranch}...${headSHA}`)
   );
-
-  const changedFiles = files.map(({ filename, status, previous_filename: previousPath }) => ({
-    path: /** @type {string} */ (filename),
-    status: REST_FILE_STATUSES[status] ?? 'modified',
-    previousPath,
-  }));
-
-  const modes = await fetchFileModes({
-    headSHA,
-    paths: changedFiles.filter(({ status }) => status !== 'removed').map(({ path }) => path),
-  });
 
   return {
     headSHA,
     onConfiguredBranches,
-    files: changedFiles.map((file) => ({ ...file, mode: modes.get(file.path) })),
+    files: await toChangedFilesWithModes(files, {
+      statusMap: REST_FILE_STATUSES,
+      headSHA,
+      fetchFileModes,
+    }),
     complete: files.length < MAX_COMPARE_FILES,
   };
 };
@@ -609,16 +601,31 @@ export const publish = async (pullRequest) => {
   checkPublishAllowed();
 
   const { owner, repo } = repository;
+  const { number } = pullRequest;
   const squash = isSquashMergeEnabled();
 
-  await fetchAPI(`/repos/${owner}/${repo}/pulls/${pullRequest.number}/merge`, {
-    method: 'PUT',
-    body: {
-      merge_method: squash ? 'squash' : 'merge',
-      commit_title: pullRequest.title,
-      sha: pullRequest.headSHA,
-    },
-  });
+  try {
+    await fetchAPI(`/repos/${owner}/${repo}/pulls/${number}/merge`, {
+      method: 'PUT',
+      body: {
+        merge_method: squash ? 'squash' : 'merge',
+        commit_title: pullRequest.title,
+        sha: pullRequest.headSHA,
+      },
+    });
+  } catch (/** @type {any} */ ex) {
+    // GitHub answers `405 Method Not Allowed` whenever the pull request can’t be merged, including
+    // when it has been merged already — by a maintainer on GitHub while this board was open, say.
+    // That’s the outcome the user asked for, so it’s the branch cleanup below that’s left to do
+    // rather than an error to report. Anything else the status covers, such as a failing required
+    // check or a conflict, is a real refusal
+    if (
+      ex.cause?.status !== 405 ||
+      !(await isPullRequestMerged(repository, /** @type {number} */ (number)))
+    ) {
+      throw ex;
+    }
+  }
 
   await deleteBranch(pullRequest.branch);
 };

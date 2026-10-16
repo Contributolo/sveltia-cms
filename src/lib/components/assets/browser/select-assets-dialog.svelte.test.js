@@ -115,6 +115,23 @@ const dropFiles = (files) => {
 };
 
 /**
+ * Drag files over the dialog, and tell whether the drop indicator then appears.
+ * @returns {Promise<boolean>} Whether the indicator is shown.
+ */
+const isDropIndicatorShownOnDragOver = async () => {
+  /** @type {HTMLElement} */ (document.querySelector('.drop-target')).dispatchEvent(
+    new DragEvent('dragover', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: new DataTransfer(),
+    }),
+  );
+  await sleep(100);
+
+  return !!document.querySelector('.drop-indicator');
+};
+
+/**
  * Wait for the grid to be listed and activated.
  * @param {number} count Expected number of items.
  * @returns {Promise<void>}
@@ -279,8 +296,9 @@ describe('SelectAssetsDialog', () => {
       expect(dialog.getByRole('listbox', { name: 'Folders' }).elements()).toHaveLength(0);
     });
 
-    test('creates no folder within a read-only folder', async () => {
-      await renderDialog({
+    test('neither creates nor uploads anything within a read-only folder', async () => {
+      // A read-only asset collection is offered to every field, which can still pick from it
+      const { onSelect } = await renderDialog({
         assetLibraryFolderMap: {
           global: { folder: { ...globalAssetFolder.current, readonly: true }, enabled: true },
         },
@@ -289,6 +307,7 @@ describe('SelectAssetsDialog', () => {
       const dialog = page.getByRole('dialog', { name: 'Select Image' });
 
       await waitForGrid(2);
+      await expect.element(dialog.getByRole('button', { name: 'Upload' })).toBeDisabled();
       await dialog
         .getByRole('listbox', { name: 'Folders' })
         .getByRole('option', { name: '2024' })
@@ -296,6 +315,15 @@ describe('SelectAssetsDialog', () => {
       await waitForGrid(1);
 
       await expect.element(dialog.getByRole('button', { name: 'New Folder' })).toBeDisabled();
+      await expect.element(dialog.getByRole('button', { name: 'Upload' })).toBeDisabled();
+
+      // The drop zone is disabled, so dragging files over it doesn’t invite a drop, and a dropped
+      // file is ignored rather than headed for the folder
+      expect(await isDropIndicatorShownOnDragOver()).toBe(false);
+      dropFiles([await createMockImageFile({ name: 'index.png' })]);
+      await waitForGrid(1);
+      await expect.element(dialog.getByRole('button', { name: 'Insert' })).toBeDisabled();
+      expect(onSelect).not.toHaveBeenCalled();
     });
 
     test('neither creates nor uploads anything in a folder the CMS is served from', async () => {
@@ -322,7 +350,9 @@ describe('SelectAssetsDialog', () => {
       await expect.element(dialog.getByRole('button', { name: 'New Folder' })).toBeDisabled();
       await expect.element(dialog.getByRole('button', { name: 'Upload' })).toBeDisabled();
 
-      // A dropped file is ignored rather than headed for the folder
+      // The drop zone is disabled, so dragging files over it doesn’t invite a drop, and a dropped
+      // file is ignored rather than headed for the folder
+      expect(await isDropIndicatorShownOnDragOver()).toBe(false);
       dropFiles([await createMockImageFile({ name: 'index.png' })]);
       await waitForGrid(1);
       await expect.element(dialog.getByRole('button', { name: 'Insert' })).toBeDisabled();
@@ -365,6 +395,7 @@ describe('SelectAssetsDialog', () => {
       // A dropped file goes to the subfolder being browsed
       const file = await createMockImageFile({ name: 'new.png' });
 
+      expect(await isDropIndicatorShownOnDragOver()).toBe(true);
       dropFiles([file]);
       await waitForGrid(2);
       await dialog.getByRole('button', { name: 'Insert' }).click();
@@ -374,6 +405,35 @@ describe('SelectAssetsDialog', () => {
           { file, folder: globalAssetFolder.current, subfolderPath: '2024', replace: false },
         ]),
       );
+    });
+
+    test('refuses the name of a folder leading to another asset folder', async () => {
+      await initTestConfig({
+        media_libraries: { stock_assets: { providers: ['picsum'] } },
+        collections: [
+          {
+            name: 'projects',
+            folder: 'content/projects',
+            media_folder: '/static/uploads/projects',
+            fields: [{ name: 'title', widget: 'string' }],
+          },
+        ],
+      });
+
+      await renderDialog();
+
+      const dialog = page.getByRole('dialog', { name: 'Select Image' });
+
+      await waitForGrid(2);
+      await dialog.getByRole('button', { name: 'New Folder' }).click();
+
+      const newFolder = page.getByRole('dialog', { name: 'New Folder' });
+
+      // The collection’s own folder isn’t listed, but a new folder can’t take its name
+      await newFolder.getByRole('textbox', { name: 'Folder Name' }).fill('projects');
+      await expect.element(newFolder.getByRole('button', { name: 'Create' })).toBeDisabled();
+      await newFolder.getByRole('textbox', { name: 'Folder Name' }).fill('portfolio');
+      await expect.element(newFolder.getByRole('button', { name: 'Create' })).toBeEnabled();
     });
 
     test('only asks to replace a file in the directory the dropped file goes to', async () => {
@@ -668,6 +728,30 @@ describe('SelectAssetsDialog', () => {
     await expect.element(insert).toBeDisabled();
   });
 
+  test('selects the entered URL again on coming back from another location', async () => {
+    const { onSelect } = await renderDialog();
+    const dialog = page.getByRole('dialog', { name: 'Select Image' });
+    const insert = dialog.getByRole('button', { name: 'Insert' });
+
+    await dialog.getByRole('option', { name: 'Enter URL' }).click();
+    await dialog.getByRole('textbox').fill('https://example.com/x.png');
+    await expect.element(insert).toBeEnabled();
+
+    // Nothing is selected in the repository folder
+    await dialog.getByRole('option', { name: 'Global Assets' }).click();
+    await expect.element(insert).toBeDisabled();
+
+    // The URL is still in the text box, and selected again
+    await dialog.getByRole('option', { name: 'Enter URL' }).click();
+    await expect.element(dialog.getByRole('textbox')).toHaveValue('https://example.com/x.png');
+    await expect.element(insert).toBeEnabled();
+    await insert.click();
+
+    await vi.waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith([{ url: 'https://example.com/x.png' }]),
+    );
+  });
+
   test('lists the assets on a cloud storage service', async () => {
     const list = vi.fn().mockResolvedValue([createMockExternalAsset({ fileName: 'cloud.png' })]);
     const { onSelect } = await renderDialog({}, { list });
@@ -763,6 +847,49 @@ describe('SelectAssetsDialog', () => {
     }
   });
 
+  test('lets a stock photo service know which photo has been inserted', async () => {
+    const { picsum } = allStockAssetProviders;
+
+    const photos = [
+      createMockExternalAsset({ fileName: 'a.jpg', folder: 'photos' }),
+      createMockExternalAsset({ fileName: 'b.jpg', folder: 'photos' }),
+    ];
+
+    // A failure doesn’t get in the way of the insertion
+    const trackDownload = vi.fn().mockRejectedValue(new Error('Boom'));
+
+    allStockAssetProviders.picsum = {
+      ...picsum,
+      list: vi.fn().mockResolvedValue(photos),
+      trackDownload,
+    };
+
+    try {
+      const { onSelect } = await renderDialog();
+      const dialog = page.getByRole('dialog');
+
+      await dialog.getByRole('option', { name: 'Lorem Picsum' }).click();
+      await waitForGrid(2);
+      // A photo picked and then replaced by another is not reported
+      await getOption('photos/a.jpg').click();
+      await getOption('photos/b.jpg').click();
+      await expect.element(getOption('photos/b.jpg')).toHaveAttribute('aria-selected', 'true');
+      expect(trackDownload).not.toHaveBeenCalled();
+
+      await dialog.getByRole('button', { name: 'Insert' }).click();
+
+      await vi.waitFor(() =>
+        expect(onSelect).toHaveBeenCalledWith([
+          { url: 'https://cdn.example.com/photos/b.jpg', credit: undefined },
+        ]),
+      );
+      expect(trackDownload).toHaveBeenCalledTimes(1);
+      expect(trackDownload).toHaveBeenCalledWith(photos[1], expect.anything());
+    } finally {
+      allStockAssetProviders.picsum = picsum;
+    }
+  });
+
   test('leaves out the disabled folders, the stock photos and the view switcher', async () => {
     await initTestConfig({ media_libraries: { stock_assets: { providers: [] } } });
     selectAssetsView.current = undefined;
@@ -814,6 +941,40 @@ describe('SelectAssetsDialog', () => {
     );
     // The very same `File` object is passed on, not a clone that would have to be read again
     expect(onSelect.mock.calls[0][0][0].file).toBe(file);
+  });
+
+  test('lists only the existing files of the accepted types, but any dropped file', async () => {
+    const { onSelect } = await renderDialog({
+      kind: undefined,
+      accept: '.txt',
+      fieldConfig: { name: 'file', widget: 'file', accept: '.txt' },
+    });
+
+    const dialog = page.getByRole('dialog', { name: 'Select File' });
+
+    // An existing file is never transformed, so one of another type can’t be used
+    await waitForGrid(1);
+    await expect.element(getOption(assets[2].path)).toBeInTheDocument();
+
+    // A dropped file is only checked once inserted and processed, as a transformation can change
+    // its format, so it’s listed and selected anyway
+    const file = await createMockImageFile({ name: 'kite.png' });
+
+    dropFiles([file]);
+    await waitForGrid(2);
+    await dialog.getByRole('button', { name: 'Insert' }).click();
+    await vi.waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith([
+        { file, folder: globalAssetFolder.current, subfolderPath: '', replace: false },
+      ]),
+    );
+  });
+
+  test('lists a dropped file of another kind in the Select Image dialog', async () => {
+    await renderDialog({ accept: 'image/png' });
+    await waitForGrid(2);
+    dropFiles([new File(['x'], 'notes.txt', { type: 'text/plain' })]);
+    await waitForGrid(3);
   });
 
   test('ignores the unsaved assets of an earlier draft state that are read late', async () => {

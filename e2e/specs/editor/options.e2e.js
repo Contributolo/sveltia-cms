@@ -1,5 +1,6 @@
 import { MONOLINGUAL_CONFIG, MONOLINGUAL_FILES } from '../../fixtures/configs/monolingual.js';
 import { expect, test } from '../../fixtures/test.js';
+import { getEditor } from '../../fixtures/ui.js';
 
 /**
  * @import { Locator, Page } from '@playwright/test';
@@ -21,7 +22,7 @@ test.beforeEach(async ({ cms, page }) => {
  * @returns {Promise<Locator>} Editor.
  */
 const openFirstLight = async (page) => {
-  const editor = page.getByRole('group', { name: 'Content Editor' });
+  const editor = getEditor(page);
 
   await page.getByRole('row', { name: /First Light/ }).click();
   await expect(editor.getByRole('textbox', { name: 'Title' })).toHaveValue('First Light');
@@ -153,12 +154,23 @@ test.describe('panes', () => {
     await expect(previewPane).toBeHidden();
     await expect(swapButton).toBeHidden();
     await expect(editor.getByRole('group', { name: 'Edit Content' })).toBeVisible();
-    // The preview is shown in the second pane, so its options are unavailable meanwhile
+    // The preview takes turns with the editor in the only pane, so there’s nothing to sync
     await menuButton.click();
     await expect(showSecondPane).not.toBeChecked();
-    await expect(showPreview).toBeDisabled();
+    await expect(showPreview).toBeEnabled();
     await expect(syncScrolling).toBeDisabled();
     await page.keyboard.press('Escape');
+
+    const viewSwitcher = editor.getByRole('radiogroup', { name: 'Switch View' });
+
+    await viewSwitcher.getByRole('radio', { name: 'Preview' }).click();
+    await expect(previewPane.getByRole('document', { name: 'Content Preview' })).toContainText(
+      'The observatory opens its doors.',
+    );
+    await expect(editor.getByRole('group', { name: 'Edit Content' })).toBeHidden();
+    await viewSwitcher.getByRole('radio', { name: 'Edit' }).click();
+    await expect(editor.getByRole('group', { name: 'Edit Content' })).toBeVisible();
+    await expect(previewPane).toBeHidden();
 
     await cms.chooseMenuItem(menuButton, showSecondPane);
     await expect(previewPane).toBeVisible();
@@ -212,6 +224,41 @@ test.describe('panes', () => {
   });
 });
 
+test.describe('with `editor.second_pane: false`', () => {
+  test.use({ config: { ...MONOLINGUAL_CONFIG, editor: { second_pane: false } } });
+
+  test('keeps a single pane, where the preview takes turns with the editor', async ({
+    cms,
+    page,
+  }) => {
+    const editor = await openFirstLight(page);
+    const editPane = editor.getByRole('group', { name: 'Edit Content' });
+    const previewPane = editor.getByRole('group', { name: 'Preview Content' });
+    const viewSwitcher = editor.getByRole('radiogroup', { name: 'Switch View' });
+
+    await expect(editPane).toBeVisible();
+    await expect(previewPane).toBeHidden();
+    await expect(editor.getByRole('button', { name: 'Swap Panes' })).toHaveCount(0);
+
+    await cms.openPopup(
+      page.getByRole('button', { name: 'Show Editor Options' }),
+      page.getByRole('menuitemcheckbox', { name: 'Show Second Pane' }),
+    );
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Show Second Pane' })).toBeDisabled();
+    await expect(
+      page.getByRole('menuitemcheckbox', { name: 'Show Second Pane' }),
+    ).not.toBeChecked();
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Show Preview' })).toBeEnabled();
+    await page.keyboard.press('Escape');
+
+    await viewSwitcher.getByRole('radio', { name: 'Preview' }).click();
+    await expect(previewPane.getByRole('document', { name: 'Content Preview' })).toContainText(
+      'The observatory opens its doors.',
+    );
+    await expect(editPane).toBeHidden();
+  });
+});
+
 test.describe('sync scrolling', () => {
   // A post long enough to scroll, with every paragraph numbered so the panes can be compared
   const LONG_POST = [
@@ -234,7 +281,7 @@ test.describe('sync scrolling', () => {
   const openLongNight = async (page) => {
     await page.getByRole('row', { name: /Long Night/ }).click();
 
-    const editor = page.getByRole('group', { name: 'Content Editor' });
+    const editor = getEditor(page);
 
     await expect(editor.getByRole('textbox', { name: 'Body' })).toContainText('Paragraph 80.');
 
@@ -278,6 +325,23 @@ test.describe('sync scrolling', () => {
     await expect.poll(() => previewArea.evaluate((element) => element.scrollTop)).toBe(0);
   });
 
+  test('scrolls the preview to the focused field', async ({ page }) => {
+    const { editArea, previewArea } = await openLongNight(page);
+    const title = getEditor(page).getByRole('textbox', { name: 'Title' });
+
+    // Scroll the preview to the bottom, which takes the editor along
+    await previewArea.hover();
+    await page.mouse.wheel(0, 5000);
+    await expect.poll(() => editArea.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(previewArea.locator('[data-key-path="title"]')).not.toBeInViewport();
+
+    // Focusing the Title field brings it into view in both panes, and they stay there
+    await title.focus();
+    await expect(previewArea.locator('[data-key-path="title"]')).toBeInViewport();
+    await page.waitForTimeout(500);
+    await expect(title).toBeInViewport();
+  });
+
   test('leaves the preview alone once turned off', async ({ cms, page }) => {
     const { editArea, previewArea } = await openLongNight(page);
 
@@ -310,7 +374,7 @@ Object.entries(UNCHANGED_ENTRIES).forEach(([name, { collection, row, field }]) =
       await page.getByRole('row', { name: row }).click();
     }
 
-    const editor = page.getByRole('group', { name: 'Content Editor' });
+    const editor = getEditor(page);
 
     await expect(editor.getByRole('textbox', { name: field }).first()).not.toHaveValue('');
     // A post’s tags used to count as a change, as the list editor rewrote them when it was shown.

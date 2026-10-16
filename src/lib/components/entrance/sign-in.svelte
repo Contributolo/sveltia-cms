@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
 
   import { allBackendServices } from '$lib/services/backends';
+  import { isDemoSite } from '$lib/services/backends/fs/seed';
   import { cmsConfig } from '$lib/services/config';
   import { auth, signInAutomatically, signInManually } from '$lib/services/user/auth.svelte';
   import { env } from '$lib/services/user/env.svelte';
@@ -22,6 +23,7 @@
   const backendName = $derived(/** @type {string} */ (configuredBackend.name));
   const backend = $derived(allBackendServices[backendName]);
   const isTestRepo = $derived(backendName === 'test-repo');
+  const isDemo = $derived(isDemoSite(backendName));
   // The test repository has no `repo` option, and the name only goes with the local option
   const repositoryName = $derived(
     /** @type {GitBackend} */ (configuredBackend).repo?.split('/').pop(),
@@ -54,8 +56,10 @@
 
   onMount(() => {
     // Skip automatic sign-in if there’s already an error (e.g. repository access denied), so the
-    // error message is preserved and the user can try again with different credentials
-    if (!auth.signInError.message) {
+    // error message is preserved and the user can try again with different credentials. Also skip
+    // it while a sign-in is in progress, which would otherwise select the configured backend while
+    // the user is signing in with the local one
+    if (!auth.signInError.message && !auth.signingIn) {
       signInAutomatically();
     }
   });
@@ -99,9 +103,11 @@
     {#if !oauthOptionHidden}
       <Button
         variant={showLocalBackendOption ? 'secondary' : 'primary'}
-        label={isTestRepo
-          ? _('work_with_test_repo')
-          : _('sign_in_with_x', { values: { service: serviceLabel } })}
+        label={isDemo
+          ? _('start_demo')
+          : isTestRepo
+            ? _('work_with_test_repo')
+            : _('sign_in_with_x', { values: { service: serviceLabel } })}
         disabled={oauthOptionDisabled}
         onclick={async () => {
           await signInManually(backendName);

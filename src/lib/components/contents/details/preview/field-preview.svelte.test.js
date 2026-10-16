@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { page } from 'vitest/browser';
 
+import { previews } from '$lib/components/contents/details/fields';
 import { customFieldTypeRegistry } from '$lib/services/api/registries';
 import { highlightEditorField } from '$lib/services/contents/editor/fields';
 import { initTestConfig } from '$lib/test/config';
@@ -52,7 +53,37 @@ const renderPreview = async ({
   return container;
 };
 
+/**
+ * Component that throws while it’s rendered, standing in for a field editor or preview with a bug.
+ * @throws {TypeError} Always.
+ */
+const BrokenComponent = () => {
+  throw new TypeError('boom');
+};
+
 describe('FieldPreview', () => {
+  test('shows a message in place of a preview that fails, keeping the label', async () => {
+    const { string } = previews;
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    previews.string = /** @type {any} */ (BrokenComponent);
+
+    try {
+      const container = await renderPreview({
+        fieldConfig: { name: 'title', widget: 'string', label: 'Title' },
+        values: { title: 'Hello' },
+      });
+
+      await expect
+        .element(page.getByRole('alert'))
+        .toMatchTextContent(/this field can’t be displayed\. .*boom/);
+      expect(container.querySelector('h4')).toHaveTextContent('Title');
+    } finally {
+      previews.string = string;
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   test('renders the preview for the field type under its label', async () => {
     const container = await renderPreview({
       fieldConfig: { name: 'title', widget: 'string', label: 'Title' },
@@ -83,6 +114,23 @@ describe('FieldPreview', () => {
     ).toBeNull();
   });
 
+  test('shows the label in the locale of the pane', async () => {
+    const container = await renderPreview({
+      fieldConfig: {
+        name: 'title',
+        widget: 'string',
+        i18n: true,
+        label: 'Title',
+        label_localized: { ja: 'タイトル' },
+      },
+      values: { title: 'Hello' },
+      locale: 'ja',
+      i18nEnabled: true,
+    });
+
+    expect(container.querySelector('h4')).toHaveTextContent('タイトル');
+  });
+
   test('passes the items of a multi-value field', async () => {
     const container = await renderPreview({
       fieldConfig: { name: 'tags', widget: 'list' },
@@ -100,6 +148,23 @@ describe('FieldPreview', () => {
       (await renderPreview({ fieldConfig: { name: 'title', widget: 'string', preview: false } }))
         .children,
     ).toHaveLength(0);
+  });
+
+  test('renders nothing without a field configuration', async () => {
+    const { container } = await renderWithDraft(FieldPreview, {
+      draft: createMockDraft({
+        fields: [{ name: 'title', widget: 'string' }],
+        values: { en: { title: 'Hello' } },
+      }),
+      props: {
+        locale: 'en',
+        keyPath: 'missing',
+        typedKeyPath: 'missing',
+        fieldConfig: /** @type {any} */ (undefined),
+      },
+    });
+
+    expect(container.querySelector('section')).toBeNull();
   });
 
   test('renders a non-translatable field in the default locale only', async () => {
@@ -205,7 +270,7 @@ describe('FieldPreview', () => {
         values: { stars: 5 },
       });
 
-      await vi.waitFor(() => expect(container).toHaveTextContent('stars Custom: 5'));
+      await expect.poll(() => container.textContent?.trim()).toMatch(/^stars\s*Custom: 5$/);
 
       // A custom field type without a preview shows nothing
       customFieldTypeRegistry.set('rating', /** @type {any} */ ({}));

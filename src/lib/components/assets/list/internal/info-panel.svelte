@@ -11,8 +11,10 @@
     getAssetDetails,
     getAssetUsedEntries,
   } from '$lib/services/assets/details';
-  import { isMediaKind } from '$lib/services/assets/kinds';
+  import { isMediaKind, isPDF } from '$lib/services/assets/kinds';
+  import { getCommitAuthorName } from '$lib/services/utils/commit-author';
   import { formatDate } from '$lib/services/utils/date';
+  import { createLatestGuard } from '$lib/services/utils/scheduling';
 
   /**
    * @import { Asset, AssetDetails } from '$lib/types/private';
@@ -39,28 +41,30 @@
   const { path, size, kind, commitAuthor, commitDate } = $derived(asset);
   const { publicURL, repoBlobURL, dimensions, duration, createdDate, coordinates, usedEntries } =
     $derived(details);
-  const canPreview = $derived(isMediaKind(kind) || path.endsWith('.pdf'));
+  const canPreview = $derived(isMediaKind(kind) || isPDF(path));
 
   /**
-   * Asset the details were last requested for. The panel stays mounted while the focus moves from
-   * one asset to another, so a slow lookup for an asset focused earlier must not overwrite the
-   * details of the one focused now.
-   * @type {Asset | undefined}
+   * Guard for {@link updateProps}. The panel stays mounted while the focus moves from one asset
+   * to another, so a slow lookup for an asset focused earlier must not overwrite the details of the
+   * one focused now.
    */
-  let requestedAsset;
+  const requestGuard = createLatestGuard();
 
   /**
    * Update the properties above.
    */
   const updateProps = async () => {
     const _asset = asset;
+    const isLatest = requestGuard.next();
 
-    requestedAsset = _asset;
+    // Don’t leave the previous asset’s details on show while this one’s are being retrieved. The
+    // used entries are being looked up as well
+    details = { ...defaultAssetDetails, usedEntries: undefined };
 
     try {
       const _details = _asset ? await getAssetDetails(_asset) : { ...defaultAssetDetails };
 
-      if (requestedAsset !== _asset) {
+      if (!isLatest()) {
         return;
       }
 
@@ -71,6 +75,11 @@
       // The file couldn’t be downloaded, so only the basic info is shown
       // eslint-disable-next-line no-console
       console.error(ex);
+
+      if (isLatest()) {
+        // Stop showing the used entries as being loaded
+        details.usedEntries = [];
+      }
     }
   };
 
@@ -123,7 +132,7 @@
   {#if commitAuthor}
     <section>
       <h4>{_('sort_keys.commit_author')}</h4>
-      <p>{commitAuthor.name || commitAuthor.login || commitAuthor.email}</p>
+      <p>{getCommitAuthorName(commitAuthor)}</p>
     </section>
   {/if}
   {#if commitDate}

@@ -3,12 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildObjectApiUrl,
   buildObjectUrl,
-  createS3Folder,
-  deleteS3Folder,
   encodeKey,
   generateAwsSignature,
   isS3ObjectUrl,
-  moveS3Object,
   parseS3Results,
   s3Operations,
   signedRequest,
@@ -22,6 +19,9 @@ const {
   delete: deleteS3Objects,
   rename: renameS3Object,
   replace: replaceS3Object,
+  move: moveS3Object,
+  createFolder: createS3Folder,
+  deleteFolder: deleteS3Folder,
 } = s3Operations;
 
 /* eslint-disable jsdoc/require-jsdoc */
@@ -967,6 +967,15 @@ describe('integrations/media-libraries/cloud/s3/shared utilities', () => {
         'https://test-bucket.s3.us-east-1.amazonaws.com/uploads/2024/summer/',
         expect.objectContaining({ method: 'DELETE' }),
       );
+
+      // S3 itself reports success for a missing key, but a compatible service may not
+      vi.mocked(fetch).mockResolvedValue(new Response('NoSuchKey', { status: 404 }));
+      await expect(deleteS3Folder('2024', mockConfig, options)).resolves.toBeUndefined();
+
+      vi.mocked(fetch).mockResolvedValue(new Response('Access Denied', { status: 403 }));
+      await expect(deleteS3Folder('2024', mockConfig, options)).rejects.toThrow(
+        'Failed to delete object uploads/2024/: Access Denied',
+      );
     });
 
     it('should move an object to another path below the prefix', async () => {
@@ -997,6 +1006,56 @@ describe('integrations/media-libraries/cloud/s3/shared utilities', () => {
       expect(result).toEqual(
         expect.objectContaining({ id: 'uploads/2025/photo.jpg', description: '2025/photo.jpg' }),
       );
+    });
+
+    it('should delete the source once the copy returns a CopyObjectResult document', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(
+          new Response(
+            '<?xml version="1.0" encoding="UTF-8"?>\n' +
+              '<CopyObjectResult><ETag>"abc"</ETag><LastModified>2024-01-01T00:00:00.000Z' +
+              '</LastModified></CopyObjectResult>',
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+      const result = await moveS3Object(
+        /** @type {any} */ ({ id: 'uploads/2024/photo.jpg', fileName: 'photo.jpg', size: 12 }),
+        '2025/photo.jpg',
+        mockConfig,
+        options,
+      );
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test-bucket.s3.us-east-1.amazonaws.com/uploads/2024/photo.jpg',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+      expect(result.id).toBe('uploads/2025/photo.jpg');
+    });
+
+    it('should keep the source when the copy returns an Error document with 200 OK', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(
+          '<?xml version="1.0" encoding="UTF-8"?>\n' +
+            '<Error><Code>InternalError</Code><Message>We encountered an internal error.' +
+            '</Message><RequestId>1</RequestId></Error>',
+          { status: 200 },
+        ),
+      );
+
+      await expect(
+        moveS3Object(
+          /** @type {any} */ ({ id: 'uploads/2024/photo.jpg', fileName: 'photo.jpg', size: 12 }),
+          '2025/photo.jpg',
+          mockConfig,
+          options,
+        ),
+      ).rejects.toThrow(/^Failed to copy object uploads\/2024\/photo\.jpg: .*<Code>InternalError/s);
+
+      expect(fetch).toHaveBeenCalledOnce();
     });
 
     it('should rename an object below the prefix within its folder', async () => {

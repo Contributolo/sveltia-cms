@@ -1,10 +1,13 @@
 import equal from 'fast-deep-equal';
 
 import { collectFieldValues } from '$lib/services/contents/draft';
-import { getField } from '$lib/services/contents/entry/fields';
+import { getDraftFieldArgs, getField } from '$lib/services/contents/entry/fields';
 import { isKeyPathWithin } from '$lib/services/contents/entry/key-paths';
 import { syncAllDuplicateKeys } from '$lib/services/contents/fields/key-value/duplicate-keys';
 import { getKeyValueField } from '$lib/services/contents/fields/key-value/pairs';
+import { getPairedListKeyPaths } from '$lib/services/contents/fields/list/helpers';
+import { getDraftI18nConfig } from '$lib/services/contents/i18n/config';
+import { isFieldTranslatable } from '$lib/services/contents/i18n/fields';
 import { isNumeric } from '$lib/services/utils/number';
 
 /**
@@ -114,7 +117,8 @@ export const revertFields = ({
 
       if (
         isDefaultLocale ||
-        [true, 'translate', 'duplicate_keys'].includes(fieldConfig?.i18n ?? false)
+        isFieldTranslatable(fieldConfig?.i18n) ||
+        fieldConfig?.i18n === 'duplicate_keys'
       ) {
         if (reset) {
           delete currentValues[locale][_keyPath];
@@ -137,22 +141,14 @@ export const revertFields = ({
  * @param {FieldKeyPath} args.keyPath Field key path to revert. If empty, all the fields will be
  * reverted.
  * @param {InternalLocaleCode} args.locale Locale code.
+ * @param {boolean} [args.revertAll] Whether to revert every field in another locale as well, not
+ * just the translatable ones, like in the default locale.
  */
-export const revertLocale = ({ draft, keyPath, locale }) => {
-  const {
-    collection,
-    collectionName,
-    collectionFile,
-    fileName,
-    currentValues,
-    originalValues,
-    isIndexFile,
-  } = draft;
-
-  const { defaultLocale } = (collectionFile ?? collection)._i18n;
-  const isDefaultLocale = locale === defaultLocale;
-  /** @type {GetFieldArgs} */
-  const getFieldArgs = { collectionName, fileName, keyPath: '', isIndexFile };
+export const revertLocale = ({ draft, keyPath, locale, revertAll = false }) => {
+  const { currentValues, originalValues } = draft;
+  const { defaultLocale } = getDraftI18nConfig(draft);
+  const isDefaultLocale = revertAll || locale === defaultLocale;
+  const getFieldArgs = getDraftFieldArgs(draft, { keyPath: '' });
   // Resolve original key path for fields inside reordered list items
   const resolved = keyPath ? resolveOriginalKeyPath(currentValues[locale], keyPath) : undefined;
   const originalKeyPath = resolved?.originalKeyPath ?? keyPath;
@@ -183,6 +179,32 @@ export const revertLocale = ({ draft, keyPath, locale }) => {
 };
 
 /**
+ * Get the key paths of the paired List fields that reverting the given field reverts: the field
+ * itself or those nested in it, or every one if all the fields are reverted. See
+ * {@link getPairedListKeyPaths}.
+ * @param {object} args Arguments.
+ * @param {EntryDraft} args.draft Entry draft.
+ * @param {FieldKeyPath} args.keyPath Field key path to revert, or an empty string for every field.
+ * @returns {FieldKeyPath[]} Key paths.
+ */
+const getRevertedPairedListKeyPaths = ({ draft, keyPath }) => {
+  if (!keyPath) {
+    return getPairedListKeyPaths(draft.fields);
+  }
+
+  const { currentValues } = draft;
+  const { defaultLocale } = getDraftI18nConfig(draft);
+
+  const fieldConfig = getField(
+    getDraftFieldArgs(draft, { keyPath, valueMap: currentValues[defaultLocale] }),
+  );
+
+  return fieldConfig
+    ? getPairedListKeyPaths([fieldConfig], keyPath.split('.').slice(0, -1).join('.'))
+    : [];
+};
+
+/**
  * Revert the changes made to the given field or all the fields to the default value(s).
  * @param {object} args Arguments.
  * @param {EntryDraft} args.draft Entry draft.
@@ -193,18 +215,8 @@ export const revertLocale = ({ draft, keyPath, locale }) => {
  * List or Object type, this will likely match multiple fields.
  */
 export const revertChanges = ({ draft, locale: targetLanguage = '', keyPath = '' }) => {
-  const {
-    collection,
-    collectionName,
-    collectionFile,
-    fileName,
-    isIndexFile,
-    currentValues,
-    originalPath,
-    originalSlugs,
-  } = draft;
-
-  const { allLocales, defaultLocale } = (collectionFile ?? collection)._i18n;
+  const { currentValues, originalPath, originalSlugs } = draft;
+  const { allLocales, defaultLocale } = getDraftI18nConfig(draft);
   const locales = targetLanguage ? [targetLanguage] : allLocales;
   // Reverting one field or one locale only touches values. Reverting everything restores where the
   // entry goes as well — the folder chosen with the path editor and the slugs, which name the file
@@ -216,12 +228,24 @@ export const revertChanges = ({ draft, locale: targetLanguage = '', keyPath = ''
     revertLocale({ draft, keyPath, locale });
   });
 
+  // The items of a paired List field are added, removed and moved in every locale at once, so
+  // reverting them in the default locale alone would leave them out of line with the other locales
+  if (targetLanguage === defaultLocale) {
+    getRevertedPairedListKeyPaths({ draft, keyPath }).forEach((pairedKeyPath) => {
+      allLocales.forEach((locale) => {
+        if (locale !== defaultLocale && currentValues[locale]) {
+          revertLocale({ draft, keyPath: pairedKeyPath, locale, revertAll: true });
+        }
+      });
+    });
+  }
+
   // Keys reverted in the default locale have to reach the other locales, and pairs reverted in
   // another locale have to line up with the default locale again
   syncAllDuplicateKeys({
     valueStore: currentValues,
     defaultLocale,
-    getFieldArgs: { collectionName, fileName, isIndexFile },
+    getFieldArgs: getDraftFieldArgs(draft),
   });
 
   if (revertsEverything) {

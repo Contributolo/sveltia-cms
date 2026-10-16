@@ -1,18 +1,26 @@
 /* eslint-disable jsdoc/require-jsdoc */
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
   getDirectoryHandle,
   getFileHandle,
   getHandleByPath,
+  getScopedRootDirHandle,
+  isNotFoundError,
+  isTypeMismatchError,
   readFile,
+  readFileIfExists,
 } from '$lib/services/backends/fs/shared/handles';
 import { createMockDirectoryHandle } from '$lib/test/fs-handles';
 
 vi.mock('@sveltia/utils/misc', () => ({
   sleep: vi.fn(async () => {}),
 }));
+
+const mockGetRootDir = vi.hoisted(() => vi.fn(() => ''));
+
+vi.mock('$lib/services/backends/root-dir', () => ({ getRootDir: mockGetRootDir }));
 
 // Provide a minimal FileSystemFileHandle global so canMoveFile() can inspect the prototype.
 // Tests that require canMoveFile() === false can set env.isBrave to true directly.
@@ -406,6 +414,90 @@ describe('readFile', () => {
     await getDirectoryHandle(rootDirHandle, 'static');
 
     await expect(readFile(rootDirHandle, 'static/a.png')).rejects.toThrow('File not found: a.png');
+  });
+});
+
+describe('isNotFoundError / isTypeMismatchError', () => {
+  test('should recognize the DOMException names', () => {
+    expect(isNotFoundError(new DOMException('', 'NotFoundError'))).toBe(true);
+    expect(isNotFoundError(new DOMException('', 'TypeMismatchError'))).toBe(false);
+    expect(isNotFoundError(undefined)).toBe(false);
+    expect(isTypeMismatchError(new DOMException('', 'TypeMismatchError'))).toBe(true);
+    expect(isTypeMismatchError(new DOMException('', 'NotFoundError'))).toBe(false);
+    expect(isTypeMismatchError(undefined)).toBe(false);
+  });
+});
+
+describe('readFileIfExists', () => {
+  /**
+   * Create a directory handle whose file lookup fails with the given error.
+   * @param {Error} error Error.
+   * @returns {FileSystemDirectoryHandle} Handle.
+   */
+  const createFailingHandle = (error) =>
+    /** @type {any} */ ({
+      getFileHandle: vi.fn(async () => {
+        throw error;
+      }),
+    });
+
+  test('should read an existing file', async () => {
+    const rootDirHandle = createMockDirectoryHandle();
+
+    await getFileHandle(rootDirHandle, 'a.png');
+
+    expect((await readFileIfExists(rootDirHandle, 'a.png'))?.name).toBe('a.png');
+  });
+
+  test('should return undefined for a missing file', async () => {
+    const handle = createFailingHandle(new DOMException('', 'NotFoundError'));
+
+    expect(await readFileIfExists(handle, 'a.png')).toBeUndefined();
+  });
+
+  test('should rethrow any other error', async () => {
+    const handle = createFailingHandle(new DOMException('', 'NotAllowedError'));
+
+    await expect(readFileIfExists(handle, 'a.png')).rejects.toThrow(DOMException);
+  });
+});
+
+describe('getScopedRootDirHandle', () => {
+  afterEach(() => {
+    mockGetRootDir.mockReturnValue('');
+  });
+
+  test('should return the given handle without a root directory', async () => {
+    const rootDirHandle = createMockDirectoryHandle();
+
+    await expect(getScopedRootDirHandle(rootDirHandle)).resolves.toBe(rootDirHandle);
+  });
+
+  test('should return the handle of an existing root directory', async () => {
+    mockGetRootDir.mockReturnValue('apps/site');
+
+    const rootDirHandle = createMockDirectoryHandle();
+    const siteDirHandle = await getDirectoryHandle(rootDirHandle, 'apps/site');
+
+    await expect(getScopedRootDirHandle(rootDirHandle)).resolves.toBe(siteDirHandle);
+  });
+
+  test('should not create a missing root directory by default', async () => {
+    mockGetRootDir.mockReturnValue('apps/site');
+
+    await expect(getScopedRootDirHandle(createMockDirectoryHandle())).rejects.toThrow();
+  });
+
+  test('should create a missing root directory if requested', async () => {
+    mockGetRootDir.mockReturnValue('apps/site');
+
+    const rootDirHandle = createMockDirectoryHandle();
+    const siteDirHandle = await getScopedRootDirHandle(rootDirHandle, { create: true });
+
+    expect(siteDirHandle.name).toBe('site');
+    await expect(
+      getHandleByPath(rootDirHandle, 'apps/site', 'directory', { create: false }),
+    ).resolves.toBe(siteDirHandle);
   });
 });
 

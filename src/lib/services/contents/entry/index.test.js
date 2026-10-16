@@ -28,6 +28,30 @@ vi.mock('$lib/services/backends', () => ({
   },
 }));
 
+// The real implementation caches its formatter for the browser’s time zone, which a test changing
+// `process.env.TZ` would otherwise keep reading the first zone from
+vi.mock('@sveltia/utils/datetime', () => ({
+  getDateTimeParts: vi.fn(({ date = new Date(), timeZone = undefined } = {}) => {
+    /** @type {Intl.DateTimeFormatOptions} */
+    const options = {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZoneName: 'longOffset',
+    };
+
+    return Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', { ...options, hourCycle: 'h23', timeZone })
+        .formatToParts(date)
+        .filter(({ type }) => type in options)
+        .map(({ type, value }) => [type, value]),
+    );
+  }),
+}));
+
 describe('Test getEntryPreviewURL()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -913,7 +937,7 @@ describe('Test getEntryPreviewURL()', () => {
 
     const collectionWithDotLocaleInPath = {
       ...mockCollection,
-      preview_path: '/posts/{{locale}}.{{slug}}',
+      preview_path: '/posts/{{slug}}.{{locale}}.html',
       _i18n: {
         ...mockCollection._i18n,
         defaultLocale: 'en',
@@ -934,14 +958,55 @@ describe('Test getEntryPreviewURL()', () => {
 
     const result = getEntryPreviewURL(mockEntry, 'en', collectionWithDotLocaleInPath);
 
-    // Verify that fillTemplate was called with the modified template (locale. segment removed)
+    // Verify that fillTemplate was called with the modified template (.locale segment removed)
     expect(fillTemplate).toHaveBeenCalledWith(
-      '/posts/{{slug}}',
+      '/posts/{{slug}}.html',
       expect.objectContaining({
         type: 'preview_path',
       }),
     );
     expect(result).toBe('https://example.com/test-entry');
+  });
+
+  test.each([
+    ['/{{locale}}', '/'],
+    ['/blog/{{locale}}', '/blog'],
+    ['/posts/{{locale}}.{{slug}}', '/posts/{{slug}}'],
+    // The placeholder can’t be removed without breaking the rest of the path, so it’s filled in
+    ['/{{locale}}.html', '/{{locale}}.html'],
+    ['/posts/{{locale}}-{{slug}}', '/posts/{{locale}}-{{slug}}'],
+  ])('omits locale from preview path %s where possible', async (previewPath, expected) => {
+    // @ts-ignore
+    (await import('$lib/services/config')).cmsConfig = {
+      current: {
+        show_preview_links: true,
+        _baseURL: 'https://example.com',
+      },
+    };
+
+    const { isCollectionIndexFile } =
+      await import('$lib/services/contents/collection/entries/index-file');
+
+    vi.mocked(isCollectionIndexFile).mockReturnValue(false);
+
+    const { fillTemplate } = await import('$lib/services/common/template');
+
+    vi.mocked(fillTemplate).mockReturnValue('test-entry');
+
+    getEntryPreviewURL(mockEntry, 'en', {
+      ...mockCollection,
+      preview_path: previewPath,
+      _i18n: {
+        ...mockCollection._i18n,
+        defaultLocale: 'en',
+        omitDefaultLocaleFromPreviewPath: true,
+      },
+    });
+
+    expect(fillTemplate).toHaveBeenCalledWith(
+      expected,
+      expect.objectContaining({ type: 'preview_path' }),
+    );
   });
 
   test('preserves locale in preview path for non-default locales even when omitDefaultLocaleFromPreviewPath is true', async () => {
@@ -1225,6 +1290,91 @@ describe('Test extractDateTime()', () => {
   });
 });
 
+describe('Test extractDateTime() in different time zones', () => {
+  /**
+   * Run a function in each of the given browser time zones.
+   * @param {(timeZone: string) => void} fn Function.
+   */
+  const inTimeZones = (fn) => {
+    const { TZ } = process.env;
+
+    ['UTC', 'America/New_York', 'Asia/Tokyo', 'Etc/GMT+12', 'Pacific/Kiritimati'].forEach(
+      (timeZone) => {
+        process.env.TZ = timeZone;
+
+        try {
+          fn(timeZone);
+        } finally {
+          process.env.TZ = TZ;
+        }
+      },
+    );
+  };
+
+  /**
+   * Get the date part of the parts extracted from the given field value.
+   * @param {Record<string, any>} options Field options.
+   * @param {string} value Field value.
+   * @returns {string | undefined} `YYYY-MM-DD`.
+   */
+  const getDatePart = (options, value) => {
+    const parts = extractDateTime({
+      fields: [{ name: 'date', widget: 'datetime', ...options }],
+      content: { date: value },
+    });
+
+    return parts ? `${parts.year}-${parts.month}-${parts.day}` : undefined;
+  };
+
+  test('keeps the date of a date-only field', () => {
+    inTimeZones(() => {
+      expect(getDatePart({ time_format: false }, '2026-01-15')).toBe('2026-01-15');
+      expect(getDatePart({ time_format: false, format: 'YYYY-MM-DD' }, '2026-01-15')).toBe(
+        '2026-01-15',
+      );
+      expect(getDatePart({ time_format: false, format: 'DD/MM/YYYY' }, '15/01/2026')).toBe(
+        '2026-01-15',
+      );
+      expect(
+        getDatePart({ time_format: false, format: 'YYYY-MM-DD', output_utc: true }, '2026-01-15'),
+      ).toBe('2026-01-15');
+      expect(
+        getDatePart({ time_format: false, input_timezone: 'America/New_York' }, '2026-01-15'),
+      ).toBe('2026-01-15');
+      expect(
+        getDatePart(
+          { time_format: false, format: 'YYYY-MM-DD', input_timezone: 'Asia/Tokyo' },
+          '2026-01-15',
+        ),
+      ).toBe('2026-01-15');
+    });
+  });
+
+  test('reads a date/time in the custom input time zone', () => {
+    inTimeZones(() => {
+      expect(getDatePart({ input_timezone: 'Asia/Tokyo' }, '2026-01-15T08:00:00+09:00')).toBe(
+        '2026-01-15',
+      );
+      expect(getDatePart({ input_timezone: 'Asia/Tokyo' }, '2026-01-15T08:00:00')).toBe(
+        '2026-01-15',
+      );
+      expect(
+        getDatePart(
+          { input_timezone: 'Asia/Tokyo', format: 'YYYY-MM-DD HH:mm' },
+          '2026-01-15 08:00',
+        ),
+      ).toBe('2026-01-15');
+      expect(getDatePart({ input_timezone: 'America/New_York' }, '2026-01-15T22:00:00-05:00')).toBe(
+        '2026-01-15',
+      );
+      // A value stored in UTC is read in UTC
+      expect(
+        getDatePart({ input_timezone: 'Asia/Tokyo', output_utc: true }, '2026-01-14T23:00:00Z'),
+      ).toBe('2026-01-14');
+    });
+  });
+});
+
 describe('Test fillEntryPathTemplate()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1336,6 +1486,16 @@ describe('Test getEntryRepoBlobURL()', () => {
     );
   });
 
+  test('should encode the characters in the path that have a meaning in a URL', () => {
+    const mockEntry = /** @type {any} */ ({
+      locales: { en: { path: 'content/posts/50% off #1.md' } },
+    });
+
+    expect(getEntryRepoBlobURL(mockEntry, 'en')).toBe(
+      'https://github.com/user/repo/blob/main/content/posts/50%25%20off%20%231.md?plain=1',
+    );
+  });
+
   test('should handle missing locale gracefully', () => {
     const mockEntry = {
       id: 'test-entry',
@@ -1352,6 +1512,6 @@ describe('Test getEntryRepoBlobURL()', () => {
 
     const result = getEntryRepoBlobURL(mockEntry, 'fr');
 
-    expect(result).toBe('https://github.com/user/repo/blob/main/undefined?plain=1');
+    expect(result).toBe('https://github.com/user/repo/blob/main/?plain=1');
   });
 });

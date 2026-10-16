@@ -32,6 +32,7 @@ vi.mock('$lib/services/contents/draft/backup', async () => {
   return {
     restoreDialogState: createDeepState({ show: false }),
     backupToastState: createDeepState({ saved: false, restored: false, deleted: false }),
+    cancelBackup: vi.fn(),
     deleteBackup: vi.fn(),
     getBackup: vi.fn(),
     getBackupSlug: vi.fn(() => ''),
@@ -169,6 +170,24 @@ describe('ContentDetailsOverlay', () => {
       .toHaveValue('Bonjour');
   });
 
+  test('shows a single pane when the configuration turns the second pane off', async () => {
+    await renderOverlay(createDraft({ canShowSecondPane: false }));
+
+    const editor = page.getByRole('group', { name: 'Content Editor' });
+
+    await expect
+      .element(editor.getByRole('group', { name: 'Edit \u2068English\u2069 Content' }))
+      .toBeInTheDocument();
+    expect(editorSecondPane.current).toBeNull();
+    expect(editor.getByRole('button', { name: 'Swap Panes' }).elements()).toHaveLength(0);
+
+    // The preview takes turns with the editor in the only pane
+    await editor.getByRole('radio', { name: 'Preview' }).click();
+    await expect
+      .element(editor.getByRole('group', { name: 'Preview \u2068English\u2069 Content' }))
+      .toBeInTheDocument();
+  });
+
   test('shows a single pane on a small screen, with the sidebar panels in a sheet', async () => {
     env.isSmallScreen = true;
     env.isLargeScreen = false;
@@ -194,6 +213,15 @@ describe('ContentDetailsOverlay', () => {
     await expect
       .element(page.getByRole('group', { name: 'Preview \u2068German\u2069 Content' }))
       .toBeInTheDocument();
+  });
+
+  test('starts with the requested locale without the preview', async () => {
+    entryEditorSettings.current = { showPreview: false, showSecondPane: true };
+
+    await renderOverlay(createDraft(), { editorLocale: 'de' });
+
+    await expect.poll(() => editorFirstPane.current).toEqual({ mode: 'edit', locale: 'de' });
+    expect(editorSecondPane.current).toEqual({ mode: 'edit', locale: 'en' });
   });
 
   test('highlights a field on request', async () => {

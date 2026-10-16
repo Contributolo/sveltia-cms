@@ -1,10 +1,13 @@
 import { unique } from '@sveltia/utils/array';
 
 import { callEventHooks } from '$lib/services/api/events';
+import { allAssets } from '$lib/services/assets/state';
 import { backend } from '$lib/services/backends';
+import { promptCommitMessage } from '$lib/services/backends/commit-prompt';
 import { createCommitMessage } from '$lib/services/backends/git/shared/commits';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
+import { toRepoChanges } from '$lib/services/backends/root-dir';
 import { getCommitAuthor } from '$lib/services/backends/save';
 import { allEntries } from '$lib/services/contents';
 import { getCollection } from '$lib/services/contents/collection';
@@ -13,9 +16,11 @@ import { getEntryPaths } from '$lib/services/contents/entry/paths';
 import {
   buildCascadeDeleteChanges,
   planCascadeDelete,
+  planCascadeDeleteOrThrow,
 } from '$lib/services/contents/entry/relations/cascade/delete';
 import { forgetDeployments } from '$lib/services/deployments';
 import { refreshProductionSHA } from '$lib/services/deployments/resolve';
+import { shareInFlight } from '$lib/services/utils/cache';
 import {
   getUnpublishedEntryByBranch,
   getUnpublishedEntryBySlug,
@@ -184,6 +189,32 @@ const clearUnpublishedEntry = (pullRequest, settleAssets) => {
 };
 
 /**
+ * Remove the assets at the given paths from the asset list, as the merge of a pull request has
+ * removed the files from the configured branch: the assets stored with an entry that the pull
+ * request deletes, or moves to another folder along with the entry. An asset that another pull
+ * request has committed to the same path stays, but no longer has a published version to restore
+ * if that pull request is discarded.
+ * @param {Set<string>} paths File paths.
+ */
+const removePublishedAssets = (paths) => {
+  if (!paths.size) {
+    return;
+  }
+
+  allAssets.current = allAssets.current.flatMap((asset) => {
+    if (!paths.has(asset.path)) {
+      return [asset];
+    }
+
+    if (!asset.workflow) {
+      return [];
+    }
+
+    return [{ ...asset, workflow: { branch: asset.workflow.branch } }];
+  });
+};
+
+/**
  * Move the given entry, whose pull request has been merged, from the unpublished entry list to the
  * regular entry list, along with its assets.
  * @param {UnpublishedEntry} entry Unpublished entry.
@@ -192,8 +223,13 @@ const clearUnpublishedEntry = (pullRequest, settleAssets) => {
  * the configured branch rather than putting a new version on it.
  * @param {Map<string, Entry>} [options.cascadedEntries] Entries the removal rewrote, keyed by ID,
  * to replace in the store.
+ * @param {Set<string>} [options.removedPaths] Paths of the files the merge removed from the
+ * configured branch, deleted or moved elsewhere, whose assets are taken off the asset list.
  */
-const settlePublishedEntry = (entry, { deletion = false, cascadedEntries = new Map() } = {}) => {
+const settlePublishedEntry = (
+  entry,
+  { deletion = false, cascadedEntries = new Map(), removedPaths = new Set() } = {},
+) => {
   const { workflow, ...publishedEntry } = entry;
   // Include the pre-rename paths, so the entry that the pull request renamed is replaced rather
   // than left behind as a duplicate
@@ -206,6 +242,7 @@ const settlePublishedEntry = (entry, { deletion = false, cascadedEntries = new M
   allEntries.current = deletion ? remaining : [...remaining, publishedEntry];
 
   clearUnpublishedEntry(workflow.pullRequest, publishWorkflowAssets);
+  removePublishedAssets(removedPaths);
 };
 
 /**
@@ -234,6 +271,8 @@ export const saveWorkflowChanges = async ({
   originalEntry,
 }) => {
   const workflow = getWorkflowService();
+  // The message the user enters goes into the title of a new pull request as well as the commit
+  const commitOptions = await promptCommitMessage(changes, options);
 
   const { existingEntry, branch } = resolveWorkflowBranch({
     collectionName,
@@ -243,9 +282,11 @@ export const saveWorkflowChanges = async ({
 
   const { commit, pullRequest } = await workflow.savePullRequest({
     changes,
-    options,
+    options: commitOptions,
     branch,
-    title: createCommitMessage(changes, options),
+    // The commit message the backend writes names the paths relative to the repository root, so
+    // the title does as well
+    title: createCommitMessage(toRepoChanges(changes), commitOptions),
     status: 'draft',
     pullRequest: existingEntry?.workflow.pullRequest,
   });
@@ -361,7 +402,8 @@ const pendingPublishes = new Map();
  */
 const mergeWorkflowEntry = async (entry) => {
   const workflow = getWorkflowService();
-  const { pullRequest, status } = entry.workflow;
+  const { status } = entry.workflow;
+  let { pullRequest } = entry.workflow;
   const deletion = status === 'pending_deletion';
   const hookArgs = getEventHookArgs(entry);
 
@@ -374,14 +416,20 @@ const mergeWorkflowEntry = async (entry) => {
   // The board shows the entry, but the merge takes the whole pull request as its branch stands. So
   // the pull request is read afresh and checked against what has been shown before anything else
   // happens; the merge is then pinned to the commit that was checked
-  await verifyMergeState(
-    entry,
-    await workflow.fetchMergeState(pullRequest),
-    workflow.fetchUnchangedPaths,
-  );
+  const mergeState = await workflow.fetchMergeState(pullRequest);
+
+  await verifyMergeState(entry, mergeState, workflow.fetchUnchangedPaths);
 
   if (hookArgs) {
     await callEventHooks({ ...hookArgs, type: preType });
+  }
+
+  // An entry in the drafting stage is kept as a draft pull request, which the Git service refuses
+  // to merge. It’s published from there with Preview Workflow or direct publishing, so it’s marked
+  // ready first, which also takes the draft marker off the pull request. This is left until the
+  // hooks have let the publish go ahead, so an entry isn’t marked ready for nothing
+  if (status === 'draft') {
+    ({ pullRequest } = (await updateWorkflowStatus(entry, 'pending_publish')).workflow);
   }
 
   await workflow.publish(pullRequest);
@@ -402,7 +450,20 @@ const mergeWorkflowEntry = async (entry) => {
       : [],
   );
 
-  settlePublishedEntry(entry, { deletion, cascadedEntries });
+  // The files the pull request removes or moves elsewhere are gone from the configured branch now,
+  // which includes the assets stored with an entry that has been deleted or renamed. They’re still
+  // on the asset list, as the pull request only added its own files there
+  const removedPaths = new Set(
+    mergeState.files.flatMap(({ status: fileStatus, path, previousPath }) =>
+      fileStatus === 'removed'
+        ? [path]
+        : fileStatus === 'renamed' && previousPath
+          ? [previousPath]
+          : [],
+    ),
+  );
+
+  settlePublishedEntry(entry, { deletion, cascadedEntries, removedPaths });
   // The merge put a new commit on the configured branch, so the production build to watch is a
   // different one now. The entry is listed as on its way until that build is done, so the head has
   // to be known before it’s recorded
@@ -425,21 +486,16 @@ const mergeWorkflowEntry = async (entry) => {
  */
 export const publishWorkflowEntry = async (entry) => {
   const { branch } = entry.workflow.pullRequest;
-  const pending = pendingPublishes.get(branch);
 
-  if (pending) {
-    return pending;
-  }
+  return shareInFlight(pendingPublishes, branch, () => {
+    const promise = mergeWorkflowEntry(entry).finally(() => {
+      publishingBranches.current = publishingBranches.current.filter((b) => b !== branch);
+    });
 
-  const promise = mergeWorkflowEntry(entry).finally(() => {
-    pendingPublishes.delete(branch);
-    publishingBranches.current = publishingBranches.current.filter((b) => b !== branch);
+    publishingBranches.current = [...publishingBranches.current, branch];
+
+    return promise;
   });
-
-  pendingPublishes.set(branch, promise);
-  publishingBranches.current = [...publishingBranches.current, branch];
-
-  return promise;
 };
 
 /**
@@ -456,6 +512,16 @@ export const discardWorkflowEntry = async (entry) => {
 };
 
 /**
+ * Get the changes that stand for the deletion of an entry in the commit message prompt and the
+ * pull request title: a single change naming the entry’s first file.
+ * @param {Entry} entry Entry to be deleted.
+ * @returns {FileChange[]} Changes.
+ */
+const getDeletionTitleChanges = (entry) => [
+  { action: 'delete', slug: entry.slug, path: getEntryPaths(entry)[0] },
+];
+
+/**
  * Delete the given published entry through Editorial Workflow: instead of committing the removal
  * straight to the configured branch, open a pull request that removes it, so taking an entry off
  * the site is reviewed and released like any other change. The entry stays on the site until that
@@ -470,7 +536,10 @@ export const discardWorkflowEntry = async (entry) => {
  * @param {CascadeTarget[]} [options.targets] Referencing entries to rewrite, already worked out
  * by {@link deleteWorkflowEntries} for a whole selection. Worked out for the entry alone if
  * omitted.
+ * @param {string} [options.userMessage] Commit message the user has entered, already asked for by
+ * {@link deleteWorkflowEntries} for a whole selection. Asked for if omitted and configured.
  * @returns {Promise<UnpublishedEntry>} Entry with the pull request attached.
+ * @throws {Error} When the user has cancelled the commit when asked for a commit message.
  * @throws {Error} When removing the references would leave another entry invalid. The dialogs
  * report this before the deletion is confirmed, so this is only a safeguard.
  * @see https://github.com/sveltia/sveltia-cms/issues/770
@@ -480,7 +549,7 @@ export const deleteWorkflowEntry = async (
   collection,
   collectionFile,
   assets = [],
-  { targets = undefined } = {},
+  { targets = undefined, userMessage = undefined } = {},
 ) => {
   // Taking a published entry off the site is a maintainer’s call. A contributor can discard their
   // own draft, which leaves the published version alone, but not propose a removal
@@ -491,17 +560,10 @@ export const deleteWorkflowEntry = async (
     );
   }
 
-  if (!targets) {
-    const plan = planCascadeDelete({ collection, collectionFile, entries: [entry] });
-
-    if (plan.blockers.length) {
-      throw new Error('Cannot delete an entry that other entries require', {
-        cause: plan.blockers,
-      });
-    }
-
-    ({ targets } = plan);
-  }
+  targets ??= planCascadeDeleteOrThrow(
+    { collection, collectionFile, entries: [entry] },
+    'Cannot delete an entry that other entries require',
+  );
 
   const workflow = getWorkflowService();
   const collectionName = collection.name;
@@ -511,6 +573,14 @@ export const deleteWorkflowEntry = async (
   // staged the deletion of the old paths there, so removing the new ones leaves nothing behind once
   // the merge lands
   const paths = getEntryPaths(entry);
+  const titleChanges = getDeletionTitleChanges(entry);
+
+  const options = await promptCommitMessage(titleChanges, {
+    commitType: 'delete',
+    collection,
+    userMessage,
+  });
+
   // An entry-relative asset lives with the entry, so it goes in the same pull request rather than
   // being left behind once the removal lands
   const assetPaths = unique(assets.map(({ path }) => path));
@@ -527,35 +597,41 @@ export const deleteWorkflowEntry = async (
       ),
       ...cascadeChanges,
     ],
-    options: { commitType: 'delete', collection },
+    options,
     branch,
-    title: createCommitMessage([{ action: 'delete', slug, path: paths[0] }], {
-      commitType: 'delete',
-      collection,
-    }),
+    title: createCommitMessage(toRepoChanges(titleChanges), options),
     // The removal is complete as committed, so it skips the review stages entirely. Opening it at
     // this status avoids the churn of creating a draft and relabelling it a moment later
     status: 'pending_deletion',
     pullRequest: existingEntry?.workflow.pullRequest,
   });
 
-  // A reused pull request keeps the status it already had, so it still needs the switch. It also
-  // carries the head commit from before this one, which publishing compares with the branch, so
-  // it’s pointed at the new commit
-  const readyPullRequest = {
-    ...(pullRequest.status === 'pending_deletion'
-      ? pullRequest
-      : await workflow.updateStatus(pullRequest, 'pending_deletion')),
-    headSHA: commit.sha,
-  };
+  /**
+   * Store the entry with the given pull request, pointed at the new commit: a reused pull request
+   * carries the head commit from before this one, which publishing compares with the branch.
+   * @param {WorkflowPullRequest} pr Pull request.
+   * @returns {UnpublishedEntry} Unpublished entry.
+   */
+  const store = (pr) =>
+    storeUnpublishedEntry(entry, {
+      pullRequest: { ...pr, headSHA: commit.sha },
+      collectionName,
+      fileName: collectionFile?.name,
+      // Where the entry lives on the configured branch, which a rename has already moved away from
+      previousPaths: getPreviousPaths(existingEntry, paths),
+    });
 
-  return storeUnpublishedEntry(entry, {
-    pullRequest: readyPullRequest,
-    collectionName,
-    fileName: collectionFile?.name,
-    // Where the entry lives on the configured branch, which a rename has already moved away from
-    previousPaths: getPreviousPaths(existingEntry, paths),
-  });
+  if (pullRequest.status === 'pending_deletion') {
+    return store(pullRequest);
+  }
+
+  // A reused pull request keeps the status it already had, so it still needs the switch. The
+  // commit has landed by now, so the entry is stored first with the status it has: if the switch
+  // then fails, the entry still follows the branch rather than its previous head commit, which
+  // would hold up publishing and saving until the next reload
+  store(pullRequest);
+
+  return store(await workflow.updateStatus(pullRequest, 'pending_deletion'));
 };
 
 /**
@@ -605,17 +681,22 @@ export const deleteWorkflowEntries = async (items) => {
   groups.forEach((group, key) => {
     const [{ collection, collectionFile }] = group;
 
-    const { targets, blockers } = planCascadeDelete({
-      collection,
-      collectionFile,
-      entries: group.map(({ entry }) => entry),
-    });
+    targetMap.set(
+      key,
+      planCascadeDeleteOrThrow(
+        { collection, collectionFile, entries: group.map(({ entry }) => entry) },
+        'Cannot delete entries that other entries require',
+      ),
+    );
+  });
 
-    if (blockers.length) {
-      throw new Error('Cannot delete entries that other entries require', { cause: blockers });
-    }
+  // Ask for a commit message once for the whole selection rather than for each pull request. Each
+  // pull request is titled after its own entry, so the first one stands for the rest
+  const [{ entry: firstEntry, collection: firstCollection }] = items;
 
-    targetMap.set(key, targets);
+  const { userMessage } = await promptCommitMessage(getDeletionTitleChanges(firstEntry), {
+    commitType: 'delete',
+    collection: firstCollection,
   });
 
   await runConcurrently(items, async (item) => {
@@ -623,6 +704,8 @@ export const deleteWorkflowEntries = async (items) => {
 
     await deleteWorkflowEntry(entry, collection, collectionFile, assets, {
       targets: targetMap.get(getKey(item)),
+      // A string, even an empty one, tells the user has been asked already
+      userMessage,
     });
   });
 };

@@ -1,11 +1,16 @@
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, onTestFinished, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 
 import { lockedBranch } from '$lib/services/backends/branch-access';
 import { getCollection, selectedCollection } from '$lib/services/contents/collection';
 import { selectedEntries } from '$lib/services/contents/collection/entries';
-import { reordering, setReorderMode } from '$lib/services/contents/collection/view';
+import {
+  bulkEditing,
+  reordering,
+  setBulkEditMode,
+  setReorderMode,
+} from '$lib/services/contents/collection/view';
 import { env } from '$lib/services/user/env.svelte';
 import { unpublishedEntries } from '$lib/services/workflow';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
@@ -61,6 +66,13 @@ describe('PrimaryToolbar', () => {
           fields: [{ name: 'title', widget: 'string' }],
         },
         {
+          name: 'bulk',
+          label: 'Bulk',
+          folder: 'content/bulk',
+          bulk_edit: true,
+          fields: [{ name: 'title', widget: 'string' }],
+        },
+        {
           name: 'settings',
           label: 'Settings',
           files: [{ name: 'general', file: 'data/general.yml', fields: [{ name: 'x' }] }],
@@ -89,6 +101,7 @@ describe('PrimaryToolbar', () => {
     lockedBranch.current = undefined;
     selectedEntries.current = [];
     setReorderMode(false);
+    setBulkEditMode(false);
     setEntries([
       createMockEntry({ slug: 'a', content: { _default: { title: 'A' } } }),
       createMockEntry({
@@ -105,6 +118,11 @@ describe('PrimaryToolbar', () => {
         slug: 'd',
         folder: 'content/full',
         content: { _default: { title: 'D' } },
+      }),
+      createMockEntry({
+        slug: 'e',
+        folder: 'content/bulk',
+        content: { _default: { title: 'E' } },
       }),
     ]);
   });
@@ -174,6 +192,109 @@ describe('PrimaryToolbar', () => {
     await expect
       .element(page.getByRole('button', { name: 'Done Reordering Entries' }))
       .toBeVisible();
+  });
+
+  test('keeps the focus near the buttons as the reorder mode is entered and left', async () => {
+    selectedCollection.current = getCollection('sorted');
+
+    await render(PrimaryToolbar, {});
+
+    const reorder = page.getByRole('button', { name: 'Reorder Entries' });
+
+    // The Done button is disabled until something has moved, so the Cancel button takes the focus
+    await reorder.click();
+    await expect
+      .element(page.getByRole('button', { name: 'Cancel Reordering Entries' }))
+      .toHaveFocus();
+
+    await page.getByRole('button', { name: 'Cancel Reordering Entries' }).click();
+    expect(reordering.current).toBe(false);
+    await expect.element(reorder).toHaveFocus();
+  });
+
+  test('offers bulk editing only when the collection allows it', async () => {
+    selectedCollection.current = getCollection('posts');
+
+    await render(PrimaryToolbar, {});
+
+    await expect.element(page.getByRole('button', { name: 'Create New Entry' })).toBeVisible();
+    expect(page.getByRole('button', { name: 'Edit Entries in Bulk' }).elements()).toHaveLength(0);
+
+    selectedCollection.current = getCollection('bulk');
+
+    const edit = page.getByRole('button', { name: 'Edit Entries in Bulk' });
+
+    await expect.element(edit).toHaveTextContent('Edit');
+    await expect.element(edit).toHaveAttribute('aria-disabled', 'false');
+
+    // A table of controls doesn’t fit on a small screen
+    env.isSmallScreen = true;
+    await expect.element(page.getByRole('button', { name: 'Create New Entry' })).toBeVisible();
+    expect(page.getByRole('button', { name: 'Edit Entries in Bulk' }).elements()).toHaveLength(0);
+  });
+
+  test('disables the bulk edit button when there is no entry to edit', async () => {
+    setEntries([]);
+    selectedCollection.current = getCollection('bulk');
+
+    await render(PrimaryToolbar, {});
+
+    await expect
+      .element(page.getByRole('button', { name: 'Edit Entries in Bulk' }))
+      .toHaveAttribute('aria-disabled', 'true');
+  });
+
+  test('keeps the focus near the buttons as the bulk edit mode is entered and left', async () => {
+    selectedCollection.current = getCollection('bulk');
+
+    await render(PrimaryToolbar, {});
+
+    const edit = page.getByRole('button', { name: 'Edit Entries in Bulk' });
+
+    // The Save button is disabled until something has changed, so the Cancel button takes the focus
+    await edit.click();
+    expect(bulkEditing.current).toBe(true);
+    await expect.element(page.getByRole('button', { name: 'Save Bulk Edits' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Cancel Bulk Edits' })).toHaveFocus();
+    // The other entry actions make way for the controls
+    expect(page.getByRole('button', { name: 'Create New Entry' }).elements()).toHaveLength(0);
+    expect(page.getByRole('button', { name: /^Delete/ }).elements()).toHaveLength(0);
+
+    await page.getByRole('button', { name: 'Cancel Bulk Edits' }).click();
+    expect(bulkEditing.current).toBe(false);
+    await expect.element(edit).toHaveFocus();
+  });
+
+  test('moves the focus to the entry list once the focused Delete button is disabled', async () => {
+    selectedCollection.current = getCollection('posts');
+
+    // The entry list next to the toolbar, with the row in the tab order
+    const pageContainer = document.createElement('div');
+
+    pageContainer.id = 'page-container';
+    pageContainer.innerHTML = '<div role="grid"><div role="row" tabindex="0">A</div></div>';
+    document.body.append(pageContainer);
+    onTestFinished(() => {
+      pageContainer.remove();
+    });
+
+    await render(PrimaryToolbar, {});
+    selectedEntries.current = [createMockEntry({ slug: 'a' })];
+
+    const deleteButton = page.getByRole('button', { name: 'Delete Selected Entry' });
+
+    await expect.element(deleteButton).toBeEnabled();
+    deleteButton.element().focus();
+    // The selected entry has been deleted
+    selectedEntries.current = [];
+    await expect.element(page.getByRole('row')).toHaveFocus();
+
+    // The focus is left alone when the button didn’t have it
+    selectedEntries.current = [createMockEntry({ slug: 'a' })];
+    await expect.element(deleteButton).toBeEnabled();
+    selectedEntries.current = [];
+    await expect.element(page.getByRole('button', { name: /^Delete/ })).toBeDisabled();
+    await expect.element(page.getByRole('row')).toHaveFocus();
   });
 
   test('warns about a limit of 1 entry in the singular', async () => {

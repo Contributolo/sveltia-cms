@@ -15,6 +15,9 @@ describe('DEFAULT_VALIDITY', () => {
       patternMismatch: false,
       typeMismatch: false,
       customError: false,
+      duplicateError: false,
+      mapKeyDuplicate: false,
+      mapKeyNumeric: false,
     });
   });
 

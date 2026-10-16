@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { collectScanningPaths, getPathRegex, scanDir } from '$lib/services/backends/fs/shared/scan';
+import { createMockAssetFolder } from '$lib/test/factories';
 import { createMockDirectoryHandle, createMockFileHandle } from '$lib/test/fs-handles';
 
 vi.mock('@sveltia/utils/misc', () => ({
@@ -238,6 +239,65 @@ describe('scanDir', () => {
     expect(fileHandles).toHaveLength(0);
   });
 
+  test('should scan the subdirectories at the same time, keeping the files in order', async () => {
+    const dirHandle = createMockDirectoryHandle('site');
+    const firstDirHandle = createMockDirectoryHandle('a');
+    const secondDirHandle = createMockDirectoryHandle('b');
+    const rootFile = createMockFileHandle('root.md');
+    const firstFile = createMockFileHandle('1.md');
+    const secondFile = createMockFileHandle('2.md');
+    const lastFile = createMockFileHandle('z.md');
+    /**
+     * Let the first directory be listed.
+     * @type {(value?: any) => void}
+     */
+    let releaseFirstDir = () => {};
+    let secondDirScanned = false;
+
+    // @ts-ignore - Mock async iterator
+    dirHandle.entries = vi.fn(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield ['root.md', rootFile];
+        yield ['a', firstDirHandle];
+        yield ['b', secondDirHandle];
+        yield ['z.md', lastFile];
+      },
+    }));
+
+    // @ts-ignore - Mock async iterator, which takes a while to list the first directory
+    firstDirHandle.entries = vi.fn(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        await new Promise((resolve) => {
+          releaseFirstDir = resolve;
+        });
+        yield ['1.md', firstFile];
+      },
+    }));
+
+    // @ts-ignore - Mock async iterator
+    secondDirHandle.entries = vi.fn(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield ['2.md', secondFile];
+        secondDirScanned = true;
+      },
+    }));
+
+    const scanned = scanDir(dirHandle, {
+      rootDirHandle,
+      scanningPaths: ['root.md', 'a', 'b', 'z.md'],
+      scanningPathsRegEx: [/^(?:root\.md|a|b|z\.md)(?:\/.+)?$/],
+      fileHandles,
+      pathRegexCache: new Map(),
+    });
+
+    // The second directory is scanned while the first one is still being listed
+    await vi.waitFor(() => expect(secondDirScanned).toBe(true));
+    releaseFirstDir();
+    await scanned;
+
+    expect(fileHandles.map(({ path }) => path)).toEqual(['root.md', 'a/1.md', 'b/2.md', 'z.md']);
+  });
+
   test('should handle directory matching scanning path', async () => {
     const nestedDirHandle = createMockDirectoryHandle('nested');
     const fileHandle = createMockFileHandle('file.txt');
@@ -369,27 +429,21 @@ describe('collectScanningPaths', () => {
     ];
 
     allAssetFolders.current = [
-      {
+      createMockAssetFolder({
         collectionName: 'images',
         internalPath: 'static/images',
         publicPath: '/images',
-        entryRelative: false,
-        hasTemplateTags: false,
-      },
-      {
+      }),
+      createMockAssetFolder({
         collectionName: 'videos',
         internalPath: 'static/videos',
         publicPath: '/videos',
-        entryRelative: false,
-        hasTemplateTags: false,
-      },
-      {
+      }),
+      createMockAssetFolder({
         collectionName: 'other',
         internalPath: undefined,
         publicPath: undefined,
-        entryRelative: false,
-        hasTemplateTags: false,
-      }, // Should be filtered out
+      }), // Should be filtered out
     ];
 
     const paths = collectScanningPaths();
@@ -421,13 +475,11 @@ describe('collectScanningPaths', () => {
     ];
 
     allAssetFolders.current = [
-      {
+      createMockAssetFolder({
         collectionName: 'images',
         internalPath: '/static/images/',
         publicPath: '/images',
-        entryRelative: false,
-        hasTemplateTags: false,
-      },
+      }),
     ];
 
     const paths = collectScanningPaths();

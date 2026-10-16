@@ -13,7 +13,7 @@ import { deleteEntries } from '$lib/services/contents/collection/data/delete';
 import { nestedFilterPath } from '$lib/services/contents/collection/nested';
 import { duplicateDraft } from '$lib/services/contents/draft/create/duplicate';
 import { saveEntry } from '$lib/services/contents/draft/save';
-import { copyFromLocaleToast } from '$lib/services/contents/editor';
+import { copyFromLocaleToast, listItemClipboardToast } from '$lib/services/contents/editor';
 import { trackPendingFieldUpdate } from '$lib/services/contents/editor/pending';
 import { entryEditorSettings } from '$lib/services/contents/editor/settings';
 import { sidebarSheetPanel } from '$lib/services/contents/editor/sidebar';
@@ -27,6 +27,7 @@ import {
   deleteWorkflowEntries,
   discardWorkflowEntries,
   discardWorkflowEntry,
+  publishWorkflowEntry,
   updateWorkflowStatus,
 } from '$lib/services/workflow/save';
 import {
@@ -66,6 +67,26 @@ vi.mock('$lib/services/workflow/save', () => ({
 const fields = [{ name: 'title', widget: 'string' }];
 const postsCollection = { name: 'posts', label: 'Posts', folder: 'content/posts', fields };
 const helloEntry = createMockEntry({ slug: 'hello', content: { _default: { title: 'Hello' } } });
+const worldEntry = createMockEntry({ slug: 'world', content: { _default: { title: 'World' } } });
+
+/**
+ * Open another entry in the editor, as the user can do with the Back button while a save is in
+ * flight.
+ * @param {any} entryDraft Entry draft state.
+ * @returns {any} Draft of the other entry, with a change of its own.
+ */
+const openOtherEntry = (entryDraft) => {
+  const draft = createMockDraft({
+    fields,
+    values: { _default: { title: 'World edited' } },
+    draft: { collection: getCollection('posts'), isNew: false, originalEntry: worldEntry },
+  });
+
+  entryDraft.current = draft;
+  window.location.hash = '#/collections/posts/entries/world';
+
+  return draft;
+};
 
 /**
  * Render the toolbar.
@@ -147,7 +168,12 @@ describe('Toolbar', () => {
     await save.click();
 
     await vi.waitFor(() =>
-      expect(saveEntry).toHaveBeenCalledWith({ draft, skipCI: undefined, overwrite: false }),
+      expect(saveEntry).toHaveBeenCalledWith({
+        draft,
+        skipCI: undefined,
+        overwrite: false,
+        publish: false,
+      }),
     );
     await expect.poll(() => window.location.hash).toBe('#/collections/posts');
     expect(entryDraft.current).toBeNull();
@@ -193,7 +219,12 @@ describe('Toolbar', () => {
     resolve(undefined);
 
     await vi.waitFor(() =>
-      expect(saveEntry).toHaveBeenCalledWith({ draft, skipCI: undefined, overwrite: false }),
+      expect(saveEntry).toHaveBeenCalledWith({
+        draft,
+        skipCI: undefined,
+        overwrite: false,
+        publish: false,
+      }),
     );
   });
 
@@ -326,7 +357,12 @@ describe('Toolbar', () => {
     await dialog.getByRole('button', { name: 'Save Anyway' }).click();
 
     await vi.waitFor(() =>
-      expect(saveEntry).toHaveBeenLastCalledWith({ draft, skipCI: undefined, overwrite: true }),
+      expect(saveEntry).toHaveBeenLastCalledWith({
+        draft,
+        skipCI: undefined,
+        overwrite: true,
+        publish: false,
+      }),
     );
     // Saved and closed
     await expect.poll(() => entryDraft.current).toBe(null);
@@ -690,7 +726,12 @@ describe('Toolbar', () => {
 
     await page.getByRole('button', { name: 'Publish' }).click();
     await vi.waitFor(() =>
-      expect(saveEntry).toHaveBeenCalledWith({ draft, skipCI: undefined, overwrite: false }),
+      expect(saveEntry).toHaveBeenCalledWith({
+        draft,
+        skipCI: undefined,
+        overwrite: false,
+        publish: false,
+      }),
     );
 
     // The split button offers the opposite
@@ -703,6 +744,7 @@ describe('Toolbar', () => {
         draft: anotherDraft,
         skipCI: true,
         overwrite: false,
+        publish: false,
       }),
     );
   });
@@ -787,6 +829,94 @@ describe('Toolbar', () => {
     expect(/** @type {any} */ (entryEditorSettings.current)?.showSecondPane).toBe(false);
   });
 
+  describe('a save that lands after another entry has been opened', () => {
+    test('leaves the other entry open when the editor would be closed', async () => {
+      const { promise, resolve } = Promise.withResolvers();
+
+      vi.mocked(saveEntry).mockReturnValueOnce(/** @type {any} */ (promise));
+
+      const { entryDraft } = await renderToolbar();
+
+      await page.getByRole('button', { name: 'Save' }).click();
+      await vi.waitFor(() => expect(saveEntry).toHaveBeenCalledOnce());
+      openOtherEntry(entryDraft);
+      resolve(helloEntry);
+
+      // The save is over once the button is no longer labelled as saving
+      await expect
+        .element(page.getByRole('button', { name: 'Save', exact: true }))
+        .toBeInTheDocument();
+      expect(window.location.hash).toBe('#/collections/posts/entries/world');
+      expect(entryDraft.current?.originalEntry).toEqual(worldEntry);
+      expect(entryDraft.current?.currentValues._default.title).toBe('World edited');
+    });
+
+    test('leaves the other entry’s draft alone when the editor would stay open', async () => {
+      prefs.closeOnSave = false;
+
+      const { promise, resolve } = Promise.withResolvers();
+
+      vi.mocked(saveEntry).mockReturnValueOnce(/** @type {any} */ (promise));
+
+      const { draft, entryDraft } = await renderExisting();
+
+      draft.currentValues._default.title = 'Hi';
+      await page.getByRole('button', { name: 'Save' }).click();
+      await vi.waitFor(() => expect(saveEntry).toHaveBeenCalledOnce());
+      openOtherEntry(entryDraft);
+      resolve(helloEntry);
+
+      await expect
+        .element(page.getByRole('button', { name: 'Save', exact: true }))
+        .toBeInTheDocument();
+      expect(window.location.hash).toBe('#/collections/posts/entries/world');
+      expect(entryDraft.current?.originalEntry).toEqual(worldEntry);
+      expect(entryDraft.current?.currentValues._default.title).toBe('World edited');
+    });
+
+    test('doesn’t offer to save over someone else’s change to the other entry', async () => {
+      const { promise, reject } = Promise.withResolvers();
+
+      vi.mocked(saveEntry).mockReturnValueOnce(/** @type {any} */ (promise));
+
+      const { draft, entryDraft } = await renderExisting();
+
+      draft.currentValues._default.title = 'Hi';
+      await page.getByRole('button', { name: 'Save' }).click();
+      await vi.waitFor(() => expect(saveEntry).toHaveBeenCalledOnce());
+      openOtherEntry(entryDraft);
+      reject(
+        new Error('save_conflict', {
+          cause: { type: 'modified', entry: helloEntry, canOverwrite: true },
+        }),
+      );
+
+      // Saving anyway would save the other entry, so the save is only reported as failed
+      await expect.element(page.getByRole('alertdialog', { name: 'Error' })).toBeInTheDocument();
+      expect(
+        page.getByRole('alertdialog', { name: 'Entry Changed by Someone Else' }).query(),
+      ).toBeNull();
+    });
+
+    test('isn’t saved once another entry is opened while a change is on its way', async () => {
+      const { draft, entryDraft } = await renderExisting();
+      const { promise, resolve } = Promise.withResolvers();
+
+      draft.currentValues._default.title = 'Hi';
+      trackPendingFieldUpdate(promise);
+      await page.getByRole('button', { name: 'Save' }).click();
+      openOtherEntry(entryDraft);
+      // The other entry has changes of its own, which the save must not pick up
+      entryDraft.current.currentValues._default.title = 'World changed';
+      resolve(undefined);
+
+      await expect
+        .element(page.getByRole('button', { name: 'Save', exact: true }))
+        .toBeInTheDocument();
+      expect(saveEntry).not.toHaveBeenCalled();
+    });
+  });
+
   test('closes the editor after saving by default', async () => {
     prefs.closeOnSave = undefined;
     window.location.hash = '#/collections/posts/new';
@@ -838,6 +968,43 @@ describe('Toolbar', () => {
     await userEvent.keyboard('{Escape}');
     await page.getByRole('button', { name: 'Save' }).last().click();
     await expect.element(page.getByRole('button', { name: 'Saving…' })).toBeInTheDocument();
+  });
+
+  test('doesn’t close the editor with the Escape key pressed during an IME composition', async () => {
+    prefs.closeWithEscape = true;
+    await renderToolbar();
+
+    const backButton = page.getByRole('button', { name: 'Cancel Editing' });
+
+    await expect.element(backButton).toHaveAttribute('aria-keyshortcuts', 'Escape');
+
+    /**
+     * Press the Escape key.
+     * @param {KeyboardEventInit & { keyCode?: number }} [init] Event details.
+     */
+    const pressEscape = (init = {}) => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          code: 'Escape',
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        }),
+      );
+    };
+
+    // Cancelling a conversion: Chrome and Firefox flag the event, Safari sends it right after the
+    // composition has ended with the `keyCode` of `229`
+    pressEscape({ key: 'Process', isComposing: true });
+    pressEscape({ keyCode: 229 });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    expect(window.location.hash).toBe('#/collections/posts/new');
+
+    pressEscape();
+    await expect.poll(() => window.location.hash).toBe('#/collections/posts');
   });
 
   test('titles a collection file, which can only be discarded', async () => {
@@ -950,6 +1117,15 @@ describe('Toolbar', () => {
     } finally {
       setAssets([]);
     }
+  });
+
+  test('shows the toast of the list item clipboard', async () => {
+    await renderExisting();
+
+    listItemClipboardToast.current = { id: 1, show: true, status: 'success', message: 'Copied.' };
+    await expect.poll(getShownToastText).toBe('check_circle Success Copied.');
+    await waitForToastsToHide();
+    expect(listItemClipboardToast.current.show).toBe(false);
   });
 
   test('reports a copy without a source language', async () => {
@@ -1126,6 +1302,91 @@ describe('Toolbar', () => {
       );
       await expect.poll(() => window.location.hash).toBe('#/collections/posts');
       expect(draft).toBeDefined();
+    });
+
+    test('offers to mark a saved draft ready when the review stage is left out', async () => {
+      await initTestConfig({
+        backend: { name: 'github', repo: 'me/site' },
+        publish_mode: { type: 'editorial_workflow', stages: ['draft', 'pending_publish'] },
+        collections: [postsCollection],
+      });
+
+      await renderToolbar();
+      await page.getByRole('button', { name: 'Save' }).click();
+
+      const dialog = page.getByRole('alertdialog', { name: 'Mark as Ready' });
+
+      await expect
+        .element(dialog)
+        .toMatchTextContent(/Mark the entry as ready so it can be published\?/);
+      await dialog.getByRole('button', { name: 'Mark as Ready' }).click();
+
+      await vi.waitFor(() =>
+        expect(updateWorkflowStatus).toHaveBeenCalledWith(unpublishedEntry, 'pending_publish'),
+      );
+    });
+
+    test('saves and publishes in one go when direct publishing is enabled', async () => {
+      await initTestConfig({
+        backend: { name: 'github', repo: 'me/site' },
+        publish_mode: { type: 'editorial_workflow', direct_publish: true },
+        collections: [postsCollection],
+      });
+
+      await renderToolbar();
+      await page.getByRole('button', { name: 'More Options' }).first().click();
+      await page.getByRole('menuitem', { name: 'Save and Publish' }).click();
+
+      await vi.waitFor(() =>
+        expect(saveEntry).toHaveBeenCalledWith(
+          expect.objectContaining({ publish: true, skipCI: false }),
+        ),
+      );
+      await vi.waitFor(() => expect(publishWorkflowEntry).toHaveBeenCalledWith(unpublishedEntry));
+      // Nothing is left to hand over for review
+      expect(page.getByRole('alertdialog').elements()).toHaveLength(0);
+      await expect.poll(() => window.location.hash).toBe('#/collections/posts');
+    });
+
+    test('saves a draft as usual when direct publishing is enabled', async () => {
+      await initTestConfig({
+        backend: { name: 'github', repo: 'me/site' },
+        publish_mode: { type: 'preview', direct_publish: true },
+        collections: [postsCollection],
+      });
+
+      await renderToolbar();
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+      await vi.waitFor(() =>
+        expect(saveEntry).toHaveBeenCalledWith(expect.objectContaining({ publish: false })),
+      );
+      expect(publishWorkflowEntry).not.toHaveBeenCalled();
+      // Preview Workflow has no stage to hand the draft over to
+      expect(page.getByRole('alertdialog').elements()).toHaveLength(0);
+    });
+
+    test('leaves another entry opened while sending for review alone', async () => {
+      const { promise, resolve } = Promise.withResolvers();
+
+      vi.mocked(updateWorkflowStatus).mockReturnValueOnce(/** @type {any} */ (promise));
+
+      const { entryDraft } = await renderToolbar();
+
+      await page.getByRole('button', { name: 'Save' }).click();
+      await page
+        .getByRole('alertdialog', { name: 'Send for Review' })
+        .getByRole('button', { name: 'Send for Review' })
+        .click();
+      await vi.waitFor(() => expect(updateWorkflowStatus).toHaveBeenCalledOnce());
+      openOtherEntry(entryDraft);
+      resolve(unpublishedEntry);
+
+      await expect
+        .element(page.getByRole('button', { name: 'Save', exact: true }))
+        .toBeInTheDocument();
+      expect(window.location.hash).toBe('#/collections/posts/entries/world');
+      expect(entryDraft.current?.originalEntry).toEqual(worldEntry);
     });
 
     test('can leave the draft as is', async () => {
@@ -1484,7 +1745,12 @@ describe('Toolbar', () => {
 
       // A plain save: no review prompt, and the editor closes
       await vi.waitFor(() =>
-        expect(saveEntry).toHaveBeenCalledWith({ draft, skipCI: undefined, overwrite: false }),
+        expect(saveEntry).toHaveBeenCalledWith({
+          draft,
+          skipCI: undefined,
+          overwrite: false,
+          publish: false,
+        }),
       );
       await expect.poll(() => window.location.hash).toBe('#/collections/posts');
       expect(page.getByRole('alertdialog').elements()).toHaveLength(0);

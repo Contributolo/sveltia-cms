@@ -9,6 +9,7 @@ import {
   copyFromLocale,
   getCopyingFieldMap,
   getTurndownService,
+  isTranslationPending,
   translateFields,
   updateToast,
 } from './copy';
@@ -398,6 +399,40 @@ describe('draft/update/copy', () => {
       expect(result).not.toHaveProperty('title');
     });
 
+    it('should translate a `duplicate_if_empty` field still holding the source value', () => {
+      vi.mocked(getField).mockImplementation(({ keyPath }) =>
+        keyPath === 'title'
+          ? { name: 'title', i18n: 'duplicate_if_empty', widget: 'string' }
+          : undefined,
+      );
+
+      mockEntryDraft.currentValues.ja.title = mockEntryDraft.currentValues.en.title;
+
+      const options = { sourceLanguage: 'en', targetLanguage: 'ja', translate: true };
+
+      expect(getCopyingFieldMap({ draft: mockEntryDraft, options })).toHaveProperty('title');
+
+      // A value of the locale’s own is kept
+      mockEntryDraft.currentValues.ja.title = 'Japanese Title';
+
+      expect(getCopyingFieldMap({ draft: mockEntryDraft, options })).not.toHaveProperty('title');
+    });
+
+    it('should skip a populated List field with the `duplicate_if_empty` option', () => {
+      // A List field doesn’t support the strategy, so it works like a translatable field
+      vi.mocked(getField).mockImplementation(({ keyPath }) =>
+        keyPath === 'title'
+          ? { name: 'title', i18n: 'duplicate_if_empty', widget: 'list' }
+          : undefined,
+      );
+
+      mockEntryDraft.currentValues.ja.title = mockEntryDraft.currentValues.en.title;
+
+      const options = { sourceLanguage: 'en', targetLanguage: 'ja', translate: true };
+
+      expect(getCopyingFieldMap({ draft: mockEntryDraft, options })).not.toHaveProperty('title');
+    });
+
     it('should mark richtext fields as markdown', () => {
       const draft = mockEntryDraft;
 
@@ -486,7 +521,9 @@ describe('draft/update/copy', () => {
         note: 'Hello',
         'links.0.label': 'Home',
         'links.0.url': 'https://example.com',
+        'links.0.title': 'Homepage',
         'tags.0': 'food',
+        'note.0': 'Hi',
         extra: 'Unknown',
       };
       mockEntryDraft.currentValues.ja = {};
@@ -500,12 +537,22 @@ describe('draft/update/copy', () => {
         date: { name: 'date', i18n: 'duplicate', widget: 'string' },
         // No option means no i18n
         note: { name: 'note', widget: 'string' },
-        links: { name: 'links', i18n: 'translate', widget: 'list' },
-        // A subfield inherits the option of its parent, unless it has its own
+        links: {
+          name: 'links',
+          i18n: 'translate',
+          widget: 'list',
+          fields: [{ name: 'label' }, { name: 'url' }, { name: 'title' }],
+        },
+        // A subfield goes by its own option, like the editor, rather than inheriting the option
+        // of its parent, as it used to: without one, it’s hidden in the other locales
         'links.0.label': { name: 'label', widget: 'string' },
         'links.0.url': { name: 'url', i18n: 'duplicate', widget: 'string' },
-        // An item of a List field without subfields has no configuration of its own
+        'links.0.title': { name: 'title', i18n: true, widget: 'string' },
+        // An item of a List field without subfields has no configuration of its own, so it takes
+        // the option of the List field
         tags: { name: 'tags', i18n: true, widget: 'list' },
+        // The same goes for a key path that only looks like a list item
+        'note.0': undefined,
       };
 
       vi.mocked(getField).mockImplementation(({ keyPath }) => fields[keyPath]);
@@ -516,7 +563,31 @@ describe('draft/update/copy', () => {
       });
 
       // A key without a field isn’t copied either
-      expect(Object.keys(result)).toEqual(['title', 'links.0.label', 'tags.0']);
+      expect(Object.keys(result)).toEqual(['title', 'links.0.title', 'tags.0']);
+    });
+
+    it('should not copy into a subfield the editor hides in the target locale', () => {
+      mockEntryDraft.currentValues.en = { 'links.0.label': 'Home' };
+      mockEntryDraft.currentValues.ja = {};
+
+      /** @type {Record<string, any>} */
+      const fields = {
+        links: { name: 'links', i18n: true, widget: 'list', fields: [{ name: 'label' }] },
+        // No option of its own
+        'links.0.label': { name: 'label', widget: 'string' },
+      };
+
+      vi.mocked(getField).mockImplementation(({ keyPath }) => fields[keyPath]);
+
+      const result = getCopyingFieldMap({
+        draft: mockEntryDraft,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja', translate: true },
+      });
+
+      // Copy and Translate used to inherit the List field’s `i18n` option, writing a Japanese
+      // value the user can’t see or edit, as the editor (`getFieldLocaleAccess()`), the validator
+      // and the default values go by the subfield’s own option, which defaults to `false`
+      expect(result).toEqual({});
     });
   });
 
@@ -560,6 +631,135 @@ describe('draft/update/copy', () => {
 
       expect(currentValues.ja.title).toBe('English Title');
       expect(currentValues.ja.body).toBe('English Body');
+    });
+  });
+
+  describe('translation in flight', () => {
+    /** @type {ReturnType<typeof Promise.withResolvers<string[]>>} */
+    let request;
+    let mockTranslate;
+
+    beforeEach(async () => {
+      const { translator } = await import('$lib/services/integrations/translators');
+      const { prefs } = await import('$lib/services/user/prefs.svelte');
+
+      request = Promise.withResolvers();
+      mockTranslate = vi.fn(() => request.promise);
+      prefs.apiKeys = { google: 'test-api-key' };
+      translator.current = {
+        serviceId: 'google',
+        markdownSupported: true,
+        translate: mockTranslate,
+      };
+    });
+
+    it('should not overwrite a field filled in while translating all the fields', async () => {
+      const { copyFromLocaleToast } = await import('$lib/services/contents/editor');
+
+      const promise = copyFromLocaleUpdate({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        translate: true,
+      });
+
+      await vi.waitFor(() => expect(mockTranslate).toHaveBeenCalled());
+      mockEntryDraft.currentValues.ja.title = 'Typed by the user';
+      request.resolve(['Japanese Title', 'Japanese Body']);
+      await promise;
+
+      expect(mockEntryDraft.currentValues.ja.title).toBe('Typed by the user');
+      expect(mockEntryDraft.currentValues.ja.body).toBe('Japanese Body');
+      expect(copyFromLocaleToast.current).toEqual(
+        expect.objectContaining({ status: 'success', message: 'translation.complete', count: 1 }),
+      );
+    });
+
+    it('should overwrite the field when translating that field', async () => {
+      const promise = copyFromLocaleUpdate({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        keyPath: 'title',
+        translate: true,
+      });
+
+      await vi.waitFor(() => expect(mockTranslate).toHaveBeenCalled());
+      mockEntryDraft.currentValues.ja.title = 'Typed by the user';
+      request.resolve(['Japanese Title']);
+      await promise;
+
+      expect(mockEntryDraft.currentValues.ja.title).toBe('Japanese Title');
+    });
+
+    it('should drop the results once another entry has been opened', async () => {
+      const { copyFromLocaleToast } = await import('$lib/services/contents/editor');
+      const entryDraft = { current: mockEntryDraft };
+
+      const promise = copyFromLocale({
+        draft: mockEntryDraft,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja', translate: true },
+        entryDraft,
+      });
+
+      await vi.waitFor(() => expect(mockTranslate).toHaveBeenCalled());
+      copyFromLocaleToast.current = undefined;
+      entryDraft.current = { currentValues: { en: {}, ja: {} } };
+      request.resolve(['Japanese Title', 'Japanese Body']);
+      await promise;
+
+      expect(mockEntryDraft.currentValues.ja).toEqual({ title: '', body: '' });
+      expect(entryDraft.current.currentValues.ja).toEqual({});
+      expect(copyFromLocaleToast.current).toBeUndefined();
+    });
+
+    it('should not report a failure once another entry has been opened', async () => {
+      const { copyFromLocaleToast } = await import('$lib/services/contents/editor');
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const entryDraft = { current: mockEntryDraft };
+
+      const promise = copyFromLocale({
+        draft: mockEntryDraft,
+        options: { sourceLanguage: 'en', targetLanguage: 'ja', translate: true },
+        entryDraft,
+      });
+
+      await vi.waitFor(() => expect(mockTranslate).toHaveBeenCalled());
+      copyFromLocaleToast.current = undefined;
+      entryDraft.current = null;
+      request.reject(new Error('Translation API failed'));
+      await promise;
+
+      expect(copyFromLocaleToast.current).toBeUndefined();
+      expect(consoleSpy).toHaveBeenCalledWith(expect.any(Error));
+      consoleSpy.mockRestore();
+    });
+
+    it('should not send the same request again until it’s settled', async () => {
+      const options = { sourceLanguage: 'en', targetLanguage: 'ja', translate: true };
+      const pendingArgs = { draft: mockEntryDraft, targetLanguage: 'ja' };
+
+      expect(isTranslationPending(pendingArgs)).toBe(false);
+
+      const first = copyFromLocaleUpdate(options);
+
+      expect(isTranslationPending(pendingArgs)).toBe(true);
+      // Another field, or another draft, can be translated meanwhile
+      expect(isTranslationPending({ ...pendingArgs, keyPath: 'title' })).toBe(false);
+      expect(isTranslationPending({ ...pendingArgs, draft: {} })).toBe(false);
+      await vi.waitFor(() => expect(mockTranslate).toHaveBeenCalledTimes(1));
+      await copyFromLocaleUpdate(options);
+      expect(mockTranslate).toHaveBeenCalledTimes(1);
+
+      request.resolve(['Japanese Title', 'Japanese Body']);
+      await first;
+      expect(isTranslationPending(pendingArgs)).toBe(false);
+
+      // A failed request can be sent again
+      mockEntryDraft.currentValues.ja = { title: '', body: '' };
+      mockTranslate.mockRejectedValueOnce(new Error('Translation API failed'));
+      vi.spyOn(console, 'error').mockImplementationOnce(() => {});
+      await copyFromLocaleUpdate(options);
+      expect(mockTranslate).toHaveBeenCalledTimes(2);
+      expect(isTranslationPending(pendingArgs)).toBe(false);
     });
   });
 

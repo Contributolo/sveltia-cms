@@ -19,7 +19,7 @@
   import { getAcceptedFileTypes } from '$lib/services/integrations/media-libraries/default';
 
   /**
-   * @import { SelectedResource, TypedFieldKeyPath } from '$lib/types/private';
+   * @import { InternalLocaleCode, SelectedResource, TypedFieldKeyPath } from '$lib/types/private';
    * @import {
    * CustomField,
    * CustomFieldPickFileOptions,
@@ -36,6 +36,8 @@
    * of, if any.
    * @property {boolean} [inEditorComponent] Whether the field is rendered in a rich text editor
    * component.
+   * @property {InternalLocaleCode} [locale] Locale the field is edited in, which an existing asset
+   * in an entry-relative folder is referenced relative to.
    */
 
   /** @type {Props} */
@@ -45,6 +47,7 @@
     typedKeyPath,
     componentName = undefined,
     inEditorComponent = false,
+    locale = undefined,
     /* eslint-enable prefer-const */
   } = $props();
 
@@ -53,11 +56,8 @@
   let open = $state(false);
   /** @type {CustomFieldPickFileOptions} */
   let options = $state.raw({});
-  let showRejectedFilesAlert = $state(false);
-  /** @type {string[]} */
-  let oversizedFileNames = $state([]);
-  /** @type {string[]} */
-  let invalidFileNames = $state([]);
+  /** @type {RejectedFilesAlertDialog | undefined} */
+  let rejectedFilesAlert = $state();
   /**
    * Settles the promise returned by the pending `pick()` call. `undefined` while nothing is
    * pending. The resolver is dropped as soon as a selection is made, so that the dialog closing
@@ -147,15 +147,13 @@
         fieldConfig,
         typedKeyPath,
         componentName,
+        locale,
         inEditorComponent,
         resources,
+        accept,
       });
 
-      ({ oversizedFileNames, invalidFileNames } = rejected);
-
-      if (oversizedFileNames.length || invalidFileNames.length) {
-        showRejectedFilesAlert = true;
-      }
+      rejectedFilesAlert?.report(rejected);
 
       if (!files.length) {
         resolve(null);
@@ -190,6 +188,7 @@
     multiple={!!options.multiple}
     canEnterURL={options.allowURL ?? true}
     draft={entryDraft.current}
+    {locale}
     fieldConfig={mediaFieldConfig}
     assetLibraryFolderMap={assetOptions.folderMap}
     enabledCloudServiceEntries={assetOptions.cloudServiceEntries}
@@ -200,10 +199,5 @@
 
   <ConflictResolutionDialog />
 
-  <RejectedFilesAlertDialog
-    bind:open={showRejectedFilesAlert}
-    {oversizedFileNames}
-    {invalidFileNames}
-    {maxSize}
-  />
+  <RejectedFilesAlertDialog bind:this={rejectedFilesAlert} {maxSize} {accept} />
 {/if}

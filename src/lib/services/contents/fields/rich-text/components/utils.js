@@ -1,4 +1,5 @@
-import { flatten, unflatten } from 'flat';
+import { isInternalPropKey } from '$lib/services/contents/fields/internal-props';
+import { flattenKeys, unflattenKeys } from '$lib/services/utils/object';
 
 /**
  * @import { EditorComponentDefinition } from '$lib/types/public';
@@ -119,15 +120,45 @@ export const supportsHTML = ({ htmlSelector, fromBlockHTML, toBlockHTML }) =>
  * for internal purposes.
  */
 export const normalizeProps = (props) =>
-  unflatten(
+  unflattenKeys(
     Object.fromEntries(
-      Object.entries(flatten(props)).filter(([key]) => !key.split('.').pop()?.startsWith('__sc_')),
+      Object.entries(flattenKeys(props)).filter(
+        ([key]) => !isInternalPropKey(/** @type {string} */ (key.split('.').pop())),
+      ),
     ),
   );
 
 /**
- * Replace double quotes with single quotes to avoid breaking Markdown syntax.
- * @param {string} str String to escape.
- * @returns {string} Escaped string.
+ * Get the names of the rich text editor components the given component is nested in. Lexical mounts
+ * each component outside the Svelte component tree, so the names can’t come from the context; each
+ * component instead lists its own name and those of its parents in the `data-component-path`
+ * attribute of the element holding its fields, which this reads from the closest one.
+ * @param {Element | undefined} element Element of a component.
+ * @returns {string[]} Component names, the outermost first.
  */
-export const replaceQuotes = (str) => str.replace(/"/g, "'");
+export const getParentComponentNames = (element) => {
+  /** @type {HTMLElement | null | undefined} */
+  const container = element?.parentElement?.closest('[data-component-path]');
+
+  return container ? JSON.parse(/** @type {string} */ (container.dataset.componentPath)) : [];
+};
+
+/**
+ * Unescape the title of a Markdown image, like `T \"q\"` in `![a](/a.png "T \"q\"")`, so the
+ * field shows `T "q"`. A backslash before an ASCII punctuation character escapes it, as anywhere
+ * else in Markdown, while one before any other character is a literal backslash.
+ * @param {string} title Title as it appears in Markdown, between the quotes.
+ * @returns {string} Unescaped title.
+ * @see https://spec.commonmark.org/0.31.2/#link-title
+ */
+export const unescapeTitle = (title) => title.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+
+/**
+ * Escape the title of a Markdown image, the counterpart of `unescapeTitle()`, so it can be put
+ * between double quotes: a double quote is escaped, as well as a backslash that would otherwise
+ * escape the next character or the closing quote.
+ * @param {string} title Title.
+ * @returns {string} Escaped title.
+ */
+export const escapeTitle = (title) =>
+  title.replace(/\\(?=[!-/:-@[-`{-~]|$)/g, '\\\\').replace(/"/g, '\\"');

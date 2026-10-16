@@ -4,6 +4,7 @@ import { cmsConfig } from '$lib/services/config';
 import { allCloudStorageServices } from '$lib/services/integrations/media-libraries/cloud';
 import { prefs } from '$lib/services/user/prefs.svelte';
 import { createDerivedState, createRawState } from '$lib/services/utils/state.svelte';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import {
@@ -62,7 +63,7 @@ export const getCloudServicePath = ({ serviceId }) =>
  * @returns {string} Path, e.g. `/assets/-/aws_s3/images/photo.jpg`.
  */
 export const getExternalAssetPath = (service, { id }) =>
-  `${getCloudServicePath(service)}/${id.split('/').map(encodeURIComponent).join('/')}`;
+  `${getCloudServicePath(service)}/${encodePathSegments(id)}`;
 
 /**
  * Whether the given asset can be previewed in the details overlay: a media file, a PDF document
@@ -161,6 +162,13 @@ export const externalAssetCounts = createRawState({});
  * @type {{ current: string | undefined }}
  */
 export const externalAssetsError = createRawState();
+
+/**
+ * Whether the list of assets stopped short of the end, as the service holds more files than are
+ * listed at once, so the user can be told that some files are left out.
+ * @type {{ current: boolean }}
+ */
+export const externalAssetsTruncated = createRawState(false);
 
 /**
  * Assets selected in the list.
@@ -264,6 +272,7 @@ export const resetExternalAssets = () => {
   externalAssets.current = undefined;
   externalFolders.current = [];
   externalAssetsError.current = undefined;
+  externalAssetsTruncated.current = false;
   selectedExternalAssets.current = [];
   selectedExternalDirPath.current = '';
   focusedExternalAsset.current = undefined;

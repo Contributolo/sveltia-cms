@@ -4,6 +4,7 @@ import { escapeRegExp } from '@sveltia/utils/string';
 import sanitize from 'sanitize-filename';
 
 import { getOrCreateAsync } from '$lib/services/utils/cache';
+import { encodePathSegments, encodeRFC3986 } from '$lib/services/utils/url';
 
 /**
  * Create a regular expression that matches the given path.
@@ -15,13 +16,12 @@ export const createPathRegEx = (path, replacer) =>
   new RegExp(`^${path.split('/').map(replacer).join('\\/')}(?=\\/|$)`);
 
 /**
- * Encode the given (partial) file path or file name. Since {@link encodeURIComponent} encodes
- * slashes, we need to split and join. Also, encode some more characters, including `!`, `(` and
- * `)`, which affect the Markdown syntax like images and links. The `@` prefix is an exception; it
- * shouldn’t be encoded.
+ * Encode the given (partial) file path or file name segment by segment, keeping the slashes. Some
+ * more characters than `encodeURIComponent()` does are encoded, including `!`, `(` and `)`, which
+ * affect the Markdown syntax like images and links. The `@` prefix is an exception; it shouldn’t be
+ * encoded.
  * @param {string} path Original path.
  * @returns {string} Encoded path.
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURIComponent#encoding_for_rfc3986
  */
 export const encodeFilePath = (path) => {
   const hasAtPrefix = path.startsWith('@');
@@ -30,15 +30,7 @@ export const encodeFilePath = (path) => {
     path = path.slice(1);
   }
 
-  path = path
-    .split('/')
-    .map((str) =>
-      encodeURIComponent(str).replace(
-        /[!'()*]/g,
-        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
-      ),
-    )
-    .join('/');
+  path = encodePathSegments(path, encodeRFC3986);
 
   if (hasAtPrefix) {
     return `@${path}`;
@@ -48,42 +40,37 @@ export const encodeFilePath = (path) => {
 };
 
 /**
- * Check if the given file name or slug has duplicate(s) or its variant in the other names. If
- * found, rename it by prepending a number like `summer-beach-2.jpg`.
+ * Check if the given file name or slug is already taken in the other names. If so, rename it by
+ * appending a number higher than any variant already used, like `summer-beach-2.jpg`. A name that
+ * is free is returned as is, even if numbered variants of it exist.
  * @param {string} name Original name.
  * @param {string[]} otherNames Other names (of files in the same folder).
  * @returns {string} Determined name.
  */
 export const renameIfNeeded = (name, otherNames) => {
-  if (!otherNames.length) {
+  const lowerCaseName = name.toLowerCase();
+
+  // Case-insensitive, since `Photo.jpg` and `photo.jpg` clash on a case-insensitive file system
+  // like macOS’s or Windows’s
+  if (!otherNames.some((otherName) => otherName.toLowerCase() === lowerCaseName)) {
     return name;
   }
 
   const { filename: slug, extension } = getPathInfo(name);
-
-  // Case-insensitive, since `Photo.jpg` and `photo.jpg` clash on a case-insensitive file system
-  // like macOS’s or Windows’s
-  const regex = new RegExp(
-    `^${escapeRegExp(slug)}(?:-(?<num>\\d+?))?${extension ? `\\.${extension}` : ''}$`,
-    'i',
-  );
+  const suffix = extension ? `\\.${extension}` : '';
+  const regex = new RegExp(`^${escapeRegExp(slug)}-(?<num>\\d+)${suffix}$`, 'i');
+  let highest = 0;
 
   // Only the highest number already taken matters, so the names are scanned once rather than
   // sorted. The caller’s array is left alone: it’s typically every name in the folder, reused for
   // each of the files being added
-  let highest = -1;
-
   otherNames.forEach((otherName) => {
     const match = otherName.match(regex);
 
     if (match) {
-      highest = Math.max(highest, Number(match.groups?.num ?? 0));
+      highest = Math.max(highest, Number(/** @type {Record<string, string>} */ (match.groups).num));
     }
   });
-
-  if (highest === -1) {
-    return name;
-  }
 
   return `${slug}-${highest + 1}${extension ? `.${extension}` : ''}`;
 };
@@ -139,6 +126,14 @@ export const isEquivalentFileExtension = (a, b) => {
  * @returns {string} Path.
  */
 export const createPath = (segments) => segments.filter(Boolean).join('/');
+
+/**
+ * Get the directory part of a file path. Unlike `getPathInfo()`, which has no directory for a file
+ * at the root, this is always a string, so a root file’s directory compares equal to the root path.
+ * @param {string} path File path.
+ * @returns {string} Directory path, which is an empty string for a file at the root.
+ */
+export const getDirName = (path) => getPathInfo(path).dirname ?? '';
 
 /**
  * Remove the given directory from the start of a path, if the path sits below it.

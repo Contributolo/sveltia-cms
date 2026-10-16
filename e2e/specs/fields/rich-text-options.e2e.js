@@ -1,5 +1,6 @@
 import { selectText } from '../../fixtures/rich-text.js';
 import { expect, test } from '../../fixtures/test.js';
+import { getEditor } from '../../fixtures/ui.js';
 
 /**
  * @import { Locator, Page } from '@playwright/test';
@@ -57,7 +58,7 @@ const openNote = async ({ cms, page, body }) => {
   await cms.signIn();
   await page.getByRole('row', { name: /Note/ }).click();
 
-  const editor = page.getByRole('group', { name: 'Content Editor' });
+  const editor = getEditor(page);
   const field = editor.getByRole('group', { name: /Body.*Field/ });
 
   // The first one, as an image in the body, once rendered, has a Title field too
@@ -234,10 +235,15 @@ test.describe('editor components', () => {
   test.describe('default', () => {
     test.use({ config: noteConfig({}) });
 
-    test('offers the image and the code block', async ({ cms, page }) => {
+    test('offers the image and the code block, but not the table or the rule', async ({
+      cms,
+      page,
+    }) => {
       const { field } = await openNote({ cms, page, body: 'The dome opens.' });
 
       await expect(field.getByRole('button', { name: 'Image', exact: true })).toBeVisible();
+      await expect(field.getByRole('button', { name: 'Insert Table' })).toHaveCount(0);
+      await expect(field.getByRole('button', { name: 'Insert Horizontal Rule' })).toHaveCount(0);
 
       const menu = await openBlockTypes(cms, page, field);
 
@@ -297,6 +303,154 @@ test.describe('editor components', () => {
 
       await expect(menu.getByRole('menuitemcheckbox', { name: 'Heading 2' })).toBeVisible();
       await expect(menu.getByRole('menuitemcheckbox', { name: 'Code Block' })).toHaveCount(0);
+    });
+  });
+});
+
+test.describe('tables', () => {
+  test.use({ config: noteConfig({ editor_components: ['image', 'table'] }) });
+
+  test('inserts a table, which is saved as Markdown', async ({ cms, page }) => {
+    const { editor, field, body } = await openNote({ cms, page, body: 'Opening hours' });
+
+    await moveCaretToEnd(body);
+    await page.keyboard.press('Enter');
+    await field.getByRole('button', { name: 'Insert Table' }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Insert Table' });
+
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('spinbutton', { name: 'Rows' }).fill('2');
+    await dialog.getByRole('spinbutton', { name: 'Columns' }).fill('2');
+    await dialog.getByRole('button', { name: 'Insert' }).click();
+    await expect(dialog).toBeHidden();
+
+    // The caret is in the first cell, and the Tab key moves to the next one
+    await expect(body.locator('th')).toHaveCount(2);
+    await page.keyboard.type('Day');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type('Hours');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type('Monday');
+    await page.keyboard.press('Tab');
+    await page.keyboard.type('9–5');
+
+    await saveAndExpect({
+      cms,
+      editor,
+      body: 'Opening hours\n\n| Day | Hours |\n| --- | --- |\n| Monday | 9–5 |',
+    });
+  });
+
+  test('edits the rows and columns of a table from its menus', async ({ cms, page }) => {
+    const { editor, field, body } = await openNote({
+      cms,
+      page,
+      body: '| Day | Hours |\n| --- | --- |\n| Monday | 9–5 |',
+    });
+
+    // The menu button on the cell
+    await body.getByText('Monday').click();
+    await cms.chooseMenuItem(
+      field.locator('.table-cell-menu-button').getByRole('button', { name: 'Show Table Options' }),
+      page.getByRole('menuitem', { name: 'Insert Row Below' }),
+    );
+    await expect(body.locator('tr')).toHaveCount(3);
+    await body.locator('tr').nth(2).locator('td').first().click();
+    await page.keyboard.type('Tuesday');
+
+    // The same menu on the toolbar
+    await body.getByText('Hours').click();
+    await cms.chooseMenuItem(
+      field.getByRole('toolbar').getByRole('button', { name: 'Show Table Options' }),
+      page.getByRole('menuitem', { name: 'Delete Column' }),
+    );
+    await expect(body.locator('th')).toHaveCount(1);
+
+    await saveAndExpect({
+      cms,
+      editor,
+      body: '| Day |\n| --- |\n| Monday |\n| Tuesday |',
+    });
+  });
+});
+
+test.describe('horizontal rules', () => {
+  test.use({ config: noteConfig({ editor_components: ['image', 'hr'] }) });
+
+  test('inserts a horizontal rule, which is saved as Markdown', async ({ cms, page }) => {
+    const { editor, field, body } = await openNote({ cms, page, body: 'Part one' });
+
+    await moveCaretToEnd(body);
+    await field.getByRole('button', { name: 'Insert Horizontal Rule' }).click();
+    await expect(body.locator('hr')).toHaveCount(1);
+    // The caret is below the rule
+    await page.keyboard.type('Part two');
+
+    await saveAndExpect({ cms, editor, body: 'Part one\n\n***\n\nPart two' });
+  });
+});
+
+test.describe('text alignment', () => {
+  test.describe('HTML', () => {
+    test.use({ config: noteConfig({ format: 'html', buttons: ['bold', 'align'] }) });
+
+    test('aligns the paragraph, which is saved with the style', async ({ cms, page }) => {
+      const { editor, field, body } = await openNote({ cms, page, body: '<p>Opening hours</p>' });
+
+      await body.getByText('Opening hours').click();
+      await cms.chooseMenuItem(
+        field.getByRole('button', { name: 'Show Alignment Options' }),
+        page.getByRole('menuitemradio', { name: 'Center Align' }),
+      );
+      await expect(body.locator('p')).toHaveCSS('text-align', 'center');
+
+      await saveAndExpect({
+        cms,
+        editor,
+        body: '<p style="text-align: center;">Opening hours</p>',
+      });
+    });
+  });
+
+  test.describe('Markdown', () => {
+    test.use({ config: noteConfig({ buttons: ['bold', 'align'] }) });
+
+    test('offers no alignment, which Markdown can’t hold', async ({ cms, page }) => {
+      const { field } = await openNote({ cms, page, body: 'Opening hours' });
+
+      await expect(field.getByRole('button', { name: 'Bold' })).toBeVisible();
+      await expect(field.getByRole('button', { name: 'Show Alignment Options' })).toHaveCount(0);
+    });
+  });
+});
+
+test.describe('link targets', () => {
+  test.use({ config: noteConfig({ format: 'html' }) });
+
+  test('sets a link to open in a new tab, which is saved as `target`', async ({ cms, page }) => {
+    const { editor, body } = await openNote({
+      cms,
+      page,
+      body: '<p>See <a href="https://example.com/">Example</a></p>',
+    });
+
+    await body.getByText('Example').click();
+
+    const popup = page.getByRole('group', { name: 'Link' });
+
+    await popup.getByRole('button', { name: 'Edit Link' }).click();
+    await popup.getByRole('button', { name: 'Open in New Tab' }).click();
+    await expect(popup.getByRole('button', { name: 'Open in New Tab' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await popup.getByRole('button', { name: 'Update' }).click();
+
+    await saveAndExpect({
+      cms,
+      editor,
+      body: '<p>See <a href="https://example.com/" target="_blank">Example</a></p>',
     });
   });
 });
@@ -503,6 +657,83 @@ test.describe('preview sanitization', () => {
 
       await expect(preview).toContainText('to start.');
       await expect(preview.getByRole('button', { name: 'Go' })).toBeVisible();
+    });
+
+    test('shows HTML given as a new entry’s body in the URL as text, without script links', async ({
+      cms,
+      page,
+    }) => {
+      // Character references, which a plain tag stripper decodes back into a tag
+      const html = '<img src="x" onerror="document.body.dataset.injected = 1">';
+      const body = html.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+      await cms.open();
+      await cms.signIn();
+      await page.evaluate(
+        (query) => {
+          window.location.hash = `/collections/notes/new?body=${query}`;
+        },
+        encodeURIComponent(`${body} [Click me](javascript:document.body.dataset.injected=1) Done.`),
+      );
+
+      const editor = getEditor(page);
+      const preview = editor.getByRole('document', { name: 'Content Preview' });
+
+      await expect(preview).toContainText(`${html} Click me Done.`);
+      await expect(preview.locator('img')).toHaveCount(0);
+      await expect(preview.getByText('Click me')).not.toHaveAttribute('href');
+      await preview.getByText('Click me').click();
+      expect(await page.evaluate(() => document.body.dataset.injected)).toBeUndefined();
+    });
+  });
+
+  test.describe('turned off for the items of a list', () => {
+    test.use({
+      config: {
+        ...noteConfig({}),
+        collections: [
+          {
+            name: 'notes',
+            label: 'Notes',
+            folder: 'content/notes',
+            create: true,
+            fields: [
+              { name: 'title', label: 'Title' },
+              {
+                name: 'blocks',
+                label: 'Blocks',
+                widget: 'list',
+                field: { name: 'body', label: 'Body', widget: 'richtext', sanitize_preview: false },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    test('shows HTML given as a new entry’s list items in the URL as text', async ({
+      cms,
+      page,
+    }) => {
+      const html = '<img src="x" onerror="document.body.dataset.injected = 1">';
+      const encoded = html.replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+      await cms.open();
+      await cms.signIn();
+      await page.evaluate(
+        (query) => {
+          window.location.hash = `/collections/notes/new?blocks=${query}`;
+        },
+        // A raw tag in one item, which is removed, and character references in another
+        encodeURIComponent(`${html}Raw, ${encoded} Done.`),
+      );
+
+      const preview = getEditor(page).getByRole('document', { name: 'Content Preview' });
+
+      await expect(preview).toContainText('Raw');
+      await expect(preview).toContainText(`${html} Done.`);
+      await expect(preview.locator('img')).toHaveCount(0);
+      expect(await page.evaluate(() => document.body.dataset.injected)).toBeUndefined();
     });
   });
 });

@@ -11,9 +11,10 @@ import {
   getDirectoryHandle,
   getFileHandle,
   getHandleByPath,
+  isNotFoundError,
 } from '$lib/services/backends/fs/shared/handles';
 import { env } from '$lib/services/user/env.svelte';
-import { getBlob, getGitHash } from '$lib/services/utils/file';
+import { getBlob, getDirName, getGitHash } from '$lib/services/utils/file';
 
 /**
  * @import {
@@ -177,13 +178,6 @@ export const saveFile = async ({ rootDirHandle, fileHandle, path, data }) => {
 
   return fileHandle.getFile();
 };
-
-/**
- * Check if the given error says a file or directory doesn’t exist.
- * @param {unknown} ex Error.
- * @returns {boolean} `true` for a `NotFoundError`.
- */
-const isNotFoundError = (ex) => /** @type {DOMException} */ (ex)?.name === 'NotFoundError';
 
 /**
  * Recursively delete empty parent directories.
@@ -375,7 +369,7 @@ export const saveChanges = async (rootDirHandle, changes) => {
           return undefined;
         })
         .filter((path) => path !== undefined)
-        .map((path) => getPathInfo(stripSlashes(path)).dirname ?? ''),
+        .map((path) => getDirName(stripSlashes(path))),
     );
   }
 

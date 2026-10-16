@@ -23,6 +23,9 @@ vi.mock('$lib/services/contents/draft/backup', () => ({
 vi.mock('$lib/services/contents/draft/create/proxy.svelte', () => ({
   createProxy: vi.fn((args) => args.target),
 }));
+vi.mock('$lib/services/contents/draft/create/versioned-map.svelte', () => ({
+  createValueMap: vi.fn((target) => target),
+}));
 
 vi.mock('$lib/services/contents/draft/create/uuid', () => ({
   fillUuidValues: vi.fn(),
@@ -42,6 +45,7 @@ const { getIndexFile, isCollectionIndexFile } =
 const { revokeDraftFileURLs } = await import('$lib/services/contents/draft');
 const { restoreBackupIfNeeded } = await import('$lib/services/contents/draft/backup');
 const { createProxy } = await import('$lib/services/contents/draft/create/proxy.svelte');
+const { createValueMap } = await import('$lib/services/contents/draft/create/versioned-map.svelte');
 const { getDefaultValues } = await import('$lib/services/contents/draft/defaults');
 const { fillUuidValues } = await import('$lib/services/contents/draft/create/uuid');
 const { cmsConfig } = await import('$lib/services/config');
@@ -410,6 +414,7 @@ describe('contents/draft/create/index', () => {
           isNew: true,
           id: expect.any(String),
           canPreview: true,
+          canShowSecondPane: true,
           fields: collection.fields,
           originalEntry: undefined,
           defaultLocale: 'en',
@@ -607,6 +612,7 @@ describe('contents/draft/create/index', () => {
       expect(entryDraft.current).toEqual(
         expect.objectContaining({
           canPreview: false,
+          canShowSecondPane: true,
         }),
       );
     });
@@ -645,8 +651,70 @@ describe('contents/draft/create/index', () => {
       expect(entryDraft.current).toEqual(
         expect.objectContaining({
           canPreview: false,
+          canShowSecondPane: true,
         }),
       );
+    });
+
+    it('should set canShowSecondPane from the most specific editor config', () => {
+      const i18n = {
+        i18nEnabled: false,
+        structureMap: {},
+        allLocales: ['_default'],
+        initialLocales: ['_default'],
+        defaultLocale: '_default',
+        canonicalSlug: { key: 'translationKey' },
+      };
+
+      const entryCollection = { name: 'posts', _type: 'entry', fields: [], _i18n: i18n };
+
+      /**
+       * Create a draft and read whether it can show the second pane.
+       * @param {any} args Arguments for `createDraft()`.
+       * @returns {boolean | undefined} Value.
+       */
+      const resolve = (args) => {
+        createDraft({ entryDraft, ...args });
+
+        return entryDraft.current?.canShowSecondPane;
+      };
+
+      // Global
+      cmsConfig.current = /** @type {any} */ ({ editor: { second_pane: false } });
+      expect(resolve({ collection: entryCollection })).toBe(false);
+
+      // Collection over global
+      expect(resolve({ collection: { ...entryCollection, editor: { second_pane: true } } })).toBe(
+        true,
+      );
+
+      cmsConfig.current = /** @type {any} */ ({});
+      expect(resolve({ collection: { ...entryCollection, editor: { second_pane: false } } })).toBe(
+        false,
+      );
+
+      // Collection file over collection
+      expect(
+        resolve({
+          collection: {
+            name: 'pages',
+            _type: 'file',
+            files: [],
+            editor: { second_pane: true },
+            _i18n: i18n,
+          },
+          collectionFile: {
+            name: 'about',
+            fields: [],
+            editor: { second_pane: false },
+            _i18n: i18n,
+          },
+        }),
+      ).toBe(false);
+
+      // Index file over collection
+      getIndexFile.mockReturnValue({ fields: [], editor: { second_pane: false } });
+      expect(resolve({ collection: entryCollection, isIndexFile: true })).toBe(false);
     });
 
     it('should use true fallback when no editor.preview is set anywhere (line 120)', () => {
@@ -675,6 +743,7 @@ describe('contents/draft/create/index', () => {
       expect(entryDraft.current).toEqual(
         expect.objectContaining({
           canPreview: true, // falls through to the literal `true` at line 120
+          canShowSecondPane: true,
         }),
       );
     });
@@ -987,6 +1056,7 @@ describe('contents/draft/create/index', () => {
           fields: indexFile.fields,
           defaultLocale: 'en',
           canPreview: false,
+          canShowSecondPane: true,
         }),
       );
     });
@@ -1100,6 +1170,10 @@ describe('contents/draft/create/index', () => {
           extraValues,
         }),
       );
+      // Each locale gets a versioned value map of its own, holding a copy of the given values
+      expect(createValueMap).toHaveBeenCalledTimes(2);
+      expect(createValueMap).toHaveBeenCalledWith(extraValues.en);
+      expect(vi.mocked(createValueMap).mock.calls[0][0]).not.toBe(extraValues.en);
     });
 
     it('should use default extra values when not provided', () => {

@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   createPullRequest,
   deleteBranch,
+  draftTitle,
   fetchBranchHead,
   fetchMergeRequestFileContents,
   fetchMergeRequestFileList,
   fetchOpenMergeRequests,
   fetchPullRequests,
+  parseDiff,
   parseMergeRequest,
-  stripDraftPrefix,
+  toMergeRequest,
 } from '$lib/services/backends/git/gitlab/merge-requests';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { cmsConfig } from '$lib/services/config';
@@ -84,19 +86,77 @@ describe('GitLab merge requests', () => {
     vi.mocked(fetchGraphQL).mockResolvedValue({});
   });
 
-  describe('stripDraftPrefix', () => {
+  describe('draftTitle.strip', () => {
     test.each([
       ['Draft: Title', 'Title'],
       ['draft: Title', 'Title'],
       ['[Draft] Title', 'Title'],
       ['(Draft) Title', 'Title'],
-      ['WIP: Title', 'Title'],
-      ['[WIP] Title', 'Title'],
-      ['Draft: WIP: Title', 'Title'],
+      ['Draft: [Draft] Title', 'Title'],
       ['Title', 'Title'],
       ['Drafting the plan', 'Drafting the plan'],
+      // GitLab doesn’t read these as draft indicators, so they’re part of the title
+      ['Draft notes', 'Draft notes'],
+      ['WIP: Title', 'WIP: Title'],
+      ['[WIP] Title', '[WIP] Title'],
+      ['(WIP) Title', '(WIP) Title'],
+      ['WIP notes for the post', 'WIP notes for the post'],
+      ['Draft: WIP notes', 'WIP notes'],
     ])('strips %s', (input, expected) => {
-      expect(stripDraftPrefix(input)).toBe(expected);
+      expect(draftTitle.strip(input)).toBe(expected);
+    });
+  });
+
+  describe('toMergeRequest', () => {
+    test('converts a merge request with the given status, whatever its labels', () => {
+      const mergeRequest = toMergeRequest(createItem({ labels: [] }), 'pending_publish');
+
+      expect(mergeRequest.status).toBe('pending_publish');
+      expect(mergeRequest.title).toBe('Create Post “hello”');
+      expect(mergeRequest.nodeId).toBe('900');
+    });
+
+    test('reads whether the user can merge it, when the merge request tells', () => {
+      expect(toMergeRequest(createItem({ user: { can_merge: true } }), 'draft').canMerge).toBe(
+        true,
+      );
+      expect(toMergeRequest(createItem({ user: { can_merge: false } }), 'draft').canMerge).toBe(
+        false,
+      );
+      expect(toMergeRequest(createItem({ user: {} }), 'draft').canMerge).toBeUndefined();
+      expect(toMergeRequest(createItem(), 'draft').canMerge).toBeUndefined();
+    });
+  });
+
+  describe('parseDiff', () => {
+    test('converts an added or modified file', () => {
+      expect(parseDiff({ old_path: 'a.md', new_path: 'a.md' })).toEqual({
+        path: 'a.md',
+        sha: '',
+        size: 0,
+        deleted: false,
+        previousPath: undefined,
+      });
+    });
+
+    test('converts a deleted file at its old path', () => {
+      expect(parseDiff({ old_path: 'a.md', new_path: 'a.md', deleted_file: true })).toEqual({
+        path: 'a.md',
+        sha: '',
+        size: 0,
+        deleted: true,
+        previousPath: undefined,
+      });
+    });
+
+    test('converts a renamed file with its previous path', () => {
+      expect(parseDiff({ old_path: 'old.md', new_path: 'new.md', renamed_file: true })).toEqual({
+        path: 'new.md',
+        sha: '',
+        size: 0,
+        deleted: false,
+        previousPath: 'old.md',
+      });
     });
   });
 
@@ -211,6 +271,89 @@ describe('GitLab merge requests', () => {
         deleted: false,
         previousPath: 'content/posts/hello.md',
       });
+    });
+
+    /**
+     * Mock the REST API for a merge request whose head is `abc123`.
+     * @param {string} branchHead Head of the branch.
+     */
+    const mockBranch = (branchHead) => {
+      vi.mocked(fetchAPI).mockImplementation(async (path) => {
+        if (path.includes('/repository/branches/')) {
+          return { commit: { id: branchHead } };
+        }
+
+        if (path.includes('/repository/compare?')) {
+          return { diffs: [{ new_path: 'static/new.png', old_path: 'static/new.png' }] };
+        }
+
+        return [{ new_path: 'content/posts/hello.md', old_path: 'content/posts/hello.md' }];
+      });
+    };
+
+    test('keeps the diff of a merge request that is up to date with its branch', async () => {
+      mockBranch('abc123');
+
+      const mergeRequest = /** @type {any} */ ({
+        number: 1,
+        branch: 'cms/posts/hello',
+        headSHA: 'abc123',
+        files: [],
+      });
+
+      await fetchMergeRequestFileList(mergeRequest);
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/repository/branches/cms%2Fposts%2Fhello`,
+      );
+      expect(fetchAPI).not.toHaveBeenCalledWith(expect.stringContaining('/compare'));
+      expect(mergeRequest.headSHA).toBe('abc123');
+      expect(mergeRequest.files.map((/** @type {any} */ { path }) => path)).toEqual([
+        'content/posts/hello.md',
+      ]);
+    });
+
+    test('compares the branch head while the merge request trails a push', async () => {
+      mockBranch('def456');
+
+      const mergeRequest = /** @type {any} */ ({
+        number: 1,
+        branch: 'cms/posts/hello',
+        headSHA: 'abc123',
+        files: [],
+      });
+
+      await fetchMergeRequestFileList(mergeRequest);
+
+      expect(fetchAPI).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/repository/compare?from=main&to=def456&straight=false`,
+      );
+      // The branch head is the one on record, which the contents are read at
+      expect(mergeRequest.headSHA).toBe('def456');
+      expect(mergeRequest.files.map((/** @type {any} */ { path }) => path)).toEqual([
+        'static/new.png',
+      ]);
+    });
+
+    test('takes a comparison without diffs as no change', async () => {
+      vi.mocked(fetchAPI).mockImplementation(async (path) =>
+        path.includes('/repository/branches/')
+          ? { commit: { id: 'def456' } }
+          : path.includes('/compare?')
+            ? {}
+            : [],
+      );
+
+      const mergeRequest = /** @type {any} */ ({
+        number: 1,
+        branch: 'cms/posts/hello',
+        headSHA: 'abc123',
+        files: [],
+      });
+
+      await fetchMergeRequestFileList(mergeRequest);
+
+      expect(mergeRequest.files).toEqual([]);
     });
   });
 

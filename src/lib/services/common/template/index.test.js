@@ -16,7 +16,7 @@ vi.mock('$lib/services/config/deprecations', () => ({
   warnDeprecation: vi.fn(),
 }));
 vi.mock('$lib/services/contents/collection/entries', () => ({
-  getEntriesByCollection: vi.fn(() => []),
+  getEntriesInCollectionFolder: vi.fn(() => []),
 }));
 vi.mock('$lib/services/contents/entry/fields', () => ({
   LIST_KEY_PATH_REGEX: /\.\d+$/,
@@ -25,7 +25,11 @@ vi.mock('$lib/services/contents/entry/fields', () => ({
 vi.mock('$lib/services/contents/entry/summary', () => ({
   getEntrySummaryFromContent: vi.fn(() => 'summary'),
 }));
-vi.mock('$lib/services/utils/file', () => ({
+vi.mock('$lib/services/workflow', () => ({
+  getUnpublishedEntriesByCollection: vi.fn(() => []),
+}));
+vi.mock('$lib/services/utils/file', async (importOriginal) => ({
+  ...(await importOriginal()),
   renameIfNeeded: vi.fn((slug) => slug),
   sanitizePath: vi.fn((path) =>
     path
@@ -272,7 +276,7 @@ describe('fillTemplate()', async () => {
     const template = "{{uuid_shorter}}_{{title}}_{{name | default('{{a}}-{{b}}')}}";
     const first = fillTemplate(template, options);
 
-    expect(first).toMatch(/^[0-9a-f]{8}_[0-9a-f]{12}_[0-9a-f]{12}-[0-9a-f]{12}$/);
+    expect(first).toMatch(/^[0-9a-f]{8}_[0-9a-f]{12}_[0-9a-f]{12}$/);
     expect(fillTemplate(template, options)).toBe(first);
     expect([...randomValues.keys()]).toEqual([
       'en:uuid_shorter',
@@ -936,7 +940,7 @@ describe('fillTemplate()', async () => {
       content: content2,
     });
 
-    expect(result2).toMatch(/^[0-9a-f]{12}-[0-9a-f]{12}$/);
+    expect(result2).toEqual('backup-slug-tech');
   });
 
   test('date parts without explicit dateTimeParts', async () => {
@@ -1170,9 +1174,10 @@ describe('fillTemplate()', async () => {
   test('getExistingSlugs filters and maps slugs correctly', async () => {
     await setupCmsConfig();
 
-    const { getEntriesByCollection } = await import('$lib/services/contents/collection/entries');
+    const { getEntriesInCollectionFolder } =
+      await import('$lib/services/contents/collection/entries');
 
-    vi.mocked(getEntriesByCollection).mockReturnValueOnce([
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValueOnce([
       // @ts-ignore
       { slug: 'existing-1', locales: { en: { slug: 'existing-en-1' } } },
       // @ts-ignore
@@ -1192,13 +1197,46 @@ describe('fillTemplate()', async () => {
     fillTemplate('{{title}}', { collection, content: { title: 'New Post' } });
   });
 
+  test('getExistingSlugs includes the entries still in a pull request', async () => {
+    await setupCmsConfig();
+
+    const { getEntriesInCollectionFolder } =
+      await import('$lib/services/contents/collection/entries');
+
+    const { getUnpublishedEntriesByCollection } = await import('$lib/services/workflow');
+    const { renameIfNeeded } = await import('$lib/services/utils/file');
+
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValueOnce([
+      // @ts-ignore
+      { slug: 'published', locales: { en: { slug: 'published' } } },
+    ]);
+    // A new entry saved with Editorial Workflow is only in the pull request so far: a second one
+    // with the same title would otherwise take its slug, and with it its file and branch
+    vi.mocked(getUnpublishedEntriesByCollection).mockReturnValueOnce([
+      // @ts-ignore
+      { slug: 'new-post', locales: { en: { slug: 'new-post' } } },
+    ]);
+    vi.mocked(renameIfNeeded).mockImplementationOnce((slug, existingSlugs) => {
+      expect(existingSlugs).toEqual(['published', 'new-post']);
+
+      return `${slug}-1`;
+    });
+
+    expect(fillTemplate('{{title}}', { collection, content: { title: 'New Post' } })).toBe(
+      'new-post-1',
+    );
+    expect(getUnpublishedEntriesByCollection).toHaveBeenCalledWith(collection.name);
+  });
+
   test('getExistingSlugs with locale returns locale-specific slugs', async () => {
     await setupCmsConfig();
 
-    const { getEntriesByCollection } = await import('$lib/services/contents/collection/entries');
+    const { getEntriesInCollectionFolder } =
+      await import('$lib/services/contents/collection/entries');
+
     const { renameIfNeeded } = await import('$lib/services/utils/file');
 
-    vi.mocked(getEntriesByCollection).mockReturnValueOnce([
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValueOnce([
       // @ts-ignore
       { slug: 'entry-1', locales: { en: { slug: 'entry-1-en' }, ja: { slug: 'entry-1-ja' } } },
       // @ts-ignore
@@ -1224,7 +1262,7 @@ describe('fillTemplate()', async () => {
     });
 
     vi.mocked(renameIfNeeded).mockClear();
-    vi.mocked(getEntriesByCollection).mockReturnValueOnce([
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValueOnce([
       // @ts-ignore
       { slug: 'entry-1', locales: { en: { slug: 'entry-1-en' }, ja: { slug: 'entry-1-ja' } } },
       // @ts-ignore
@@ -1244,6 +1282,45 @@ describe('fillTemplate()', async () => {
       content: { title: 'New Post' },
       locale: 'ja',
     });
+  });
+
+  test('getExistingSlugs only counts the file names in the folder chosen with the path editor', async () => {
+    await setupCmsConfig();
+
+    const { getEntriesInCollectionFolder } =
+      await import('$lib/services/contents/collection/entries');
+
+    const { renameIfNeeded } = await import('$lib/services/utils/file');
+
+    /** @type {any[]} */
+    const entries = [
+      { slug: 'docs/intro', locales: {} },
+      { slug: 'intro', locales: {} },
+      { slug: 'docs/guides/intro', locales: {} },
+    ];
+
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValue(entries);
+    vi.mocked(renameIfNeeded).mockImplementation((slug, existingSlugs) =>
+      existingSlugs.includes(slug) ? `${slug}-1` : slug,
+    );
+
+    // The slug of a nested entry is its sub path, so the new slug is compared with the file names
+    // in the folder it goes to
+    expect(
+      fillTemplate('{{title}}', { collection, content: { title: 'Intro' }, dirPath: 'docs' }),
+    ).toBe('intro-1');
+    expect(renameIfNeeded).toHaveBeenLastCalledWith('intro', ['intro']);
+    expect(
+      fillTemplate('{{title}}', { collection, content: { title: 'Intro' }, dirPath: '' }),
+    ).toBe('intro-1');
+    expect(renameIfNeeded).toHaveBeenLastCalledWith('intro', ['intro']);
+    expect(
+      fillTemplate('{{title}}', { collection, content: { title: 'Intro' }, dirPath: 'blog' }),
+    ).toBe('intro');
+    expect(renameIfNeeded).toHaveBeenLastCalledWith('intro', []);
+
+    vi.mocked(getEntriesInCollectionFolder).mockReturnValue([]);
+    vi.mocked(renameIfNeeded).mockImplementation((slug) => slug);
   });
 
   test('processTransformations with nested template tag generates correct default value', async () => {

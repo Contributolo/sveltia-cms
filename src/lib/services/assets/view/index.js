@@ -2,8 +2,14 @@ import { _, locale as appLocale } from '@sveltia/i18n';
 import equal from 'fast-deep-equal';
 import { untrack } from 'svelte';
 
+import { isAssetInFolder } from '$lib/services/assets';
 import { selectedAssetFolder } from '$lib/services/assets/folders';
-import { publishedAssets, selectedAssets, uploadingAssets } from '$lib/services/assets/state';
+import {
+  focusedAsset,
+  publishedAssets,
+  selectedAssets,
+  uploadingAssets,
+} from '$lib/services/assets/state';
 import {
   browsedDirPath,
   focusedSubfolder,
@@ -90,12 +96,9 @@ export const selectedFolderAssets = createDerivedState(() => {
   const { current: _selectedAssetFolder } = selectedAssetFolder;
 
   if (_allAssets && _selectedAssetFolder && _selectedAssetFolder.internalPath !== undefined) {
-    // An asset’s folder is usually the very object the selection was made from, so identity
-    // settles it without walking the folder; the deep comparison is the fallback for a folder
-    // restored from `window.history.state`, which is an equal but separate object.
-    return _allAssets.filter(
-      ({ folder }) => folder === _selectedAssetFolder || equal(folder, _selectedAssetFolder),
-    );
+    // A folder restored from `window.history.state` is an equal but separate object, and the
+    // assets of another folder with the same path are listed as well
+    return _allAssets.filter((asset) => isAssetInFolder(asset, _selectedAssetFolder));
   }
 
   return _allAssets ? [..._allAssets] : [];
@@ -270,10 +273,27 @@ createRootEffect(() => {
   }
 });
 
+// Clear the selection when the listed assets or the filter change, so it never includes an asset
+// the current view hides, which a bulk action like Delete would otherwise apply to. Likewise, drop
+// the focus from an asset the view no longer lists, e.g. an image once the list is filtered to
+// documents, as the toolbar actions and the info panel fall back to the focused asset. An updated
+// copy of the focused asset, e.g. after it’s replaced, has the same path, so the focus stays.
 createRootEffect(() => {
   const assets = listedAssets.current;
+  const filter = filterConditions.current;
+  const asset = untrack(() => focusedAsset.current);
 
   selectedAssets.current = [];
+
+  if (
+    asset &&
+    !filterAssets(
+      assets.filter(({ path }) => path === asset.path),
+      filter,
+    ).length
+  ) {
+    focusedAsset.current = undefined;
+  }
 
   if (untrack(() => prefs.devModeEnabled)) {
     // eslint-disable-next-line no-console

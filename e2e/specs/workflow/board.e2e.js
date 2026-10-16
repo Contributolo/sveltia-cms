@@ -1,5 +1,6 @@
 import { openEntryPullRequest, post, WORKFLOW_CONFIG } from '../../fixtures/configs/workflow.js';
 import { expect, test } from '../../fixtures/test.js';
+import { getEditor } from '../../fixtures/ui.js';
 
 /**
  * @import { Locator, Page } from '@playwright/test';
@@ -114,7 +115,7 @@ test('discards the changes to a published entry from its card', async ({ cms, gi
     .click();
 
   await expect.poll(() => pullRequest.state).toBe('closed');
-  expect(github.refs.has('cms/posts/first-post')).toBe(false);
+  await expect.poll(() => github.refs.has('cms/posts/first-post')).toBe(false);
   expect(github.readFile('content/posts/first-post.md')).toBe(post('First Post', 'Hello, world!'));
   await expect(getCard(board, 'First Post')).toHaveCount(0);
 });
@@ -136,7 +137,7 @@ test('deletes an unpublished entry from its card', async ({ cms, github, page })
     .click();
 
   await expect.poll(() => pullRequest.state).toBe('closed');
-  expect(github.refs.has('cms/posts/second-post')).toBe(false);
+  await expect.poll(() => github.refs.has('cms/posts/second-post')).toBe(false);
   expect(github.readFile('content/posts/second-post.md')).toBeUndefined();
   await expect(getCard(board, 'Second Post')).toHaveCount(0);
 });
@@ -153,7 +154,7 @@ test('opens an entry from its card', async ({ cms, github, page }) => {
 
   await board.getByRole('button', { name: 'Second Post' }).click();
 
-  const editor = page.getByRole('group', { name: 'Content Editor' });
+  const editor = getEditor(page);
 
   await expect(editor.getByRole('textbox', { name: 'Title' })).toHaveValue('Second Post');
   await expect(editor.getByRole('textbox', { name: 'Body' })).toHaveValue('Coming soon.');

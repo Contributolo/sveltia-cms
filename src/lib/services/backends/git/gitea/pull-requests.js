@@ -3,17 +3,23 @@ import { isTextFileType } from '@sveltia/utils/file';
 import { sleep } from '@sveltia/utils/misc';
 import mime from 'mime';
 
+import { fetchAllPages, fetchPages } from '$lib/services/backends/git/gitea/api';
 import { fetchRawFile } from '$lib/services/backends/git/gitea/files';
 import { getWorkflowRepository } from '$lib/services/backends/git/gitea/fork';
 import { repository } from '$lib/services/backends/git/gitea/repository';
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
+import { fetchAPIOrUndefined } from '$lib/services/backends/git/shared/api-optional';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
-import { encodePath } from '$lib/services/backends/git/shared/url';
-import { deleteRemoteBranch } from '$lib/services/backends/git/shared/workflow';
 import {
-  getAllStatusLabels,
+  createDraftTitleCodec,
+  PULL_REQUEST_DESCRIPTION,
+} from '$lib/services/backends/git/shared/pull-requests';
+import { deleteRemoteBranch } from '$lib/services/backends/git/shared/workflow';
+import { encodePathSegments } from '$lib/services/utils/url';
+import {
   getStatusFromLabels,
   getStatusLabel,
+  replaceStatusLabel,
 } from '$lib/services/workflow/labels';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
@@ -28,87 +34,6 @@ import { forkedRepository } from '$lib/services/workflow/open-authoring';
  */
 
 /**
- * Number of items an instance returns per page unless configured otherwise, which is also the most
- * it lets a request ask for. A larger `limit` is silently clamped rather than refused.
- * @see https://docs.gitea.com/administration/config-cheat-sheet#api-api
- */
-const DEFAULT_MAX_RESPONSE_ITEMS = 50;
-/**
- * Maximum number of pages to read from a paginated list. Editorial Workflow is not meant to hold a
- * huge backlog, so this is a safety net against a runaway loop rather than a limit anyone should
- * reach.
- */
-const MAX_PAGES = 10;
-/**
- * The page size the instance applies, once it has been asked. Every list below is fetched with it,
- * because the instance cuts a larger page short without saying so.
- * @type {number | undefined}
- */
-let pageSize;
-
-/**
- * Reset the cached page size. Used for testing.
- */
-export const resetPageSize = () => {
-  pageSize = undefined;
-};
-
-/**
- * Get the page size the instance applies to a list. It’s asked once per session; the default is
- * used if the instance doesn’t report it.
- * @returns {Promise<number>} Page size.
- * @see https://docs.gitea.com/api/next/#tag/settings/operation/getGeneralAPISettings
- */
-const getPageSize = async () => {
-  if (pageSize === undefined) {
-    const { max_response_items: maxItems } = /** @type {{ max_response_items?: number }} */ (
-      await fetchAPI('/settings/api')
-    );
-
-    pageSize = Number(maxItems) || DEFAULT_MAX_RESPONSE_ITEMS;
-  }
-
-  return pageSize;
-};
-
-/**
- * Fetch the items of a paginated list. The instance clamps the page size to what it’s configured
- * with, so the pages are requested at that size and read until one comes back short, rather than
- * asking for one large page and silently losing whatever didn’t fit.
- * @param {string} path API endpoint path, with any query parameters of its own.
- * @returns {Promise<{ items: Record<string, any>[], complete: boolean }>} Items, and whether they
- * are all of them: the reading stops at {@link MAX_PAGES} pages, which may leave some out.
- */
-export const fetchPages = async (path) => {
-  const limit = await getPageSize();
-  const separator = path.includes('?') ? '&' : '?';
-  /** @type {Record<string, any>[]} */
-  const items = [];
-
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const result = /** @type {Record<string, any>[]} */ (
-      // eslint-disable-next-line no-await-in-loop
-      await fetchAPI(`${path}${separator}page=${page}&limit=${limit}`)
-    );
-
-    items.push(...result);
-
-    if (result.length < limit) {
-      return { items, complete: true };
-    }
-  }
-
-  return { items, complete: false };
-};
-
-/**
- * Fetch every item of a paginated list, up to {@link MAX_PAGES} pages: see {@link fetchPages}.
- * @param {string} path API endpoint path, with any query parameters of its own.
- * @returns {Promise<Record<string, any>[]>} Items.
- */
-export const fetchAllPages = async (path) => (await fetchPages(path)).items;
-
-/**
  * Regular expression matching the work-in-progress indicators Gitea/Forgejo accepts at the
  * beginning of a pull request title. There’s no dedicated API field to toggle the draft state; the
  * read-only `draft` property is derived from the title instead. An instance can be configured with
@@ -116,10 +41,12 @@ export const fetchAllPages = async (path) => (await fetchPages(path)).items;
  * @see https://docs.gitea.com/administration/config-cheat-sheet
  */
 const WIP_TITLE_REGEX = /^\s*(?:\[wip\]|wip:)\s*/i;
+
 /**
- * Prefix added to a pull request title to mark it as a draft.
+ * Helpers to remove the work-in-progress indicators from a pull request title, and to add the
+ * `WIP:` prefix to the title of a draft.
  */
-const WIP_TITLE_PREFIX = 'WIP: ';
+export const wipTitle = createDraftTitleCodec({ regex: WIP_TITLE_REGEX, prefix: 'WIP: ' });
 
 /**
  * Colors used for the CMS status labels, which have to be created on the instance before they can
@@ -137,22 +64,6 @@ const STATUS_LABEL_COLORS = {
  * Description given to a CMS status label created on the instance.
  */
 const STATUS_LABEL_DESCRIPTION = 'Editorial Workflow status managed by Sveltia CMS';
-
-/**
- * Remove any work-in-progress indicator from the given pull request title.
- * @param {string} title Raw title.
- * @returns {string} Title without a WIP prefix.
- */
-export const stripWipPrefix = (title) => {
-  let result = title;
-
-  // Repeat, because an instance accepts more than one prefix and a title can carry a combination
-  while (WIP_TITLE_REGEX.test(result)) {
-    result = result.replace(WIP_TITLE_REGEX, '');
-  }
-
-  return result;
-};
 
 /**
  * Check whether the given pull request was opened from a branch of the configured repository rather
@@ -205,7 +116,7 @@ export const parsePullRequest = (item) => {
   return {
     number: item.number,
     nodeId: String(item.id),
-    title: stripWipPrefix(item.title),
+    title: wipTitle.strip(item.title),
     url: item.html_url,
     branch,
     headSHA,
@@ -233,23 +144,19 @@ export const fetchPullRequestHeadRef = async (number) => {
   const { owner, repo } = repository;
   const ref = `refs/pull/${number}/head`;
 
-  try {
-    const result = /** @type {Record<string, any> | Record<string, any>[]} */ (
-      await fetchAPI(`/repos/${owner}/${repo}/git/${ref}`)
-    );
+  const result = /** @type {Record<string, any> | Record<string, any>[] | undefined} */ (
+    await fetchAPIOrUndefined(`/repos/${owner}/${repo}/git/${ref}`)
+  );
 
-    // The path is a prefix filter, which the instance answers with a list even when a single
-    // reference matches it exactly, so the one asked for is picked out
-    const match = (Array.isArray(result) ? result : [result]).find((item) => item.ref === ref);
-
-    return match?.object?.sha;
-  } catch (/** @type {any} */ ex) {
-    if (ex.cause?.status === 404) {
-      return undefined;
-    }
-
-    throw ex;
+  if (!result) {
+    return undefined;
   }
+
+  // The path is a prefix filter, which the instance answers with a list even when a single
+  // reference matches it exactly, so the one asked for is picked out
+  const match = (Array.isArray(result) ? result : [result]).find((item) => item.ref === ref);
+
+  return match?.object?.sha;
 };
 
 /**
@@ -384,21 +291,15 @@ export const fetchPullRequestFileContent = async (pullRequest, file) => {
   const { owner, repo } = getWorkflowRepository();
   const { path } = file;
   const ref = pullRequest.headSHA ?? pullRequest.branch;
-  /** @type {Record<string, any>} */
-  let result;
 
-  try {
-    result = /** @type {Record<string, any>} */ (
-      await fetchAPI(
-        `/repos/${owner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`,
-      )
-    );
-  } catch (/** @type {any} */ ex) {
-    if (ex.cause?.status !== 404) {
-      throw ex;
-    }
+  const result = /** @type {Record<string, any> | undefined} */ (
+    await fetchAPIOrUndefined(
+      `/repos/${owner}/${repo}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(ref)}`,
+    )
+  );
 
-    // The file may have been removed from the branch in the meantime
+  // The file may have been removed from the branch in the meantime
+  if (!result) {
     file.deleted = true;
 
     return;
@@ -445,19 +346,11 @@ export const fetchPullRequestFileContents = async (pullRequest) => {
 export const fetchBranchHead = async (branch) => {
   const { owner, repo } = getWorkflowRepository();
 
-  try {
-    const { commit } = /** @type {{ commit?: { id?: string } }} */ (
-      await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePath(branch)}`)
-    );
+  const result = /** @type {{ commit?: { id?: string } } | undefined} */ (
+    await fetchAPIOrUndefined(`/repos/${owner}/${repo}/branches/${encodePathSegments(branch)}`)
+  );
 
-    return commit?.id;
-  } catch (/** @type {any} */ ex) {
-    if (ex.cause?.status === 404) {
-      return undefined;
-    }
-
-    throw ex;
-  }
+  return result?.commit?.id;
 };
 
 /**
@@ -471,7 +364,7 @@ export const deleteBranch = async (branch) => {
 
   await deleteRemoteBranch({
     branch,
-    path: `/repos/${owner}/${repo}/branches/${encodePath(branch)}`,
+    path: `/repos/${owner}/${repo}/branches/${encodePathSegments(branch)}`,
     goneStatuses: [404],
   });
 };
@@ -537,16 +430,15 @@ export const applyLabels = async (number, labels, status, method) => {
 export const updateLabels = async (pullRequest, status) => {
   const { owner, repo } = repository;
   const { number } = pullRequest;
-  const cmsLabels = getAllStatusLabels();
 
   const labels = /** @type {Record<string, any>[]} */ (
     await fetchAPI(`/repos/${owner}/${repo}/issues/${number}/labels`)
   );
 
-  const newLabels = [
-    ...labels.map(({ name }) => name).filter((name) => !cmsLabels.includes(name)),
-    getStatusLabel(status),
-  ];
+  const newLabels = replaceStatusLabel(
+    labels.map(({ name }) => name),
+    status,
+  );
 
   await applyLabels(/** @type {number} */ (number), newLabels, status, 'PUT');
 };
@@ -564,7 +456,7 @@ export const updateDraftState = async (pullRequest, isDraft) => {
 
   await fetchAPI(`/repos/${owner}/${repo}/pulls/${number}`, {
     method: 'PATCH',
-    body: { title: isDraft ? `${WIP_TITLE_PREFIX}${title}` : title },
+    body: { title: wipTitle.format(title, isDraft) },
   });
 };
 
@@ -587,11 +479,11 @@ export const createPullRequest = async ({ branch, title, status }) => {
     await fetchAPI(`/repos/${owner}/${repo}/pulls`, {
       method: 'POST',
       body: {
-        title: isDraft ? `${WIP_TITLE_PREFIX}${title}` : title,
+        title: wipTitle.format(title, isDraft),
         // A cross-repository pull request identifies its head branch by the fork’s owner
         head: fork ? `${fork.owner}:${branch}` : branch,
         base: baseBranch,
-        body: 'Automatically generated by Sveltia CMS',
+        body: PULL_REQUEST_DESCRIPTION,
       },
     })
   );
@@ -638,21 +530,13 @@ const getSourcePath = ({ action, path, previousPath }) =>
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGetContents
  */
 export const fetchFileSHA = async (path, ref, { owner, repo } = getWorkflowRepository()) => {
-  try {
-    const { sha } = /** @type {Record<string, any>} */ (
-      await fetchAPI(
-        `/repos/${owner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`,
-      )
-    );
+  const result = /** @type {Record<string, any> | undefined} */ (
+    await fetchAPIOrUndefined(
+      `/repos/${owner}/${repo}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(ref)}`,
+    )
+  );
 
-    return sha;
-  } catch (/** @type {any} */ ex) {
-    if (ex.cause?.status !== 404) {
-      throw ex;
-    }
-
-    return undefined;
-  }
+  return result?.sha;
 };
 
 /**

@@ -14,6 +14,7 @@ import {
 } from '$lib/services/utils/date';
 
 import { parseDateTimeConfig } from './config.js';
+import { getFormatLocale } from './locales.js';
 import { getDate, isValidDate, parseWithFormatFallback } from './parse.js';
 
 /**
@@ -82,7 +83,12 @@ export const getDateTimeFieldDisplayValue = ({ locale, fieldConfig, currentValue
   }
 
   if (format) {
-    const parsed = parseWithFormatFallback({ value: currentValue, format, parseAsUTC: utc });
+    const parsed = parseWithFormatFallback({
+      value: currentValue,
+      format,
+      parseAsUTC: utc,
+      localeKey: getFormatLocale(fieldConfig, locale),
+    });
 
     if (parsed.isValid()) {
       return parsed.format(format);
@@ -94,7 +100,7 @@ export const getDateTimeFieldDisplayValue = ({ locale, fieldConfig, currentValue
     return '';
   }
 
-  const date = getDate(currentValue, fieldConfig);
+  const date = getDate(currentValue, fieldConfig, locale);
   const canonicalLocale = getCanonicalLocale(locale);
 
   if (!isValidDate(date)) {
@@ -110,14 +116,15 @@ export const getDateTimeFieldDisplayValue = ({ locale, fieldConfig, currentValue
   }
 
   if (dateOnly) {
+    // `getDate()` reads a date as UTC midnight, which the custom time zone would show as the
+    // previous day west of UTC, so only a value with a time is shown in that zone
     return getDisplayFormatter({
       locale: canonicalLocale,
       parts: 'date',
       timeZone:
-        displayTimeZone ||
-        (utc || DATE_REGEX.test(currentValue) || TIME_SUFFIX_REGEX.test(currentValue)
+        utc || DATE_REGEX.test(currentValue) || TIME_SUFFIX_REGEX.test(currentValue)
           ? 'UTC'
-          : undefined),
+          : displayTimeZone,
     }).format(date);
   }
 

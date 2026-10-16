@@ -14,6 +14,8 @@ import {
 } from '$lib/services/contents/collection/entries/index-file';
 import { parseDateTimeConfig } from '$lib/services/contents/fields/date-time/config';
 import { getDate, isValidDate } from '$lib/services/contents/fields/date-time/parse';
+import { omitLocalePlaceholder } from '$lib/services/contents/i18n/placeholder';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import {
@@ -37,9 +39,10 @@ dayjs.extend(dayjsUTC);
  * @param {string} [args.dateFieldName] Date field name.
  * @param {Field[]} args.fields Fields.
  * @param {FlattenedEntryContent} args.content Entry content.
+ * @param {InternalLocaleCode} [args.locale] Locale of the content.
  * @returns {Record<string, string> | undefined} Date and time parts.
  */
-export const extractDateTime = ({ dateFieldName, fields, content }) => {
+export const extractDateTime = ({ dateFieldName, fields, content, locale }) => {
   const fieldConfig = dateFieldName
     ? fields.find(({ widget, name }) => widget === 'datetime' && name === dateFieldName)
     : fields.find(({ widget }) => widget === 'datetime');
@@ -51,14 +54,19 @@ export const extractDateTime = ({ dateFieldName, fields, content }) => {
   }
 
   const config = /** @type {DateTimeField} */ (fieldConfig);
-  const date = getDate(fieldValue, config);
+  const date = getDate(fieldValue, config, locale);
 
   if (!isValidDate(date)) {
     return undefined;
   }
 
-  const { utc, outputUTC } = parseDateTimeConfig(config);
-  const timeZone = utc || outputUTC ? 'UTC' : undefined;
+  const { format, dateOnly, utc, outputUTC, singleCustomTimeZone } = parseDateTimeConfig(config);
+
+  // Read the parts in the time zone `getDate()` parsed the value in: a date without a custom format
+  // is UTC midnight, while one in a custom format is the browser’s midnight, and a date/time is
+  // shown in the field’s custom time zone if any, like in the input
+  const timeZone =
+    utc || outputUTC || (dateOnly && !format) ? 'UTC' : dateOnly ? undefined : singleCustomTimeZone;
 
   return getDateTimeParts({ date, timeZone });
 };
@@ -97,7 +105,7 @@ export const fillEntryPathTemplate = ({
   let dateTimeParts;
 
   if (DATE_TIME_TEMPLATE_REGEX.test(pathTemplate)) {
-    dateTimeParts = extractDateTime({ dateFieldName, fields, content });
+    dateTimeParts = extractDateTime({ dateFieldName, fields, content, locale });
 
     // Cannot generate a path if the date and time parts are not available
     if (!dateTimeParts) {
@@ -164,7 +172,7 @@ export const getPreviewPath = ({
   // Handle the case where the default locale is omitted from the preview path, ensuring that the
   // URL is correctly generated without the locale segment for the default locale.
   if (locale === defaultLocale && omitDefaultLocaleFromPreviewPath) {
-    template = template.replace(/{{locale}}[./]/, '');
+    template = omitLocalePlaceholder(template) ?? template;
   }
 
   return fillEntryPathTemplate({
@@ -238,5 +246,9 @@ export const getEntryPreviewURL = (entry, locale, collection, collectionFile, op
  * @param {InternalLocaleCode} locale Locale.
  * @returns {string} URL on the repository.
  */
-export const getEntryRepoBlobURL = (entry, locale) =>
-  `${backend.current?.repository?.blobBaseURL}/${entry.locales[locale]?.path}?plain=1`;
+export const getEntryRepoBlobURL = (entry, locale) => {
+  const path = entry.locales[locale]?.path;
+
+  // A name can contain characters like `#` or `%` that have a meaning in a URL
+  return `${backend.current?.repository?.blobBaseURL}/${path ? encodePathSegments(path) : ''}?plain=1`;
+};

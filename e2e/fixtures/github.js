@@ -146,12 +146,6 @@ export class MockGitHub extends MockGitRepository {
   allowForking = true;
 
   /**
-   * The signed-in user’s fork of the repository, once {@link createFork} has made it.
-   * @type {{ owner: string, repo: string } | undefined}
-   */
-  fork = undefined;
-
-  /**
    * GraphQL node ID of the fork.
    */
   forkId = 'R_e2e_fork';
@@ -190,32 +184,6 @@ export class MockGitHub extends MockGitRepository {
    * @type {string[]}
    */
   dispatches = [];
-
-  /**
-   * Fork the repository onto the signed-in user’s account, with a copy of the default branch. Like
-   * a fork on GitHub, it shares the commits and blobs of the repository, and only its branches are
-   * its own.
-   * @param {object} [options] Options.
-   * @param {string} [options.repo] Name of the fork, the repository’s own by default. A fork has
-   * another name when it was renamed, or when the user already had a repository of that name.
-   * @returns {{ owner: string, repo: string }} Fork.
-   */
-  createFork({ repo = this.repo } = {}) {
-    this.fork = { owner: this.user.login, repo };
-    this.refs.set(this.forkBranch(this.branch), this.head.oid);
-
-    return this.fork;
-  }
-
-  /**
-   * Get the key of a branch in the fork, for {@link refs}, {@link commit}, {@link readFile} and
-   * the `head` of a pull request.
-   * @param {string} branch Branch name.
-   * @returns {string} Key, e.g. `mona:main`.
-   */
-  forkBranch(branch) {
-    return `${this.user.login}:${branch}`;
-  }
 
   /**
    * Get the key of a branch in the repository of the given owner: the fork if it’s the signed-in
@@ -593,6 +561,30 @@ export class MockGitHub extends MockGitRepository {
 
     if (method === 'GET' && path.startsWith('git/trees/')) {
       const ref = decodeURIComponent(path.slice('git/trees/'.length));
+
+      // A tree-ish expression, e.g. `main:apps/site`, addresses a directory of a commit
+      if (ref.includes(':')) {
+        const [commitRef, dirPath] = ref.split(/:(.*)/);
+
+        const commit = this.refs.has(commitRef)
+          ? this.getHead(commitRef)
+          : this.getCommit(commitRef);
+
+        const prefix = `${dirPath}/`;
+
+        if (!commit || ![...commit.tree.keys()].some((filePath) => filePath.startsWith(prefix))) {
+          return { status: 404, json: { message: 'Not Found' } };
+        }
+
+        return this.handleTreeRequest({
+          sha: ref,
+          tree: commit.tree,
+          prefix,
+          recursive: searchParams.has('recursive'),
+          truncate: this.truncateTree,
+        });
+      }
+
       const commit = this.refs.has(ref) ? this.getHead(ref) : this.getCommit(ref);
 
       if (commit) {
@@ -964,7 +956,19 @@ export class MockGitHub extends MockGitRepository {
       return { json: pullRequest.labels.map((name) => ({ name })) };
     }
 
+    // Like GitHub, answer whether the pull request has been merged with a status alone
+    if (request === 'GET pulls/merge') {
+      return pullRequest.state === 'merged'
+        ? { status: 204 }
+        : { status: 404, json: { message: 'Not Found' } };
+    }
+
     if (request === 'PUT pulls/merge') {
+      // Like GitHub, refuse to merge a draft pull request
+      if (pullRequest.draft) {
+        return { status: 405, json: { message: 'Pull Request is still a draft' } };
+      }
+
       // Like GitHub, refuse a merge pinned to a commit the branch no longer points at
       if (body.sha && body.sha !== this.getPullRequestHead(pullRequest).oid) {
         return {
@@ -1170,6 +1174,16 @@ export class MockGitHub extends MockGitRepository {
           base: { ref: this.getRefNode(variables.branch, { oid: true }) },
         },
       };
+    }
+
+    // The tree of a directory at a commit, as a `ref:path` expression, which tells whether the
+    // root directory has changed. Like GitHub, answer `null` for one that doesn’t exist
+    if (/object\(expression:\s*\$expression\)/.test(query)) {
+      const [ref, dir] = String(variables.expression).split(/:(.*)/);
+      const commit = this.refs.has(ref) ? this.getHead(ref) : this.getCommit(ref);
+      const oid = commit ? MockGitRepository.getDirSHA(commit.tree, dir) : undefined;
+
+      return { data: { repository: { object: oid ? { oid } : null } } };
     }
 
     // The head of a single branch, which a save reads to find out whether the workflow branch has
@@ -1424,8 +1438,9 @@ export class MockGitHub extends MockGitRepository {
     return this.getAncestors(this.getHead(branch).oid)
       .filter(({ paths, parents }) => paths.has(path) && parents.length < 2)
       .slice(0, first)
-      .map(({ oid, author, date }) => ({
+      .map(({ oid, message, author, date }) => ({
         oid,
+        messageHeadline: message.split('\n')[0],
         author: {
           name: author.name,
           email: author.email,

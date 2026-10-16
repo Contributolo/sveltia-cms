@@ -1,11 +1,12 @@
 import { sleep } from '@sveltia/utils/misc';
 
 import { commitChanges } from '$lib/services/backends/git/gitlab/commits';
-import { fetchBlobNodes } from '$lib/services/backends/git/gitlab/files';
+import { FETCH_BLOB_IDS_QUERY, fetchBlobNodes } from '$lib/services/backends/git/gitlab/files';
+import { getWorkflowRepository } from '$lib/services/backends/git/gitlab/fork';
 import {
   createPullRequest,
   deleteBranch,
-  DRAFT_TITLE_PREFIX,
+  draftTitle,
   fetchBranchHead,
   fetchPullRequests as fetchLabelledPullRequests,
   fetchMergeRequest,
@@ -17,12 +18,15 @@ import {
   updateForkStatus,
 } from '$lib/services/backends/git/gitlab/workflow-fork';
 import { fetchAPI } from '$lib/services/backends/git/shared/api';
-import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
+import { assertBranchNotMoved } from '$lib/services/backends/git/shared/commits';
+import { checkPublishAllowed } from '$lib/services/backends/git/shared/fork';
 import {
-  checkPublishAllowed,
-  createDraftPullRequest,
-} from '$lib/services/backends/git/shared/fork';
-import { isSquashMergeEnabled } from '$lib/services/backends/git/shared/workflow';
+  assertBranchAtHead,
+  commitToNewWorkflowBranch,
+  getMovedHeadMergeState,
+  isSquashMergeEnabled,
+  saveWorkflowBranch,
+} from '$lib/services/backends/git/shared/workflow';
 import { getAllStatusLabels, getStatusLabel } from '$lib/services/workflow/labels';
 import { openAuthoring } from '$lib/services/workflow/open-authoring';
 
@@ -66,6 +70,12 @@ const AUTO_MERGE_WAIT_STATUSES = [...TRANSIENT_MERGE_STATUSES, 'ci_still_running
  * safety net for a merge that never lands, e.g. one GitLab has queued but not carried out.
  */
 const AUTO_MERGE_POLL = { interval: 10000, maxDuration: 60 * 60 * 1000 };
+/**
+ * How many times, and how often, a merge request is read before it’s merged while its head trails
+ * the branch. GitLab refreshes a merge request in the background after a push to its branch, which
+ * usually takes a second or two, and refuses to merge it pinned to the new commit until then.
+ */
+const MERGE_REQUEST_REFRESH_POLL = { attempts: 10, interval: 1000 };
 
 /**
  * Fetch all the unpublished entries the signed-in user has in progress.
@@ -75,16 +85,9 @@ export const fetchPullRequests = async () =>
   openAuthoring.current ? fetchForkPullRequests() : fetchLabelledPullRequests();
 
 /**
- * Commit the given changes on a workflow branch that no merge request is known for. The branch is
- * usually created along with the commit, but it can already exist: it’s left over from an earlier
- * merge request for the same entry, which the CMS knows nothing about — one merged without deleting
- * the branch, or one that was closed on GitLab rather than discarded here, which leaves the branch
- * behind. Starting the new merge request from the branch as it stands would carry that earlier
- * work into it — a merged one adds nothing, but a closed one brings back what was thrown away — so
- * the branch is deleted and created afresh from the configured branch. With Open Authoring a draft
- * is a branch without a merge request, so there’s no telling a leftover from a live one; the branch
- * is kept, and it shows up as a draft the next time the fork is listed. The fork is the
- * contributor’s own, so nobody else’s work can be on it.
+ * Commit the given changes on a workflow branch that no merge request is known for, creating the
+ * branch from the configured one; see {@link commitToNewWorkflowBranch} for a branch that already
+ * exists.
  * @param {FileChange[]} changes Changes to be committed.
  * @param {CommitOptions} options Commit options, with the workflow branch.
  * @returns {Promise<CommitResults>} Commit results.
@@ -94,37 +97,71 @@ const commitToNewBranch = async (changes, options) => {
   const { branch = '' } = options;
   const startBranch = repository.branch;
 
+  return commitToNewWorkflowBranch({
+    branch,
+    // GitLab rejects `start_branch` outright once the branch exists
+    branchExistsStatus: 400,
+    /**
+     * Commit the changes on a branch created from the start branch.
+     * @returns {Promise<CommitResults>} Commit results.
+     */
+    commitFromStart: () => commitChanges(changes, { ...options, startBranch }),
+    /**
+     * Commit the changes onto the existing branch.
+     * @returns {Promise<CommitResults>} Commit results.
+     */
+    commitOnBranch: () => commitChanges(changes, options),
+    /**
+     * Look up a merge request open from the branch.
+     * @returns {Promise<string | undefined>} Its reference, or `undefined` if there is none.
+     */
+    findOpenPullRequest: async () => {
+      const [openMergeRequest] = await fetchOpenMergeRequests(branch);
+
+      return openMergeRequest ? `!${openMergeRequest.iid}` : undefined;
+    },
+    inUseMessage: 'The workflow branch is in use by another merge request.',
+    deleteBranch,
+  });
+};
+
+/**
+ * Commit the given changes onto the branch of an existing merge request. An entry’s branch is named
+ * after the entry, not the editor, so someone else can push to it too, and GitLab can’t be told
+ * which commit a commit has to go on top of: it lands on whatever the branch points at. So the
+ * branch has to point at the commit the entry was loaded or saved at, which the conflict check has
+ * just compared it with, or a commit pushed since would go out with the save, vouched for by the
+ * head recorded afterwards. Without a head on record there’s nothing to compare, which is refused
+ * just the same. The head also goes with the commit as the last commit of each file it changes, so
+ * a push that lands in the last moment and touches the same files makes GitLab refuse the save.
+ * @param {FileChange[]} changes Changes to be committed.
+ * @param {CommitOptions} options Commit options, with the workflow branch.
+ * @param {WorkflowPullRequest} pullRequest Merge request.
+ * @returns {Promise<CommitResults>} Commit results.
+ * @throws {Error} When the branch is gone, or points at another commit than the one on record.
+ */
+const commitToExistingBranch = async (changes, options, pullRequest) => {
+  const { branch = '' } = options;
+
+  const headSHA = await assertBranchAtHead({
+    branch,
+    headSHA: pullRequest.headSHA,
+    fetchBranchHead,
+    getWorkflowRepository,
+  });
+
   try {
-    return await commitChanges(changes, { ...options, startBranch });
+    return await commitChanges(changes, { ...options, headOid: headSHA });
   } catch (/** @type {any} */ ex) {
-    // GitLab rejects `start_branch` outright once the branch exists. Anything else is a real
-    // failure
-    if (ex.cause?.status !== 400) {
-      throw ex;
+    // GitLab refuses a file changed since with a 400 Bad Request, like any other invalid request
+    if (ex.cause?.status === 400) {
+      await assertBranchNotMoved(headSHA, async () => ({
+        hash: /** @type {string} */ (await fetchBranchHead(branch)),
+      }));
     }
+
+    throw ex;
   }
-
-  if (openAuthoring.current) {
-    return commitChanges(changes, options);
-  }
-
-  // A merge request open from the branch is one the board doesn’t show: it has lost its status
-  // label, it sits beyond the number of merge requests fetched, it goes to another branch, or it
-  // was never the CMS’s. Committing onto it would take whatever else it holds along with the entry,
-  // unseen, and deleting the branch would close it, so the save is refused instead
-  const [openMergeRequest] = await fetchOpenMergeRequests(branch);
-
-  if (openMergeRequest) {
-    throw createLocalizedError(
-      'The workflow branch is in use by another merge request.',
-      'workflow.branch_in_use',
-      { number: `!${openMergeRequest.iid}` },
-    );
-  }
-
-  await deleteBranch(branch);
-
-  return commitChanges(changes, { ...options, startBranch });
 };
 
 /**
@@ -143,7 +180,7 @@ export const updateStatus = async (pullRequest, status) => {
 
   const newLabel = getStatusLabel(status);
   const isDraft = status === 'draft';
-  const title = isDraft ? `${DRAFT_TITLE_PREFIX}${pullRequest.title}` : pullRequest.title;
+  const title = draftTitle.format(pullRequest.title, isDraft);
 
   await fetchAPI(`/projects/${getProjectId()}/merge_requests/${pullRequest.number}`, {
     method: 'PUT',
@@ -168,38 +205,24 @@ export const updateStatus = async (pullRequest, status) => {
  * @returns {Promise<{ commit: CommitResults, pullRequest: WorkflowPullRequest }>} Commit results
  * and the new or updated merge request.
  */
-export const savePullRequest = async ({ changes, options, branch, title, status, pullRequest }) => {
-  if (pullRequest) {
-    return { commit: await commitChanges(changes, { ...options, branch }), pullRequest };
-  }
-
-  // The commit itself creates the workflow branch on the first save, so it doesn’t need a request
-  // of its own
-  const commit = await commitToNewBranch(changes, { ...options, branch });
-
-  // A removal has no review stages to move through, so its merge request is opened right away like
-  // it is in the regular flow
-  if (openAuthoring.current && status === 'draft') {
-    return { commit, pullRequest: createDraftPullRequest({ commit, branch, title }) };
-  }
-
-  return { commit, pullRequest: await createPullRequest({ branch, title, status }) };
-};
+export const savePullRequest = async (args) =>
+  saveWorkflowBranch(args, { commitToNewBranch, commitToExistingBranch, createPullRequest });
 
 /**
- * Fetch the merge request’s detailed merge status, which names the single check that stands in the
- * way of an immediate merge, e.g. `ci_still_running`. A transient status is polled until it settles
- * or the attempts run out, in which case the transient status is returned as is.
+ * Fetch the merge request’s state and detailed merge status, which names the single check that
+ * stands in the way of an immediate merge, e.g. `ci_still_running`. A transient status is polled
+ * until it settles or the attempts run out, in which case the transient status is returned as is.
  * @param {WorkflowPullRequest} pullRequest Merge request.
  * @param {number} [attemptsLeft] Remaining reads, including this one.
- * @returns {Promise<string | undefined>} Detailed merge status.
+ * @returns {Promise<{ state: string | undefined, status: string | undefined }>} State, e.g.
+ * `merged`, and detailed merge status.
  * @see https://docs.gitlab.com/api/merge_requests/#merge-status
  */
 const fetchMergeStatus = async (pullRequest, attemptsLeft = MERGE_STATUS_POLL.attempts) => {
-  const { detailed_merge_status: status } = await fetchMergeRequest(pullRequest);
+  const { state, detailed_merge_status: status } = await fetchMergeRequest(pullRequest);
 
   if (!TRANSIENT_MERGE_STATUSES.includes(status) || attemptsLeft <= 1) {
-    return status;
+    return { state, status };
   }
 
   await sleep(MERGE_STATUS_POLL.interval);
@@ -327,42 +350,84 @@ const getDiffStatus = (diff) => {
 };
 
 /**
- * Read the merge request afresh right before it’s merged. The files are listed by comparing the
- * configured branch with the very commit the merge request points at, rather than read off the
- * merge request, so they describe exactly what a merge pinned to that commit would bring in, even
- * if the branch moves on meanwhile. The comparison can stop short of the whole list on a large
- * change, which the merge request’s own count of changes tells.
+ * Read the merge request afresh right before it’s merged, along with the commit its branch points
+ * at. GitLab refreshes a merge request in the background after a push, so its head can trail the
+ * branch for a moment, e.g. right after a save, and a merge pinned to the branch head is refused
+ * until it has caught up. While the branch still points at the commit on record, the merge request
+ * is read again until it does, up to a limit. A branch that has moved on from the commit on record
+ * is refused by the check before publishing anyway, so there’s no point in waiting for that.
  * @param {WorkflowPullRequest} pullRequest Merge request.
- * @returns {Promise<WorkflowMergeState>} State.
+ * @param {number} [attemptsLeft] Number of reads left.
+ * @returns {Promise<{ item: Record<string, any>, branchHead: string | undefined }>} Merge request
+ * returned by the REST API, and the branch head, or `undefined` if the merge request isn’t
+ * merged into the configured branch from one of this project’s branches, or has no head.
  * @see https://docs.gitlab.com/api/merge_requests/#get-single-mr
- * @see https://docs.gitlab.com/api/repositories/#compare-branches-tags-or-commits
  */
-export const fetchMergeState = async (pullRequest) => {
+const fetchRefreshedMergeRequest = async (
+  pullRequest,
+  attemptsLeft = MERGE_REQUEST_REFRESH_POLL.attempts,
+) => {
+  const item = await fetchMergeRequest(pullRequest);
+
   const {
-    sha: headSHA,
+    sha,
     target_branch: targetBranch,
     source_project_id: sourceId,
     target_project_id: targetId,
-    changes_count: changesCount,
-  } = await fetchMergeRequest(pullRequest);
+  } = item;
 
-  const onConfiguredBranches = targetBranch === repository.branch && sourceId === targetId;
+  if (!sha || targetBranch !== repository.branch || sourceId !== targetId) {
+    return { item, branchHead: undefined };
+  }
 
-  if (!headSHA || !onConfiguredBranches) {
-    return { headSHA, onConfiguredBranches: false, files: [], complete: false };
+  // A branch that’s gone leaves the merge request’s head as the only one there is
+  const branchHead = (await fetchBranchHead(pullRequest.branch)) ?? sha;
+
+  if (branchHead === sha || branchHead !== pullRequest.headSHA || attemptsLeft <= 1) {
+    return { item, branchHead };
+  }
+
+  await sleep(MERGE_REQUEST_REFRESH_POLL.interval);
+
+  return fetchRefreshedMergeRequest(pullRequest, attemptsLeft - 1);
+};
+
+/**
+ * Read the merge request afresh right before it’s merged. The files are listed by comparing the
+ * configured branch with the very commit the branch points at, rather than read off the merge
+ * request, so they describe exactly what a merge pinned to that commit would bring in, even if the
+ * branch moves on meanwhile. The comparison can stop short of the whole list on a large change,
+ * which the merge request’s own count of changes tells, as long as it’s up to date with the branch.
+ * @param {WorkflowPullRequest} pullRequest Merge request.
+ * @returns {Promise<WorkflowMergeState>} State.
+ * @see https://docs.gitlab.com/api/repositories/#compare-branches-tags-or-commits
+ */
+export const fetchMergeState = async (pullRequest) => {
+  const { item, branchHead: headSHA } = await fetchRefreshedMergeRequest(pullRequest);
+
+  if (!headSHA) {
+    return { headSHA: item.sha, onConfiguredBranches: false, files: [], complete: false };
+  }
+
+  const movedHeadState = getMovedHeadMergeState(pullRequest, headSHA);
+
+  if (movedHeadState) {
+    return movedHeadState;
   }
 
   const { diffs = [] } = /** @type {{ diffs?: Record<string, any>[] }} */ (
     await fetchAPI(
       `/projects/${getProjectId()}/repository/compare` +
-        `?from=${encodeURIComponent(/** @type {string} */ (targetBranch))}` +
+        `?from=${encodeURIComponent(/** @type {string} */ (repository.branch))}` +
         `&to=${encodeURIComponent(headSHA)}&straight=false`,
     )
   );
 
   // `changes_count` is a string, which reads like `1000+` past GitLab’s limit, and is missing
-  // while the merge request’s diff is still being worked out. The comparison is then all there is
-  // to go by, and one that reaches GitLab’s default limit on files may have been cut short
+  // while the merge request’s diff is still being worked out, or describes another commit while the
+  // merge request trails the branch. The comparison is then all there is to go by, and one that
+  // reaches GitLab’s default limit on files may have been cut short
+  const changesCount = item.sha === headSHA ? item.changes_count : undefined;
   const count = changesCount === null || changesCount === undefined ? undefined : `${changesCount}`;
 
   const complete =
@@ -372,7 +437,7 @@ export const fetchMergeState = async (pullRequest) => {
 
   return {
     headSHA,
-    onConfiguredBranches,
+    onConfiguredBranches: true,
     files: diffs.map((diff) => ({
       path: diff.new_path,
       status: getDiffStatus(diff),
@@ -382,24 +447,6 @@ export const fetchMergeState = async (pullRequest) => {
     complete,
   };
 };
-
-/**
- * Query to fetch the Git object IDs of the blobs at the given paths on a branch or commit.
- */
-const FETCH_BLOB_IDS_QUERY = `
-  query($fullPath: ID!, $branch: String!, $paths: [String!]!) {
-    project(fullPath: $fullPath) {
-      repository {
-        blobs(ref: $branch, paths: $paths) {
-          nodes {
-            path
-            oid
-          }
-        }
-      }
-    }
-  }
-`;
 
 /**
  * Find which of the given files are the same at the given commit as on the configured branch, by
@@ -457,12 +504,26 @@ export const publish = async (pullRequest) => {
   try {
     await fetchAPI(path, { method: 'PUT', body });
   } catch (/** @type {any} */ ex) {
+    if (ex.cause?.status !== 405) {
+      throw ex;
+    }
+
+    const { state, status } = await fetchMergeStatus(pullRequest);
+
     // GitLab answers 405 Method Not Allowed whenever the merge request can’t be merged right away,
-    // whatever the reason, so the detailed status tells a running pipeline from a real blocker,
-    // such as a conflict. Auto-merge would take a blocked merge request as well, but it would sit
-    // there unmerged while the CMS reports the entry as published, so anything else stays an
-    // error
-    if (ex.cause?.status !== 405 || (await fetchMergeStatus(pullRequest)) !== 'ci_still_running') {
+    // whatever the reason, including when it has been merged already — by a maintainer on GitLab
+    // while this board was open, say. That’s the outcome the user asked for, so it’s the branch
+    // cleanup that’s left to do rather than an error to report
+    if (state === 'merged') {
+      await deleteBranch(pullRequest.branch);
+
+      return;
+    }
+
+    // The detailed status tells a running pipeline from a real blocker, such as a conflict.
+    // Auto-merge would take a blocked merge request as well, but it would sit there unmerged while
+    // the CMS reports the entry as published, so anything else stays an error
+    if (status !== 'ci_still_running') {
       throw ex;
     }
 

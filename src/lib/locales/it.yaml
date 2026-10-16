@@ -1565,7 +1565,7 @@ config:
     oauth_implicit_flow: Il metodo di autenticazione configurato (flusso implicito) non è supportato in Sveltia CMS. Usa un <a>metodo di autenticazione</a> diverso.
     github_pkce_unsupported: L’autorizzazione PKCE non è ancora supportata a causa delle limitazioni di GitHub. Usa un <a>metodo di autenticazione</a> diverso.
     oauth_no_app_id: L’ID dell’applicazione OAuth non è stato definito.
-    # Don’t localize `open_authoring` and `editorial_workflow`
+    # Don’t localize `open_authoring`, `editorial_workflow` and `preview`
     open_authoring_no_workflow: L’opzione `open_authoring` richiede la modalità di pubblicazione `editorial_workflow`. Consulta la <a>documentazione</a> per i dettagli.
     # Don’t localize `auth_methods`
     no_auth_methods: L’opzione `auth_methods` deve contenere almeno un metodo.
@@ -1979,13 +1979,23 @@ prefs:
       description: Mostra la sottolineatura per i link nell’anteprima della voce e nelle etichette dell’interfaccia utente.
       switch_label: Sottolinea Sempre i Link
 
-  # Advanced panel
-  advanced:
-    title: Avanzate
-    beta:
-      title: Funzionalità Beta
-      description: Abilita alcune funzionalità beta che potrebbero essere instabili o non tradotte.
-      switch_label: Partecipa al Programma Beta
+  # Data Management panel
+  data:
+    clear_data:
+      title: Cancella Dati
+      # Clear File Cache button
+      file_cache:
+        description: Elimina i contenuti dei file memorizzati nella cache locale e le miniature delle immagini per liberare spazio o risolvere problemi causati da dati obsoleti.
+        button_label: Svuota Cache File
+        confirmation: I contenuti dei file e le miniature delle immagini nella cache locale verranno eliminati. Le tue bozze non salvate e le impostazioni verranno mantenute, e qualsiasi dato eliminato verrà scaricato o generato di nuovo in base alle necessità. Il CMS verrà ricaricato al termine dell’operazione.
+      # Erase All Data button
+      all_data:
+        description: Elimina tutto ciò che il CMS conserva in questo browser, inclusi i file memorizzati nella cache, le bozze non salvate e le impostazioni. Tutto ciò che è già stato salvato nel tuo repository non verrà interessato.
+        button_label: Cancella Tutti i Dati
+        confirmation: Tutti i dati memorizzati in questo browser verranno eliminati, inclusi i contenuti dei file nella cache, le miniature, le bozze non salvate, le impostazioni e lo stato di accesso. Il tuo repository non verrà interessato, ma qualsiasi modifica non salvata andrà persa e dovrai accedere di nuovo. Il CMS verrà ricaricato al termine dell’operazione.
+
+  # Developer panel
+  developer:
     developer_mode:
       title: Modalità Sviluppatore
       description: Abilita alcune funzionalità orientate agli sviluppatori, inclusi log della console dettagliati e menu contestuali nativi.
@@ -2003,18 +2013,6 @@ prefs:
         field_label: Header di autorizzazione (es., Bearer <token>) (opzionale)
         saved: Header di autorizzazione salvato.
         removed: Header di autorizzazione rimosso.
-    clear_data:
-      title: Cancella Dati
-      # Clear File Cache button
-      file_cache:
-        description: Elimina i contenuti dei file memorizzati nella cache locale e le miniature delle immagini per liberare spazio o risolvere problemi causati da dati obsoleti.
-        button_label: Svuota Cache File
-        confirmation: I contenuti dei file e le miniature delle immagini nella cache locale verranno eliminati. Le tue bozze non salvate e le impostazioni verranno mantenute, e qualsiasi dato eliminato verrà scaricato o generato di nuovo in base alle necessità. Il CMS verrà ricaricato al termine dell’operazione.
-      # Erase All Data button
-      all_data:
-        description: Elimina tutto ciò che il CMS conserva in questo browser, inclusi i file memorizzati nella cache, le bozze non salvate e le impostazioni. Tutto ciò che è già stato salvato nel tuo repository non verrà interessato.
-        button_label: Cancella Tutti i Dati
-        confirmation: Tutti i dati memorizzati in questo browser verranno eliminati, inclusi i contenuti dei file nella cache, le miniature, le bozze non salvate, le impostazioni e lo stato di accesso. Il tuo repository non verrà interessato, ma qualsiasi modifica non salvata andrà persa e dovrai accedere di nuovo. Il CMS verrà ricaricato al termine dell’operazione.
 
 # ==============================================================================
 # Keyboard Shortcuts

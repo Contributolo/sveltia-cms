@@ -4,6 +4,7 @@ import { page, userEvent } from 'vitest/browser';
 import { globalAssetFolder } from '$lib/services/assets/folders';
 import { listAssets } from '$lib/services/contents/fields/file/helpers';
 import { getUnsavedAssets } from '$lib/services/contents/fields/file/process';
+import { processResources } from '$lib/services/contents/fields/file/resources';
 import { allCloudStorageServices } from '$lib/services/integrations/media-libraries/cloud';
 import { env } from '$lib/services/user/env.svelte';
 import {
@@ -20,6 +21,7 @@ import FileEditor from './file-editor.svelte';
 
 vi.mock('$lib/services/contents/fields/file/helpers', { spy: true });
 vi.mock('$lib/services/contents/fields/file/process', { spy: true });
+vi.mock('$lib/services/contents/fields/file/resources', { spy: true });
 
 /**
  * Build a drop event carrying the given files.
@@ -61,8 +63,8 @@ const createDropEvent = (files) => {
  * @param {Record<string, any>} [values] Flattened values.
  * @param {Record<string, any>} [props] Props to override.
  * @param {Record<string, any>} [context] Field editor context.
- * @returns {Promise<{ draft: any, props: any, container: HTMLElement }>} Draft, props and
- * container.
+ * @returns {Promise<{ draft: any, props: any, container: HTMLElement, entryDraft: any }>} Draft,
+ * props, container and the draft state, whose `current` can be replaced to open another entry.
  */
 const renderEditor = async (config, currentValue, values = {}, props = {}, context = undefined) => {
   const fieldConfig = { name: 'image', widget: 'image', ...config };
@@ -79,13 +81,13 @@ const renderEditor = async (config, currentValue, values = {}, props = {}, conte
     ...props,
   });
 
-  const { container } = await renderWithDraft(FileEditor, {
+  const { container, entryDraft } = await renderWithDraft(FileEditor, {
     draft,
     props: _props,
     context: context ? { 'field-editor': context } : {},
   });
 
-  return { draft, props: _props, container };
+  return { draft, props: _props, container, entryDraft };
 };
 
 describe('FileEditor', () => {
@@ -316,6 +318,99 @@ describe('FileEditor', () => {
     expect(draft.currentValues._default['images.2']).toBeUndefined();
   });
 
+  test('labels each of multiple files with the field’s label and error message', async () => {
+    await renderEditor(
+      { name: 'images', multiple: true },
+      ['/static/uploads/a.png', '/static/uploads/b.png'],
+      { 'images.0': '/static/uploads/a.png', 'images.1': '/static/uploads/b.png' },
+      { keyPath: 'images', typedKeyPath: 'images', fieldId: 'images' },
+    );
+
+    await expect.poll(() => page.getByRole('textbox').elements()).toHaveLength(2);
+
+    page
+      .getByRole('textbox')
+      .elements()
+      .forEach((textbox, index) => {
+        // The value element is the item’s own, which the item’s buttons control
+        expect(textbox).toHaveAttribute('id', `images-${index}-value`);
+        expect(textbox).toHaveAttribute('aria-labelledby', 'images-label');
+        expect(textbox).toHaveAttribute('aria-errormessage', 'images-error');
+      });
+
+    expect(page.getByRole('button', { name: 'Remove Image' }).nth(1)).toHaveAttribute(
+      'aria-controls',
+      'images-1-value',
+    );
+  });
+
+  test('keeps the focus in the field as files are removed', async () => {
+    const fieldConfig = { name: 'images', widget: 'image', multiple: true };
+
+    const draft = createMockDraft({
+      fields: [fieldConfig],
+      values: {
+        _default: {
+          'images.0': '/static/uploads/a.png',
+          'images.1': '/static/uploads/b.png',
+          'images.2': '/static/uploads/c.png',
+        },
+      },
+    });
+
+    await renderWithDraft(FileEditor, {
+      draft,
+      props: {
+        locale: '_default',
+        keyPath: 'images',
+        typedKeyPath: 'images',
+        fieldId: 'images',
+        fieldConfig,
+        required: false,
+        /**
+         * Recompute the value from the draft, the way the field editor does.
+         * @returns {string[]} Value.
+         */
+        get currentValue() {
+          return Object.entries(draft.currentValues._default)
+            .filter(([key]) => key.startsWith('images.'))
+            .map(([, value]) => value);
+        },
+      },
+    });
+
+    const removeButtons = page.getByRole('button', { name: 'Remove Image' });
+
+    /**
+     * Get the path of the item whose Remove button has the focus.
+     * @returns {string | undefined} Path.
+     */
+    const getFocusedItemPath = () =>
+      document
+        .getElementById(String(document.activeElement?.getAttribute('aria-controls')))
+        ?.textContent?.trim();
+
+    await expect.poll(() => removeButtons.elements()).toHaveLength(3);
+
+    // The next item takes the place of the removed one
+    await removeButtons.nth(1).click();
+    await expect.poll(getFocusedItemPath).toBe('/static/uploads/c.png');
+
+    // The previous item, once the last one is removed
+    await removeButtons.nth(1).click();
+    await expect.poll(getFocusedItemPath).toBe('/static/uploads/a.png');
+
+    // The upload button, once no item is left
+    await removeButtons.nth(0).click();
+    await expect.poll(() => document.activeElement?.textContent?.trim()).toBe('Browse');
+  });
+
+  test('moves the focus to the upload button once the single file is removed', async () => {
+    await renderEditor({}, '/static/uploads/photo.png');
+    await page.getByRole('button', { name: 'Remove Image' }).click();
+    await expect.poll(() => document.activeElement?.textContent?.trim()).toBe('Browse');
+  });
+
   test('takes any kind of file for a file field', async () => {
     const { draft, props, container } = await renderEditor(
       { name: 'file', widget: 'file' },
@@ -356,47 +451,51 @@ describe('FileEditor', () => {
     expect(props.currentValue).toBeUndefined();
   });
 
-  test('encodes spaces in the path within the rich text editor', async () => {
-    setAssets([
-      createMockAsset({
-        name: 'my photo.png',
-        file: await createMockImageFile(),
-        asset: { folder: globalAssetFolder.current },
-      }),
-    ]);
+  // A List with a single subfield gives it a context of its own, which mustn’t hide the component
+  test.each(['rich-text-editor-component', 'single-subfield-list-field'])(
+    'encodes spaces in the path within the rich text editor (%s)',
+    async (fieldContext) => {
+      setAssets([
+        createMockAsset({
+          name: 'my photo.png',
+          file: await createMockImageFile(),
+          asset: { folder: globalAssetFolder.current },
+        }),
+      ]);
 
-    const { props } = await renderEditor(
-      {},
-      '/static/uploads/my photo.png',
-      {},
-      {},
-      {
-        fieldContext: 'rich-text-editor-component',
-      },
-    );
+      const { props } = await renderEditor(
+        {},
+        '/static/uploads/my photo.png',
+        {},
+        {},
+        { fieldContext, valueStoreKey: 'extraValues' },
+      );
 
-    // The component has its own way to remove the image
-    await expect
-      .element(page.getByRole('textbox'))
-      .toHaveTextContent('/static/uploads/my photo.png');
-    expect(page.getByRole('button', { name: 'Remove Image' }).elements()).toHaveLength(0);
+      // The component has its own way to remove the image
+      await expect
+        .element(page.getByRole('textbox'))
+        .toHaveTextContent('/static/uploads/my photo.png');
+      expect(page.getByRole('button', { name: 'Remove Image' }).elements()).toHaveLength(0);
 
-    await page.getByRole('button', { name: 'Replace Image' }).click();
+      await page.getByRole('button', { name: 'Replace Image' }).click();
 
-    const dialog = page.getByRole('dialog', { name: 'Select Image' });
+      const dialog = page.getByRole('dialog', { name: 'Select Image' });
 
-    await expect
-      .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
-      .toBe(1);
-    await page
-      .elementLocator(
-        /** @type {HTMLElement} */ (document.querySelector('#select-assets-grid [role="option"]')),
-      )
-      .click();
-    await dialog.getByRole('button', { name: 'Insert' }).click();
+      await expect
+        .poll(() => document.querySelectorAll('#select-assets-grid [role="option"]').length)
+        .toBe(1);
+      await page
+        .elementLocator(
+          /** @type {HTMLElement} */ (
+            document.querySelector('#select-assets-grid [role="option"]')
+          ),
+        )
+        .click();
+      await dialog.getByRole('button', { name: 'Insert' }).click();
 
-    await expect.poll(() => props.currentValue).toBe('/static/uploads/my%20photo.png');
-  });
+      await expect.poll(() => props.currentValue).toBe('/static/uploads/my%20photo.png');
+    },
+  );
 
   test('stops offering uploads at the limit', async () => {
     await renderEditor(
@@ -408,6 +507,48 @@ describe('FileEditor', () => {
 
     await expect.element(page.getByRole('textbox')).toHaveTextContent('/static/uploads/a.png');
     expect(page.getByText(/Drop/).elements()).toHaveLength(0);
+  });
+
+  test('takes no more dropped files than the limit allows', async () => {
+    const { draft, props, container } = await renderEditor(
+      { name: 'images', multiple: true, max: 2 },
+      ['/static/uploads/a.png'],
+      { 'images.0': '/static/uploads/a.png' },
+      { keyPath: 'images', typedKeyPath: 'images', fieldId: 'images' },
+    );
+
+    await expect.element(page.getByText(/Drop image files here/)).toBeInTheDocument();
+
+    const dropTarget = /** @type {HTMLElement} */ (container.querySelector('.drop-target'));
+
+    // Only the first of the two dropped files fits. The files differ, as a file with the same
+    // content as an earlier one would be stored only once
+    dropTarget.dispatchEvent(
+      createDropEvent([
+        await createMockImageFile({ name: 'b.png', width: 5 }),
+        await createMockImageFile({ name: 'c.png', width: 6 }),
+      ]),
+    );
+    await expect.poll(() => draft.currentValues._default['images.1']).toMatch(/^blob:/);
+    expect(draft.currentValues._default['images.2']).toBeUndefined();
+
+    // The drop zone is disabled once the list is full
+    props.currentValue = [
+      draft.currentValues._default['images.0'],
+      draft.currentValues._default['images.1'],
+    ];
+    await expect.poll(() => page.getByText(/Drop/).elements()).toHaveLength(0);
+
+    const files = { ...draft.files };
+
+    dropTarget.dispatchEvent(
+      createDropEvent([await createMockImageFile({ name: 'd.png', width: 7 })]),
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    expect(draft.currentValues._default['images.2']).toBeUndefined();
+    expect(draft.files).toEqual(files);
   });
 
   test('reports a file that can’t be used', async () => {
@@ -553,6 +694,77 @@ describe('FileEditor', () => {
     expect(getAccept(convertingContainer)).toContain('image/heic');
   });
 
+  test('refuses a file of another type, whether dropped or picked', async () => {
+    const { draft, props, container } = await renderEditor(
+      { name: 'file', widget: 'file', accept: '.pdf, .txt' },
+      '',
+      {},
+      { keyPath: 'file', typedKeyPath: 'file', fieldId: 'file' },
+    );
+
+    const dialog = page.getByRole('alertdialog', { name: 'Unsupported File Type' });
+
+    /**
+     * Check that the file is refused and the field is left alone.
+     */
+    const expectRefused = async () => {
+      await expect
+        .element(dialog)
+        .toMatchTextContent(
+          'This file cannot be uploaded because it’s not one of the following types: \u2068.pdf or .txt\u2069.',
+        );
+      expect(dialog.element().querySelector('li')?.textContent).toBe('kite.png');
+      await dialog.getByRole('button', { name: 'OK' }).click();
+      await expect.poll(() => page.getByRole('alertdialog').elements().length).toBe(0);
+      expect(props.currentValue).toBe('');
+      expect(draft.files).toEqual({});
+    };
+
+    /** @type {HTMLElement} */ (container.querySelector('.drop-target')).dispatchEvent(
+      createDropEvent([await createMockImageFile({ name: 'kite.png' })]),
+    );
+    await expectRefused();
+
+    // A file picker can offer every file, like the “All Files” filter on Windows
+    const input = /** @type {HTMLInputElement} */ (container.querySelector('input[type="file"]'));
+    const dataTransfer = new DataTransfer();
+
+    dataTransfer.items.add(await createMockImageFile({ name: 'kite.png' }));
+    input.files = dataTransfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await expectRefused();
+  });
+
+  test('checks the type of a file once it is transformed', async () => {
+    await initTestConfig({
+      media_libraries: {
+        default: { config: { transformations: { png: { format: 'webp', quality: 80 } } } },
+      },
+      collections: [
+        {
+          name: 'posts',
+          label: 'Posts',
+          folder: 'content/posts',
+          fields: [{ name: 'image', widget: 'image' }],
+        },
+      ],
+    });
+
+    const { draft, props, container } = await renderEditor({ accept: 'image/webp' }, '');
+
+    // A PNG image converted to WebP fits a field only taking WebP images
+    /** @type {HTMLElement} */ (container.querySelector('.drop-target')).dispatchEvent(
+      createDropEvent([await createMockImageFile({ name: 'kite.png' })]),
+    );
+
+    await expect.poll(() => props.currentValue).toMatch(/^blob:/);
+    expect(draft.files[props.currentValue].file).toMatchObject({
+      name: 'kite.webp',
+      type: 'image/webp',
+    });
+    expect(page.getByRole('alertdialog').elements()).toHaveLength(0);
+  });
+
   test('reports a file that is too large', async () => {
     await initTestConfig({
       media_libraries: { all: { max_file_size: 10 } },
@@ -578,6 +790,35 @@ describe('FileEditor', () => {
     expect(dialog.element().textContent).toContain('big.png');
     await dialog.getByRole('button', { name: 'OK' }).click();
     await expect.poll(() => page.getByRole('alertdialog').elements().length).toBe(0);
+  });
+
+  test('doesn’t take a file processed after another entry has been opened', async () => {
+    const { props, container, entryDraft } = await renderEditor({}, '');
+    /**
+     * Finish processing the dropped file.
+     * @type {(value: any) => void}
+     */
+    let resolve = () => undefined;
+
+    vi.mocked(processResources).mockImplementationOnce(
+      () =>
+        new Promise((_resolve) => {
+          resolve = _resolve;
+        }),
+    );
+    /** @type {HTMLElement} */ (container.querySelector('.drop-target')).dispatchEvent(
+      createDropEvent([await createMockImageFile({ name: 'new.png' })]),
+    );
+    await vi.waitFor(() => expect(processResources).toHaveBeenCalled());
+
+    // Open another entry while the file is being processed
+    const otherDraft = createMockDraft({ fields: [{ name: 'image', widget: 'image' }] });
+
+    entryDraft.current = otherDraft;
+    resolve([{ value: 'blob:late' }]);
+    // The field is no longer processing, but the value isn’t taken
+    await expect.element(page.getByText(/Drop an image file here/)).toBeInTheDocument();
+    expect(props.currentValue).toBe('');
   });
 
   test('asks what to do with a file that has the name of an existing asset', async () => {

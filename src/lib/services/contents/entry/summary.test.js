@@ -7,6 +7,7 @@ import {
   replaceSub,
   sanitizeEntrySummary,
 } from '$lib/services/contents/entry/summary';
+import { getEntryPathRegEx } from '$lib/services/contents/file/config';
 
 /**
  * @import { Entry, InternalCollection, LocalizedEntry } from '$lib/types/private';
@@ -190,6 +191,13 @@ describe('Test getEntrySummary()', () => {
     expect(format("{{draft | ternary('Draft', 'Public')}}")).toEqual('Public');
   });
 
+  test('fields named after `Object.prototype` members', () => {
+    // `Object` was taken for a truthy value, and the source of `Object.prototype.toString` was
+    // shown. A missing field gives nothing, even with a transformation
+    expect(format("{{constructor | ternary('Yes', 'No')}}")).toEqual('');
+    expect(format('{{title}}{{toString}}')).toEqual('.Net');
+  });
+
   test('nested templates in default transformation', () => {
     // Test the issue from GitHub #813: default transformation with nested template
     const entryWithSubtitle = {
@@ -290,6 +298,38 @@ describe('Test getEntrySummary()', () => {
     ).toEqual('Main Title');
   });
 
+  test('several nested templates in a transformation argument', () => {
+    /**
+     * Create an entry with the given German content.
+     * @param {Record<string, any>} content Content.
+     * @returns {any} Entry.
+     */
+    const withValues = (content) => ({
+      ...entry,
+      locales: { de: { ...entry.locales.de, content } },
+    });
+
+    const options = { locale: 'de', useTemplate: true };
+
+    expect(
+      getEntrySummary(
+        { ...collection, summary: "{{fields.subtitle | default('{{title}} ({{author}})')}}" },
+        withValues({ title: 'Main Title', author: 'Jane', subtitle: '' }),
+        options,
+      ),
+    ).toEqual('Main Title (Jane)');
+    expect(
+      getEntrySummary(
+        {
+          ...collection,
+          summary: "{{fields.draft | ternary('Draft: {{title}}', '{{title}} – {{author}}')}}",
+        },
+        withValues({ title: 'Main Title', author: 'Jane', draft: false }),
+        options,
+      ),
+    ).toEqual('Main Title – Jane');
+  });
+
   test('Markdown', () => {
     const markdownStr =
       'This `code` on [GitHub](https://github.com/sveltia/sveltia-cms) _is_ ~~so~~ **good**!';
@@ -383,6 +423,33 @@ describe('Test getEntrySummary()', () => {
     expect(result).toBe('Category Index');
   });
 
+  test('formats the index file like any other entry with `useIndexFileLabel: false`', () => {
+    const indexFileCollection = {
+      ...collection,
+      index_file: { label: 'Category Index' },
+      _file: {
+        ...collection._file,
+        fullPathRegEx: /^content\/tags\/(?<subPath>[^/]+?\/index|_index)\.(?<locale>en|de)\.md$/,
+      },
+    };
+
+    const indexFileEntry = {
+      ...entry,
+      slug: '_index',
+      subPath: '_index',
+      locales: { de: { ...entry.locales.de, path: 'content/tags/_index.de.md' } },
+    };
+
+    const result = getEntrySummary(indexFileCollection, indexFileEntry, {
+      locale: 'de',
+      useTemplate: true,
+      template: '{{slug}}',
+      useIndexFileLabel: false,
+    });
+
+    expect(result).toBe('_index');
+  });
+
   test('handles missing locales fallback (lines 210-211)', () => {
     // Entry with missing requested locale should fall back to first available
     const entryWithSingleLocale = {
@@ -443,7 +510,7 @@ describe('Test getEntrySummary()', () => {
 
   test('covers locales fallback when requested locale is undefined (line 211)', () => {
     // Create entry where first locale doesn't match requested locale
-    // Force the ternary: locales[undefined ?? defaultLocale] ?? Object.values(locales)[0] ?? {}
+    // Force the ternary: the requested locale, or the first one the entry has
     const entryWithMultipleLocales = {
       ...entry,
       slug: 'test-slug',
@@ -462,7 +529,7 @@ describe('Test getEntrySummary()', () => {
     });
 
     // With defaultLocale='de', tries to find 'de' locale
-    // Doesn't exist, so falls back to Object.values(locales)[0] which is 'fr' locale
+    // Doesn't exist, so falls back to the first locale the entry has, which is 'fr'
     expect(result).toContain('French');
   });
 });
@@ -654,6 +721,41 @@ describe('Test getEntrySummaryFromContent()', () => {
     const result = getEntrySummaryFromContent(content);
 
     expect(result).toBe('Main Header');
+  });
+
+  test('should only strip a custom anchor at the end of the header', () => {
+    expect(getEntrySummaryFromContent({ body: '## Header {#a} and {#b}' })).toBe('Header');
+    expect(getEntrySummaryFromContent({ body: '# Header {#a}x' })).toBe('Header {#a}x');
+    expect(getEntrySummaryFromContent({ body: '# Header{#a}' })).toBe('Header{#a}');
+    expect(getEntrySummaryFromContent({ body: '# Header {#}' })).toBe('Header {#}');
+    expect(getEntrySummaryFromContent({ body: '# {#a}' })).toBe('{#a}');
+    expect(getEntrySummaryFromContent({ body: '# {#a} {#b}' })).toBe('{#a}');
+    expect(getEntrySummaryFromContent({ body: '# Header {#a}  \t' })).toBe('Header');
+    expect(getEntrySummaryFromContent({ body: '# Header }' })).toBe('Header }');
+  });
+
+  test('should skip lines that are not headers or have no text', () => {
+    expect(getEntrySummaryFromContent({ body: '#Hashtag\n#\n#   \n\n## Header' })).toBe('Header');
+    expect(getEntrySummaryFromContent({ body: 'Text # Not a header' })).toBe('');
+  });
+
+  test('should find a header in linear time', () => {
+    const bodies = [
+      `# a${' '.repeat(100_000)}b`,
+      `# a${' '.repeat(100_000)}{#b`,
+      `# a${' {#'.repeat(50_000)}`,
+      `${'#'.repeat(100_000)}x`,
+      '# \n'.repeat(50_000),
+    ];
+
+    bodies.forEach((body) => {
+      const start = performance.now();
+
+      getEntrySummaryFromContent({ body });
+      expect(performance.now() - start).toBeLessThan(50);
+    });
+
+    expect(getEntrySummaryFromContent({ body: bodies[0] })).toBe(`a${' '.repeat(100_000)}b`);
   });
 
   test('should return empty string when nothing found', () => {
@@ -928,6 +1030,58 @@ describe('Test replaceSub()', () => {
     ).toBe('');
   });
 
+  test('should leave the locale folder out of dirname with a folder per locale', () => {
+    // With the `multiple_folders` and `multiple_root_folders` i18n structures, the locale folder
+    // is added to the entry path but not to the base path, which is the collection’s `folder`
+    // option. The entry path matcher tells where it is, so the summary is the same for every
+    // locale.
+    const basePath = 'content/posts';
+
+    /**
+     * Get the entry path matcher for the given i18n structure.
+     * @param {'i18nMultiFolder' | 'i18nMultiRootFolder'} structure I18n structure flag.
+     * @returns {RegExp} Matcher.
+     */
+    const getRegEx = (structure) =>
+      getEntryPathRegEx({
+        extension: 'md',
+        format: 'frontmatter',
+        basePath,
+        nestedDepth: Infinity,
+        _i18n: /** @type {any} */ ({
+          allLocales: ['en', 'fr'],
+          defaultLocale: 'en',
+          omitDefaultLocaleFromFilePath: false,
+          structureMap: { [structure]: true },
+        }),
+      });
+
+    const localeContext = {
+      slug: 'foo',
+      basePath,
+      locales: ['en', 'fr'],
+      commitDate: undefined,
+      commitAuthor: undefined,
+    };
+
+    // `multiple_folders`
+    expect(
+      replaceSub('dirname', {
+        ...localeContext,
+        entryPath: 'content/posts/en/2024/foo.md',
+        fullPathRegEx: getRegEx('i18nMultiFolder'),
+      }),
+    ).toBe('2024');
+    // `multiple_root_folders`
+    expect(
+      replaceSub('dirname', {
+        ...localeContext,
+        entryPath: 'fr/content/posts/2024/foo.md',
+        fullPathRegEx: getRegEx('i18nMultiRootFolder'),
+      }),
+    ).toBe('2024');
+  });
+
   test('should handle dirname when basePath is undefined (line 105)', () => {
     // Test when basePath is undefined to exercise basePath ?? ''
     const contextWithoutBasePath = {
@@ -947,11 +1101,8 @@ describe('Test replaceSub()', () => {
     expect(result).toBe('content/posts');
   });
 
-  test('should handle dirname when dirPath starts with basePath but not with prefix (line 113 else if branch)', () => {
-    // This specifically tests the else if branch on line 113
-    // We need dirPath that starts with basePath but NOT with prefix (basePath + '/')
-    // Example: basePath='content/posts', dirPath='content/posts-backup/index/'
-    // prefix would be 'content/posts/', but dirPath starts with 'content/posts-'
+  test('should not strip a base path that is only a string prefix of the dirname', () => {
+    // `content/posts-backup` isn’t below `content/posts`, so the base path isn’t removed
     const contextEdgeCase = {
       slug: 'test-entry',
       entryPath: 'content/posts-backup/index/test-entry.md',
@@ -963,13 +1114,7 @@ describe('Test replaceSub()', () => {
 
     const result = replaceSub('dirname', contextEdgeCase);
 
-    // After removing 'test-entry.md', dirPath is 'content/posts-backup/index/'
-    // prefix is 'content/posts/' (basePath + '/')
-    // dirPath doesn't start with prefix 'content/posts/' (next char is -, not /)
-    // dirPath DOES start with basePath 'content/posts'
-    // So else if branch removes 'content/posts' leaving '-backup/index/'
-    // stripSlashes only removes slashes, leaving '-backup/index'
-    expect(result).toBe('-backup/index');
+    expect(result).toBe('content/posts-backup/index');
   });
 
   test('should handle dirname when dirPath does NOT start with basePath (line 113 skip)', () => {
@@ -993,9 +1138,7 @@ describe('Test replaceSub()', () => {
     expect(result).toBe('content/posts/index');
   });
 
-  test('should handle dirname with basePath as substring prefix (line 113 else if)', () => {
-    // Another case for the else if on line 113
-    // basePath='posts', dirPath starts with 'posts' but prefix='posts/' doesn't match
+  test('should not strip a base path that is a substring prefix of the dirname', () => {
     const contextSubstring = {
       slug: 'entry',
       entryPath: 'posts-archive/2024/entry.md',
@@ -1007,13 +1150,7 @@ describe('Test replaceSub()', () => {
 
     const result = replaceSub('dirname', contextSubstring);
 
-    // After removing 'entry.md', dirPath is 'posts-archive/2024/'
-    // prefix is 'posts/' (basePath + '/')
-    // dirPath doesn't start with prefix (next is -, not /)
-    // dirPath DOES start with basePath 'posts'
-    // So else if removes 'posts' leaving '-archive/2024/'
-    // stripSlashes removes slashes leaving '-archive/2024'
-    expect(result).toBe('-archive/2024');
+    expect(result).toBe('posts-archive/2024');
   });
 
   test('should handle dirname when basePath ends with slash (line 109 ternary)', () => {
@@ -1058,7 +1195,7 @@ describe('Test replace()', () => {
         email: 'john@example.com',
       },
     },
-    defaultLocale: 'en',
+    locale: 'en',
   };
 
   test('should replace slug placeholder', () => {
@@ -1242,7 +1379,7 @@ describe('Test replace()', () => {
         ...context.replaceSubContext,
         locales: ['en'],
       },
-      defaultLocale: 'en',
+      locale: 'en',
     };
 
     // 'missingField' doesn't exist in replaceSub (returns undefined)
@@ -1415,10 +1552,8 @@ describe('Additional comprehensive tests for edge cases', () => {
     expect(result).toBe('');
   });
 
-  test('replaceSub dirname should handle basePath boundary correctly (branch 114-115)', () => {
-    // Test case where dirPath starts with basePath but not with prefix
-    // This would only happen if there's unusual path construction
-    // For normal usage, the if branch will be taken
+  test('replaceSub dirname should handle basePath boundary correctly', () => {
+    // `content/blogpost` isn’t below `content/blog`, so the base path isn’t removed
     const context = {
       slug: 'entry',
       entryPath: 'content/blogpost/entry.md',
@@ -1430,13 +1565,7 @@ describe('Additional comprehensive tests for edge cases', () => {
 
     const result = replaceSub('dirname', context);
 
-    // After removing filename: 'content/blogpost/'
-    // prefix would be 'content/blog/', but dirPath is 'content/blogpost/'
-    // prefix doesn't match (expects slash after 'blog')
-    // So checks if dirPath.startsWith('content/blog') which is true
-    // Then slices off 'content/blog', leaving 'post/'
-    // stripSlashes gives 'post'
-    expect(result).toBe('post');
+    expect(result).toBe('content/blogpost');
   });
 
   test('replaceSub should handle entryPath with no base path', () => {
@@ -1537,7 +1666,7 @@ describe('Additional comprehensive tests for edge cases', () => {
         commitDate: undefined,
         commitAuthor: { name: '', login: '', email: '' },
       },
-      defaultLocale: 'en',
+      locale: 'en',
     };
 
     const result = replace('commit_author', context);
@@ -1572,7 +1701,7 @@ describe('Additional comprehensive tests for edge cases', () => {
         commitDate: undefined,
         commitAuthor: undefined,
       },
-      defaultLocale: 'en',
+      locale: 'en',
     };
 
     // Note: This depends on how transformations are applied
@@ -1653,7 +1782,7 @@ describe('Additional comprehensive tests for edge cases', () => {
           email: 'john@example.com',
         },
       },
-      defaultLocale: 'en',
+      locale: 'en',
     };
 
     // Regular field with no special transformation, not in replaceSub
@@ -1705,7 +1834,7 @@ describe('Additional comprehensive tests for edge cases', () => {
           email: 'john@example.com',
         },
       },
-      defaultLocale: 'en',
+      locale: 'en',
     };
 
     // With ternary transformation on falsy value, should use valueMap

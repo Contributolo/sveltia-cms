@@ -6,14 +6,15 @@ import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import {
   assertBranchNotMoved,
   createCommitMessage,
+  createLastCommitError,
   fetchPerPathCommits,
 } from '$lib/services/backends/git/shared/commits';
 import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
-import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
-import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
+import { checkDirectCommitAllowed } from '$lib/services/backends/git/shared/fork';
+import { repositoryHead } from '$lib/services/backends/git/shared/head';
 import { getOrCreateAsync } from '$lib/services/utils/cache';
 import { getGitHash } from '$lib/services/utils/file';
-import { forkedRepository, openAuthoring } from '$lib/services/workflow/open-authoring';
+import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
 /**
  * @import { CommitOptions, CommitResults, FileChange, FileCommit } from '$lib/types/private';
@@ -33,6 +34,7 @@ import { forkedRepository, openAuthoring } from '$lib/services/workflow/open-aut
  * @typedef {object} CommitResponse
  * @property {string} id Commit SHA-1 hash.
  * @property {string} committed_date Commit date in ISO 8601 format.
+ * @property {string[]} [parent_ids] SHA-1 hashes of the parent commits.
  */
 
 const FETCH_LAST_COMMIT_QUERY = `
@@ -64,18 +66,13 @@ export const fetchLastCommit = async () => {
   );
 
   if (!result.project) {
-    throw createLocalizedError('Failed to retrieve the last commit hash.', 'repository_not_found', {
-      repo,
-    });
+    throw createLastCommitError('repository_not_found', { repo });
   }
 
   const { lastCommit } = result.project.repository.tree ?? {};
 
   if (!lastCommit) {
-    throw createLocalizedError('Failed to retrieve the last commit hash.', 'branch_not_found', {
-      repo,
-      branch,
-    });
+    throw createLastCommitError('branch_not_found', { repo, branch });
   }
 
   const { sha: hash, message } = lastCommit;
@@ -95,29 +92,23 @@ export const fetchLastCommit = async () => {
  * @see https://forum.gitlab.com/t/how-to-commit-a-image-via-gitlab-commit-api/26632/4
  */
 export const commitChanges = async (changes, options) => {
-  // An Open Authoring contributor can’t write to the configured project at all, so a change that
-  // doesn’t go through Editorial Workflow has nowhere to land. Fail here with an explanation rather
-  // than letting the API reject the commit with a bare permission error
-  if (openAuthoring.current && !options.branch) {
-    throw createLocalizedError(
-      'Cannot commit directly to the configured repository',
-      'open_authoring.direct_commit_unsupported',
-    );
-  }
+  checkDirectCommitAllowed(options);
 
   // A workflow branch lives in the contributor’s fork with Open Authoring, while the configured
   // branch is only ever committed to by someone who can write to the configured project
   const fork = options.branch ? forkedRepository.current : undefined;
   const branch = options.branch ?? repository.branch;
-  // On the configured branch, the commit the loaded site data reflects, which the caller has just
-  // brought up to date. GitLab has no branch-level guard like GitHub’s `expectedHeadOid`: a
-  // `start_sha` is refused on an existing branch unless `force` is set, which would discard someone
-  // else’s push instead. But an action can take a `last_commit_id`, and GitLab 15.10+ refuses an
-  // update, move or deletion when the file’s last commit on the branch differs from its last commit
-  // as of that ID, i.e. when someone else has changed the file since. So the head goes with every
-  // such action, which takes no lookup per file. A workflow branch is only ever written by its own
-  // author, and its files differ from those on the configured branch, so it’s left alone
-  const expectedHead = options.branch ? undefined : repositoryHead.current || undefined;
+  // The commit the branch is expected to point at: on the configured branch, the one the loaded
+  // site data reflects, which the caller has just brought up to date; on a workflow branch, the
+  // merge request’s head, which the caller has just compared the branch with. GitLab has no
+  // branch-level guard like GitHub’s `expectedHeadOid`: a `start_sha` is refused on an existing
+  // branch unless `force` is set, which would discard someone else’s push instead. But an action
+  // can take a `last_commit_id`, and GitLab 15.10+ refuses an update, move or deletion when the
+  // file’s last commit on the branch differs from its last commit as of that ID, i.e. when someone
+  // else has changed the file since. So the head goes with every such action, which takes no lookup
+  // per file. A workflow branch is named after the entry, not the editor, so others can push to it
+  // too
+  const expectedHead = (options.branch ? options.headOid : repositoryHead.current) || undefined;
 
   const actions = await Promise.all(
     changes.map(async ({ action, path, previousPath, data = '' }) => ({
@@ -154,15 +145,16 @@ export const commitChanges = async (changes, options) => {
       })
     );
   } catch (/** @type {any} */ ex) {
-    // GitLab refuses a changed file with a 400 Bad Request, like any other invalid request
-    if (expectedHead && ex.cause?.status === 400) {
+    // GitLab refuses a changed file with a 400 Bad Request, like any other invalid request. A
+    // workflow branch’s head is looked up by the Editorial Workflow service, which knows the branch
+    if (expectedHead && !options.branch && ex.cause?.status === 400) {
       await assertBranchNotMoved(expectedHead, fetchLastCommit);
     }
 
     throw ex;
   }
 
-  const { id: sha, committed_date: committedDate } = response;
+  const { id: sha, committed_date: committedDate, parent_ids: parentIds } = response;
 
   // Calculate the SHA-1 hash for each file because the GitLab REST API does not return file SHAs
   const entries = await Promise.all(
@@ -174,6 +166,9 @@ export const commitChanges = async (changes, options) => {
   return {
     sha,
     date: new Date(committedDate),
+    // GitLab only checks the files being changed, so the commit can land on top of someone else’s
+    // commit to another file; the caller tells that from the parent
+    parentSha: parentIds?.[0],
     files: Object.fromEntries(entries.filter((entry) => !!entry)),
   };
 };
@@ -237,6 +232,7 @@ export const fetchFileCommits = async (paths) => {
       ),
     (commit) => ({
       sha: commit.id,
+      message: commit.title ?? '',
       authorName: commit.author_name,
       authorEmail: commit.author_email,
       authorAvatarURL: undefined,

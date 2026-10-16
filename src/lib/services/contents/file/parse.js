@@ -10,6 +10,11 @@ import { getCollectionFile } from '$lib/services/contents/collection/files';
 import { getFrontMatterDelimiters, resolveFileConfig } from '$lib/services/contents/file/config';
 import { FRONTMATTER_FORMATS } from '$lib/services/contents/file/constants';
 import { detectedFrontMatterFormats } from '$lib/services/contents/file/detected-formats';
+import {
+  mayHaveUnsafeInteger,
+  replaceBigInts,
+  reviveUnsafeInteger,
+} from '$lib/services/contents/file/integers';
 import { getOrCreate } from '$lib/services/utils/cache';
 
 /**
@@ -18,31 +23,43 @@ import { getOrCreate } from '$lib/services/utils/cache';
  * InternalCollection,
  * InternalCollectionFile,
  * } from '$lib/types/private';
- * @import { FrontMatterFormat } from '$lib/types/public';
+ * @import { FileFormat, FrontMatterFormat } from '$lib/types/public';
  */
 
 /**
- * Parse a JSON document using the built-in method.
+ * Parse a JSON document using the built-in method. An integer that a `number` can’t represent
+ * exactly is remembered, so it can be saved as it was.
  * @param {string} str JSON document.
  * @returns {any} Parsed object.
+ * @see {@link reviveUnsafeInteger}
  */
-export const parseJSON = (str) => JSON.parse(str);
+export const parseJSON = (str) =>
+  mayHaveUnsafeInteger(str) ? JSON.parse(str, reviveUnsafeInteger) : JSON.parse(str);
 
 /**
  * Parse a TOML document using a library. The TOML parser returns date fields as `Date` objects, but
- * we need strings to match the JSON and YAML parsers, so we have to parse twice.
+ * we need strings to match the JSON and YAML parsers, so we have to parse twice. An integer that a
+ * `number` can’t represent exactly, which the parser would otherwise reject, is remembered, so it
+ * can be saved as it was.
  * @param {string} str TOML document.
  * @returns {any} Parsed object.
+ * @see {@link replaceBigInts}
  */
-export const parseTOML = (str) => toRaw(libParseTOML(str));
+export const parseTOML = (str) =>
+  toRaw(replaceBigInts(libParseTOML(str, { integersAsBigInt: 'asNeeded' })));
 
 /**
- * Parse a YAML document using a library.
+ * Parse a YAML document using a library. An integer that a `number` can’t represent exactly is
+ * remembered, so it can be saved as it was.
  * @param {string} str YAML document.
  * @param {object} [options] Parsing options.
  * @returns {any} Parsed object.
+ * @see {@link replaceBigInts}
  */
-export const parseYAML = (str, options) => libParseYAML(str, options);
+export const parseYAML = (str, options) =>
+  mayHaveUnsafeInteger(str)
+    ? replaceBigInts(libParseYAML(str, { ...options, intAsBigInt: true }))
+    : libParseYAML(str, options);
 
 /**
  * Detect the Markdown front matter serialization format by checking a delimiter in the content.
@@ -162,18 +179,25 @@ export const parseFrontMatter = ({ collection, collectionFile, isIndexFile, form
     ...parsedHead,
     // The formatter inserts a blank line between the closing delimiter and the body, so the regex
     // above leaves that blank line as a leading line break. Strip it to make the value a faithful
-    // round-trip of what was written; otherwise a freshly-opened draft looks modified.
-    ...(!bodyInline && !(bodyKey in parsedHead) ? { [bodyKey]: body?.replace(/^\n/, '') } : {}),
+    // round-trip of what was written; otherwise a freshly-opened draft looks modified. The front
+    // matter takes precedence over the text below it. With `body_field.inline` on, text below is
+    // still read when the front matter lacks the key, so it’s moved inline on a Save rather than
+    // lost, but no empty body is added to a file that has none.
+    ...(!Object.hasOwn(parsedHead, bodyKey) && (!bodyInline || body?.trim())
+      ? { [bodyKey]: body?.replace(/^\n/, '') }
+      : {}),
   };
 };
 
 /**
- * Parse raw content with given file details.
- * @param {BaseEntryListItem} entry Entry file list item.
- * @returns {Promise<any>} Parsed content.
- * @throws {Error} When the content could not be parsed.
+ * Resolve the collection, collection file and format of the given entry file.
+ * @param {Pick<BaseEntryListItem, 'path' | 'folder'>} file Entry file list item.
+ * @returns {{ collection: InternalCollection, collectionFile: InternalCollectionFile | undefined,
+ * isIndexFile: boolean, format: FileFormat }} Collection, collection file, whether the file is the
+ * collection’s special index file, and the format.
+ * @throws {Error} When the collection or the collection file can’t be found.
  */
-export const parseEntryFile = async ({ text = '', path, folder: { collectionName, fileName } }) => {
+const resolveEntryFile = ({ path, folder: { collectionName, fileName } }) => {
   const collection = getCollection(collectionName);
 
   const collectionFile =
@@ -187,12 +211,43 @@ export const parseEntryFile = async ({ text = '', path, folder: { collectionName
     throw new Error('Collection file not found');
   }
 
+  // The collection’s special index file can have a format of its own
+  const isIndexFile = !collectionFile && isCollectionIndexFilePath(collection, path);
+  const { format } = resolveFileConfig({ collection, collectionFile, isIndexFile });
+
+  return { collection, collectionFile, isIndexFile, format };
+};
+
+/**
+ * Check whether the given entry file is read with a parser registered with
+ * `CMS.registerCustomFormat()`. What such a parser returns can change from one load to the next
+ * without the configuration changing, so its results are never cached.
+ * @param {Pick<BaseEntryListItem, 'path' | 'folder'>} file Entry file list item.
+ * @returns {boolean} Result. `false` if the file’s collection can’t be found, as it’s then not
+ * parsed at all.
+ */
+export const hasCustomParser = (file) => {
+  try {
+    return !!customFileFormatRegistry.get(resolveEntryFile(file).format)?.parser;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Parse raw content with given file details.
+ * @param {BaseEntryListItem} entry Entry file list item.
+ * @returns {Promise<any>} Parsed content.
+ * @throws {Error} When the content could not be parsed.
+ */
+export const parseEntryFile = async ({ text = '', path, folder }) => {
+  const resolved = resolveEntryFile({ path, folder });
+  const { collection, collectionFile, isIndexFile } = resolved;
+  let { format } = resolved;
+
   // Normalize line breaks
   text = text.trim().replace(/\r\n?/g, '\n');
 
-  // The collection’s special index file can have a format of its own
-  const isIndexFile = !collectionFile && isCollectionIndexFilePath(collection, path);
-  let { format } = resolveFileConfig({ collection, collectionFile, isIndexFile });
   const customParser = customFileFormatRegistry.get(format)?.parser;
 
   if (customParser) {

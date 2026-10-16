@@ -8,30 +8,25 @@ import {
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
 import {
-  ensureForkPermission,
+  createForkError,
+  isOpenAuthoringConfiguredFor,
   pollForFork,
   resolveWorkflowRepository,
   runOpenAuthoringSetUp,
+  setUpForkFor,
 } from '$lib/services/backends/git/shared/fork';
-import { cmsConfig } from '$lib/services/config';
 import { user } from '$lib/services/user/account.svelte';
-import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
 /**
  * @import { RepositoryPath } from '$lib/types/private';
  */
 
 /**
- * Check whether Open Authoring is turned on in the site configuration. It doesn’t mean the
- * signed-in user is actually contributing through a fork: a user who can write to the configured
- * repository keeps working on it directly. Use the `openAuthoring` store for that.
+ * Check whether Open Authoring is turned on for this backend in the site configuration: see
+ * {@link isOpenAuthoringConfiguredFor}.
  * @returns {boolean} `true` if the `open_authoring` backend option is enabled.
  */
-export const isOpenAuthoringConfigured = () => {
-  const { backend } = cmsConfig.current ?? {};
-
-  return backend?.name === 'github' && backend.open_authoring === true;
-};
+export const isOpenAuthoringConfigured = () => isOpenAuthoringConfiguredFor('github');
 
 /**
  * Get the repository that receives the CMS’s commits: the signed-in user’s fork when the current
@@ -306,12 +301,7 @@ export const createFork = async () => {
       await fetchAPI(`/repos/${owner}/${repo}/forks`, { method: 'POST' })
     );
   } catch (/** @type {any} */ ex) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to fork the repository.', ex);
-
-    throw createLocalizedError('Failed to fork the repository.', 'open_authoring.fork_failed', {
-      repo: `${owner}/${repo}`,
-    });
+    throw createForkError(`${owner}/${repo}`, ex);
   }
 
   const [forkOwner, forkRepo] = result.full_name.split('/');
@@ -369,34 +359,31 @@ export const syncFork = async ({ owner, repo }) => {
  * @see https://sveltiacms.app/en/docs/workflows/open
  */
 const setUpOpenAuthoring = async () => {
-  const { canWrite, allowForking } = await fetchRepositoryAccess();
-
-  // A maintainer keeps working on the configured repository, as if Open Authoring was off
-  if (canWrite) {
-    return;
-  }
-
   const { owner, repo } = repository;
-  const repoPath = `${owner}/${repo}`;
 
-  // Syncing the fork needs the branch name, which is otherwise resolved later in the data load
-  if (!repository.branch) {
-    await fetchDefaultBranchName();
-  }
-
-  const existingFork = await fetchFork();
-
-  if (existingFork) {
-    await syncFork(existingFork);
-    forkedRepository.current = existingFork;
-
-    return;
-  }
-
-  // Forking is turned off by default on a private repository, and can be turned off on a public one
-  await ensureForkPermission({ repoPath, allowForking });
-
-  forkedRepository.current = await createFork();
+  await setUpForkFor({
+    repoPath: `${owner}/${repo}`,
+    fetchAccess: fetchRepositoryAccess,
+    /**
+     * Resolve the branch name, which syncing the fork needs. It’s otherwise resolved later in the
+     * data load.
+     */
+    prepare: async () => {
+      if (!repository.branch) {
+        await fetchDefaultBranchName();
+      }
+    },
+    fetchFork,
+    prepareFork: syncFork,
+    /**
+     * Tell whether the repository can be forked, which the access check has read already. Forking
+     * is turned off by default on a private repository, and can be turned off on a public one.
+     * @param {{ allowForking: boolean }} access Repository access.
+     * @returns {boolean} Result.
+     */
+    fetchForkingAllowed: ({ allowForking }) => allowForking,
+    createFork,
+  });
 };
 
 /**

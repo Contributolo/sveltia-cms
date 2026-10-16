@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { encodeMagicLinkData } from './magic-link';
+
 // Mock dependencies
 const mockLocalStorage = {
   get: vi.fn(),
@@ -102,6 +104,7 @@ vi.mock('$lib/services/backends/poll', () => ({
 }));
 
 const mockRepositoryHead = vi.hoisted(() => ({ current: '' }));
+const mockDataGeneration = vi.hoisted(() => ({ current: 0 }));
 
 const mockLockedBranch = vi.hoisted(() => ({
   current: /** @type {string | undefined} */ (undefined),
@@ -116,7 +119,8 @@ vi.mock('$lib/services/backends/branch-access', () => ({
   mergeLockedBranch: mockMergeLockedBranch,
 }));
 
-vi.mock('$lib/services/backends/git/shared/fetch', () => ({
+vi.mock('$lib/services/backends/git/shared/head', () => ({
+  dataGeneration: mockDataGeneration,
   repositoryHead: mockRepositoryHead,
 }));
 
@@ -196,6 +200,26 @@ describe('auth service', () => {
       expect(result._user).toEqual({ token: 'magic-token' });
       expect(result.copiedPrefs).toEqual({ theme: 'dark' });
       expect(mockGoto).toHaveBeenCalledWith('', { replaceState: true });
+    });
+
+    it('should parse magic link holding text outside Latin-1', () => {
+      const prefs = { deployHookURL: 'https://例え.jp/🚀' };
+      const encodedData = encodeMagicLinkData({ token: 'magic-token', prefs });
+
+      mockParseLocation.mockReturnValue({
+        path: {
+          /**
+           * Mock match function.
+           * @returns {object} Match result with groups.
+           */
+          match: () => ({ groups: { encodedData } }),
+        },
+      });
+
+      const result = authModule.parseMagicLink();
+
+      expect(result._user).toEqual({ token: 'magic-token' });
+      expect(result.copiedPrefs).toEqual(prefs);
     });
 
     it('should parse magic link with token but no prefs', () => {
@@ -846,6 +870,42 @@ describe('auth service', () => {
       expect(mockLoadUnpublishedEntries).toHaveBeenCalledWith(pullRequests);
     });
 
+    it.each([
+      { branch: 'main', early: true },
+      { branch: '', early: false },
+      { branch: undefined, early: false },
+    ])(
+      'should request the pull requests early only if the branch is known ($branch)',
+      async ({ branch, early }) => {
+        const cachedUser = { backendName: 'github', token: 'cached-token', login: 'user' };
+        const pullRequests = Promise.resolve([]);
+        const backendWithRepository = { ...mockBackend, repository: { branch } };
+
+        mockLocalStorage.get.mockImplementation((key) =>
+          Promise.resolve(key === 'sveltia-cms.user' ? cachedUser : null),
+        );
+        mockBackendStore.current = backendWithRepository;
+        mockCmsConfigStore.current = mockCmsConfig;
+        mockBackend.signIn.mockResolvedValue(cachedUser);
+        mockBackend.fetchFiles.mockResolvedValue(undefined);
+        mockStartLoadingPullRequests.mockReturnValue(pullRequests);
+
+        await authModule.signInAutomatically();
+
+        expect(mockBackend.fetchFiles).toHaveBeenCalled();
+
+        if (early) {
+          expect(mockStartLoadingPullRequests).toHaveBeenCalledBefore(mockBackend.fetchFiles);
+          expect(mockLoadUnpublishedEntries).toHaveBeenCalledWith(pullRequests);
+        } else {
+          // Without a configured branch, the default branch is only known once the files are
+          // being fetched, so the pull requests are left for `loadUnpublishedEntries()` to request
+          expect(mockStartLoadingPullRequests).not.toHaveBeenCalled();
+          expect(mockLoadUnpublishedEntries).toHaveBeenCalledWith(undefined);
+        }
+      },
+    );
+
     it('should handle QR code authentication', async () => {
       const encodedData = btoa(JSON.stringify({ token: 'qr-token', prefs: { theme: 'dark' } }));
 
@@ -1161,6 +1221,26 @@ describe('auth service', () => {
   });
 
   describe('signInManually', () => {
+    it('should not leave a previous session’s account in the store while signing in', async () => {
+      // Left by an automatic sign-in whose data failed to load with a non-authentication error
+      mockUser.account = { login: 'alice', token: 'token-a', refreshToken: 'refresh-a' };
+
+      /** @type {any} */
+      let accountDuringSignIn = 'unset';
+
+      mockBackend.signIn.mockImplementation(async () => {
+        accountDuringSignIn = mockUser.account;
+
+        return { login: 'bob', token: 'token-b' };
+      });
+      mockBackend.fetchFiles.mockResolvedValue(undefined);
+
+      await authModule.signInManually('github', 'token-b');
+
+      expect(accountDuringSignIn).toBeUndefined();
+      expect(mockUser.account).toEqual({ login: 'bob', token: 'token-b' });
+    });
+
     it('should sign in with provided credentials and set signingIn state', async () => {
       const user = { token: 'manual-token' };
 
@@ -1308,12 +1388,19 @@ describe('auth service', () => {
         locale: 'ja',
         apiKeys: { deepl: 'deepl-key', unsplash: 'unsplash-key' },
         logins: { cloud: 'user password' },
+        deployHookURL: 'https://api.netlify.com/build_hooks/mine',
+        deployHookAuthHeader: 'Bearer secret',
       });
+
+      const generation = mockDataGeneration.current;
 
       await authModule.signOut();
 
-      // Integration credentials are removed, while UI preferences are kept
+      // Integration credentials, including the deploy hook and its secret header, are removed,
+      // while UI preferences are kept
       expect(mockPrefs).toEqual({ theme: 'dark', locale: 'ja', apiKeys: {} });
+      // A check or load still on its way must not write the previous session’s data back
+      expect(mockDataGeneration.current).toBe(generation + 1);
       // Legacy Netlify/Decap CMS user caches, which may hold a token, are removed as well
       expect(mockLocalStorage.delete).toHaveBeenCalledWith('decap-cms-user');
       expect(mockLocalStorage.delete).toHaveBeenCalledWith('netlify-cms-user');
@@ -1337,6 +1424,20 @@ describe('auth service', () => {
       expect(openAuthoringModule.forkPermissionRequest.current).toBeUndefined();
       await expect(forkPermissionGranted).resolves.toBe(false);
       expect(mockResetDeployingEntries).toHaveBeenCalled();
+    });
+
+    it('should sign out even if the backend fails to', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      mockBackend.signOut.mockRejectedValue(new Error('IndexedDB error'));
+
+      await expect(authModule.signOut()).resolves.toBeUndefined();
+
+      expect(mockLocalStorage.set).toHaveBeenCalledWith('sveltia-cms.user', {});
+      expect(mockUser.account).toBeUndefined();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(Error));
+
+      consoleErrorSpy.mockRestore();
     });
 
     it('should redirect to logout URL when configured', async () => {

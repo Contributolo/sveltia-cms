@@ -9,16 +9,14 @@ import {
 import { repository } from '$lib/services/backends/git/gitlab/repository';
 import { fetchAPI, fetchGraphQL } from '$lib/services/backends/git/shared/api';
 import { createCommitMessage } from '$lib/services/backends/git/shared/commits';
-import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
+import { repositoryHead } from '$lib/services/backends/git/shared/head';
 import { getGitHash } from '$lib/services/utils/file';
 import { forkedRepository, openAuthoring } from '$lib/services/workflow/open-authoring';
 
 // Mock dependencies
-vi.mock('@sveltia/i18n', () => ({
-  _: vi.fn((key) => key),
-  locale: { current: 'en', set: vi.fn() },
-  dictionary: {},
-}));
+vi.mock('@sveltia/i18n', async () =>
+  (await import('$lib/test/i18n')).createI18nMock({ locale: 'en', exports: { dictionary: {} } }),
+);
 vi.mock('$lib/services/backends/git/gitlab/fork', () => ({ projectIds: { base: 42 } }));
 vi.mock('$lib/services/backends/git/gitlab/repository', () => {
   const mockRepository = { repo: 'test-repo', branch: 'main', owner: 'test-owner' };
@@ -42,7 +40,7 @@ vi.mock('$lib/services/backends/git/shared/commits', async (importOriginal) => (
   .../** @type {any} */ (await importOriginal()),
   createCommitMessage: vi.fn(),
 }));
-vi.mock('$lib/services/backends/git/shared/fetch', () => ({
+vi.mock('$lib/services/backends/git/shared/head', () => ({
   repositoryHead: { current: '' },
 }));
 vi.mock('$lib/services/utils/file', () => ({
@@ -472,6 +470,19 @@ describe('GitLab commits service', () => {
         expect(body.actions[0]).not.toHaveProperty('last_commit_id');
       });
 
+      test('reports the parent the commit has been made on top of', async () => {
+        vi.mocked(fetchAPI).mockResolvedValue({
+          id: 'c1',
+          committed_date: '2023-01-01',
+          parent_ids: ['colleague-sha'],
+        });
+
+        const result = await commitChanges(changes, /** @type {any} */ ({ commitType: 'update' }));
+
+        // Someone else’s commit to another file doesn’t stop this one, which lands on top of it
+        expect(result.parentSha).toBe('colleague-sha');
+      });
+
       test('sends no last commit to a workflow branch', async () => {
         vi.mocked(fetchAPI).mockResolvedValue({ id: 'c1', committed_date: '2023-01-01' });
 
@@ -485,6 +496,41 @@ describe('GitLab commits service', () => {
         body.actions.forEach((/** @type {any} */ a) => {
           expect(a).not.toHaveProperty('last_commit_id');
         });
+      });
+
+      test('sends the merge request head as the last commit to a workflow branch', async () => {
+        vi.mocked(fetchAPI).mockResolvedValue({ id: 'c1', committed_date: '2023-01-01' });
+
+        await commitChanges(
+          changes,
+          /** @type {any} */ ({ commitType: 'update', branch: 'cms/posts/a', headOid: 'mr-head' }),
+        );
+
+        const { body } = /** @type {any} */ (vi.mocked(fetchAPI).mock.calls[0][1]);
+
+        expect(body.branch).toBe('cms/posts/a');
+        expect(body.actions.map((/** @type {any} */ a) => a.last_commit_id)).toEqual([
+          undefined,
+          'mr-head',
+          'mr-head',
+          'mr-head',
+        ]);
+      });
+
+      test('leaves a refused workflow commit to the workflow service', async () => {
+        vi.mocked(fetchAPI).mockRejectedValue(changedFileError);
+
+        await expect(
+          commitChanges(
+            changes,
+            /** @type {any} */ ({
+              commitType: 'update',
+              branch: 'cms/posts/a',
+              headOid: 'mr-head',
+            }),
+          ),
+        ).rejects.toBe(changedFileError);
+        expect(fetchGraphQL).not.toHaveBeenCalled();
       });
 
       test('sends no last commit before the site data is loaded', async () => {
@@ -547,6 +593,8 @@ describe('GitLab commits service', () => {
         .mockResolvedValueOnce([
           {
             id: 'abc123',
+            title: 'Update Post “hello”',
+            message: 'Update Post “hello”\n\nWith a body',
             author_name: 'Alice',
             author_email: 'alice@example.com',
             committed_date: '2024-06-01T12:00:00Z',
@@ -567,6 +615,7 @@ describe('GitLab commits service', () => {
       expect(result).toHaveLength(2);
       expect(result[0]).toEqual({
         sha: 'abc123',
+        message: 'Update Post “hello”',
         authorName: 'Alice',
         authorEmail: 'alice@example.com',
         authorAvatarURL: 'https://example.com/alice.png',
@@ -574,6 +623,7 @@ describe('GitLab commits service', () => {
       });
       expect(result[1]).toEqual({
         sha: 'def456',
+        message: '',
         authorName: 'Bob',
         authorEmail: 'bob@example.com',
         authorAvatarURL: 'https://example.com/bob.png',

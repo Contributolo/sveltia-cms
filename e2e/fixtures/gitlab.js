@@ -25,6 +25,12 @@ import { getBlobSHA, MockGitRepository } from './git.js';
  * @property {string} [mergeCommit] SHA of the commit that merged the merge request.
  * @property {Record<string, any>} [autoMerge] The merge options, once the merge request is set to
  * be merged when its pipeline succeeds.
+ * @property {string} [trailingHead] Commit the merge request still reports as its head while it
+ * trails a push to its source branch, the way GitLab refreshes it in the background: its `sha`,
+ * diff and count of changes describe this commit, and a merge is only accepted pinned to it.
+ * @property {number} [trailingReads] Number of times the merge request can be read on its own
+ * before it catches up with the branch, which clears {@link MockMergeRequest.trailingHead}. It
+ * trails until the test clears it if omitted.
  */
 
 /**
@@ -86,12 +92,6 @@ export class MockGitLab extends MockGitRepository {
    * Whether the project allows forks. GitLab turns forking off by default on a private project.
    */
   allowForking = true;
-
-  /**
-   * The signed-in user’s fork of the project, once {@link createFork} has made it.
-   * @type {{ owner: string, repo: string } | undefined}
-   */
-  fork = undefined;
 
   /**
    * How many times a newly requested fork reports an unfinished import before it’s ready, as GitLab
@@ -167,22 +167,6 @@ export class MockGitLab extends MockGitRepository {
   }
 
   /**
-   * Fork the project onto the signed-in user’s namespace, with a copy of the default branch. Like a
-   * fork on GitLab, it shares the commits and blobs of the project, and only its branches are its
-   * own.
-   * @param {object} [options] Options.
-   * @param {string} [options.repo] Name of the fork, the project’s own by default. A fork has
-   * another name when the contributor renamed it.
-   * @returns {{ owner: string, repo: string }} Fork.
-   */
-  createFork({ repo = this.repo } = {}) {
-    this.fork = { owner: this.user.login, repo };
-    this.refs.set(this.forkBranch(this.branch), this.head.oid);
-
-    return this.fork;
-  }
-
-  /**
    * Find a project the way GitLab does for a project parameter in a request body, such as a
    * commit’s `start_project`: by its numeric ID, or by its full path as is. A path URL-encoded the
    * way it is in a request path names no project.
@@ -198,15 +182,6 @@ export class MockGitLab extends MockGitRepository {
     }
 
     return projects.find(([id, path]) => String(idOrPath) === String(id) || idOrPath === path)?.[0];
-  }
-
-  /**
-   * Get the key of a branch in the fork, for {@link refs}, {@link commit} and {@link readFile}.
-   * @param {string} branch Branch name.
-   * @returns {string} Key, e.g. `mona:main`.
-   */
-  forkBranch(branch) {
-    return `${this.user.login}:${branch}`;
   }
 
   /**
@@ -364,6 +339,18 @@ export class MockGitLab extends MockGitRepository {
   }
 
   /**
+   * Get the commit an open merge request reports as its head: the source branch’s, unless the
+   * merge request trails it.
+   * @param {MockMergeRequest} mergeRequest Merge request.
+   * @returns {MockCommit} Commit.
+   */
+  getMergeRequestHead(mergeRequest) {
+    const { trailingHead, sourceBranch } = mergeRequest;
+
+    return (trailingHead && this.getCommit(trailingHead)) || this.getHead(sourceBranch);
+  }
+
+  /**
    * Convert a merge request to the format the REST API returns.
    * @param {MockMergeRequest} mergeRequest Merge request.
    * @returns {Record<string, any>} Merge request.
@@ -373,6 +360,7 @@ export class MockGitLab extends MockGitRepository {
       mergeRequest;
 
     const open = state === 'opened' && this.refs.has(sourceBranch);
+    const head = open ? this.getMergeRequestHead(mergeRequest) : undefined;
     // A merge request from a fork names its source branch without the owner prefix the mock keys it
     // with, the way GitLab reports a branch in the source project
     const [, plainSourceBranch = sourceBranch] = sourceBranch.match(/^[^:]+:(.+)$/) ?? [];
@@ -384,14 +372,14 @@ export class MockGitLab extends MockGitRepository {
       state,
       // GitLab has no draft field to set: the read-only one is derived from the title
       // @see https://docs.gitlab.com/user/project/merge_requests/drafts/
-      draft: /^\s*(?:\[draft\]|\(draft\)|draft:|draft\s|\[wip\]|\(wip\)|wip:|wip\s)/i.test(title),
+      draft: /^\s*(?:\[draft\]|\(draft\)|draft:)/i.test(title),
       labels,
       source_branch: plainSourceBranch,
       target_branch: targetBranch,
       source_project_id: sourceProjectId,
       target_project_id: this.projectId,
       author: { id: author.id, username: author.login, name: author.name },
-      sha: open ? this.getHead(sourceBranch).oid : mergeRequest.lastHead,
+      sha: head ? head.oid : mergeRequest.lastHead,
       web_url: `https://gitlab.com/${this.owner}/${this.repo}/-/merge_requests/${iid}`,
       created_at: mergeRequest.createdAt.toISOString(),
       updated_at: mergeRequest.updatedAt.toISOString(),
@@ -404,9 +392,7 @@ export class MockGitLab extends MockGitRepository {
             : 'mergeable',
       merge_when_pipeline_succeeds: !!mergeRequest.autoMerge,
       user: { can_merge: true },
-      changes_count: open
-        ? String(this.diffCommit(this.getHead(sourceBranch), targetBranch).length)
-        : null,
+      changes_count: head ? String(this.diffCommit(head, targetBranch).length) : null,
     };
   }
 
@@ -494,13 +480,23 @@ export class MockGitLab extends MockGitRepository {
     }
 
     if (method === 'GET' && segments.length === 1) {
-      return { json: this.toMergeRequestItem(mergeRequest) };
+      const json = this.toMergeRequestItem(mergeRequest);
+
+      if (mergeRequest.trailingReads !== undefined) {
+        mergeRequest.trailingReads -= 1;
+
+        if (mergeRequest.trailingReads <= 0) {
+          Object.assign(mergeRequest, { trailingHead: undefined, trailingReads: undefined });
+        }
+      }
+
+      return { json };
     }
 
     // The files the merge request changes, from where the branches parted
     if (method === 'GET' && segments[1] === 'diffs') {
       return {
-        json: this.diffCommit(this.getHead(mergeRequest.sourceBranch), mergeRequest.targetBranch),
+        json: this.diffCommit(this.getMergeRequestHead(mergeRequest), mergeRequest.targetBranch),
       };
     }
 
@@ -574,7 +570,14 @@ export class MockGitLab extends MockGitRepository {
       return { status: 405, json: { message: '405 Method Not Allowed' } };
     }
 
-    const { oid: headOid } = this.getHead(mergeRequest.sourceBranch);
+    // Like GitLab, refuse to merge a draft merge request
+    if (/^\s*(?:\[draft\]|\(draft\)|draft:)/i.test(mergeRequest.title)) {
+      return { status: 405, json: { message: '405 Method Not Allowed' } };
+    }
+
+    // GitLab checks the commit against the head the merge request reports, which can trail the
+    // branch for a moment after a push
+    const { oid: headOid } = this.getMergeRequestHead(mergeRequest);
 
     if (sha && sha !== headOid) {
       return { status: 409, json: { message: 'SHA does not match HEAD of source branch' } };
@@ -989,9 +992,52 @@ export class MockGitLab extends MockGitRepository {
       };
     }
 
-    // The file list, a page at a time, with the index of the next file as the cursor
+    // The subdirectories of a directory at a commit, which tell whether the root directory has
+    // changed, all on one page
+    if (query.includes('trees(after:')) {
+      const commit = this.refs.has(variables.ref)
+        ? this.getHead(variables.ref)
+        : this.getCommit(variables.ref);
+
+      const prefix = variables.path ? `${variables.path}/` : '';
+
+      const names = new Set(
+        [...(commit?.tree.keys() ?? [])]
+          .filter((path) => path.startsWith(prefix) && path.slice(prefix.length).includes('/'))
+          .map((path) => path.slice(prefix.length).split('/')[0]),
+      );
+
+      return {
+        data: {
+          project: {
+            repository: {
+              tree: {
+                trees: {
+                  nodes: [...names].map((name) => ({
+                    name,
+                    sha: MockGitRepository.getDirSHA(
+                      /** @type {MockCommit} */ (commit).tree,
+                      `${prefix}${name}`,
+                    ),
+                  })),
+                  pageInfo: { endCursor: '', hasNextPage: false },
+                },
+              },
+            },
+          },
+        },
+      };
+    }
+
+    // The file list, a page at a time, with the index of the next file as the cursor. Like GitLab,
+    // only the files in the directory given as `path` are listed, with full paths
     if (query.includes('blobs(after:')) {
-      const entries = [...(head?.tree ?? [])].sort(([a], [b]) => a.localeCompare(b));
+      const prefix = variables.path ? `${variables.path}/` : '';
+
+      const entries = [...(head?.tree ?? [])]
+        .filter(([path]) => path.startsWith(prefix))
+        .sort(([a], [b]) => a.localeCompare(b));
+
       const start = Number(variables.cursor || 0);
       const end = start + this.treePageSize;
 
@@ -1062,10 +1108,11 @@ export class MockGitLab extends MockGitRepository {
    * @param {MockCommit} commit Commit.
    * @returns {Record<string, any>} Item.
    */
-  toCommitItem({ oid, message, date, author }) {
+  toCommitItem({ oid, message, date, author, parents }) {
     return {
       id: oid,
       short_id: oid.slice(0, 8),
+      parent_ids: parents,
       title: message.split('\n')[0],
       message,
       author_name: author.name,

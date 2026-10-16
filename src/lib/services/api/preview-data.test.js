@@ -24,7 +24,10 @@ const {
   mockGetAssetFolder,
   mockIsAssetInFolder,
   mockAllAssets,
+  mockGetEntryOptions,
+  mockGetCollection,
 } = vi.hoisted(() => ({
+  mockGetCollection: vi.fn(),
   mockGetField: vi.fn(() => ({ widget: 'text' })),
   mockGetMediaFieldSource: vi.fn(),
   mockGetRichTextMediaSource: vi.fn(),
@@ -33,6 +36,15 @@ const {
   mockGetAssetFolder: vi.fn(),
   mockIsAssetInFolder: vi.fn(),
   mockAllAssets: { current: /** @type {any[]} */ ([]) },
+  // Resolve a `{{slug}}` or bare field name `value_field` like the Relation field does
+  mockGetEntryOptions: vi.fn(({ locale, fieldConfig, refEntry }) => {
+    const { value_field: valueField = '{{slug}}' } = fieldConfig;
+
+    const value =
+      valueField === '{{slug}}' ? refEntry.slug : refEntry.locales[locale]?.content?.[valueField];
+
+    return [{ label: value, value, searchValue: value }];
+  }),
 }));
 
 vi.mock('$lib/services/assets', () => ({
@@ -77,6 +89,10 @@ vi.mock('$lib/services/api/unsaved-asset-proxy', () => ({
   ),
 }));
 
+vi.mock('$lib/services/contents/collection', () => ({
+  getCollection: mockGetCollection,
+}));
+
 vi.mock('$lib/services/contents/collection/entries', () => ({
   getEntriesByCollection: mockGetEntriesByCollection,
 }));
@@ -87,6 +103,10 @@ vi.mock('$lib/services/contents/collection/files', () => ({
 
 vi.mock('$lib/services/contents/entry/fields', () => ({
   getField: mockGetField,
+}));
+
+vi.mock('$lib/services/contents/fields/relation/helpers', () => ({
+  getEntryOptions: mockGetEntryOptions,
 }));
 
 vi.mock('$lib/services/assets/folders', () => ({
@@ -598,6 +618,14 @@ describe('React Helpers', () => {
       expect(mockGetRichTextMediaSource).not.toHaveBeenCalled();
     });
 
+    it('should look up the asset for the locale being previewed', () => {
+      createGetAsset({ entry: mockEntry, collectionName: 'posts', locale: 'fr' })('photo.jpg');
+
+      expect(mockGetMediaFieldSource).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 'photo.jpg', entry: mockEntry, locale: 'fr' }),
+      );
+    });
+
     it('should also search the editor component folders for a RichText field', () => {
       mockGetRichTextMediaSource.mockReturnValueOnce({ asset: { name: 'figure.jpg' } });
 
@@ -636,6 +664,42 @@ describe('React Helpers', () => {
       });
 
       expect(result instanceof ImmutableMap).toBe(true);
+    });
+
+    it.each([
+      ['the default locale of the referenced collection', { en: { content: { name: 'Jane' } } }],
+      ['the content without i18n', { _default: { content: { name: 'Jane' } } }],
+    ])('should fall back to %s for an entry without content in the locale', (_label, locales) => {
+      mockGetField.mockReturnValueOnce({
+        widget: 'relation',
+        collection: 'authors',
+        value_field: '{{slug}}',
+      });
+      mockGetEntriesByCollection.mockReturnValueOnce([{ slug: 'jane', locales }]);
+      mockGetCollection.mockReturnValueOnce({ _i18n: { defaultLocale: 'en' } });
+
+      const result = getMetaData({
+        locale: 'fr',
+        getFieldArgs: { collectionName: 'posts', valueMap: { author: 'jane' } },
+      });
+
+      expect(result.toJS()).toEqual({ author: { authors: { jane: { name: 'Jane' } } } });
+    });
+
+    it('should leave the metadata empty for an entry without content in any locale', () => {
+      mockGetField.mockReturnValueOnce({
+        widget: 'relation',
+        collection: 'authors',
+        value_field: '{{slug}}',
+      });
+      mockGetEntriesByCollection.mockReturnValueOnce([{ slug: 'jane', locales: { de: {} } }]);
+
+      const result = getMetaData({
+        locale: 'fr',
+        getFieldArgs: { collectionName: 'posts', valueMap: { author: 'jane' } },
+      });
+
+      expect(result.toJS()).toEqual({ author: { authors: { jane: undefined } } });
     });
 
     it('should ignore missing field definitions when building metadata', () => {
@@ -714,6 +778,68 @@ describe('React Helpers', () => {
       expect(build().relatedPost.posts.dup.title).toBe('First');
       // Answered from the lookup table cached with the entry list
       expect(build().relatedPost.posts.dup.title).toBe('First');
+    });
+
+    it('should key referenced entries by the values the `value_field` template resolves to', () => {
+      const alice = {
+        slug: 'alice',
+        locales: { en: { content: { 'name.first': 'Alice', 'tags.0': 'a', 'tags.1': 'b' } } },
+      };
+
+      const bob = { slug: 'bob', locales: { en: { content: { 'name.first': 'Bob' } } } };
+
+      const field = {
+        widget: 'relation',
+        collection: 'authors',
+        value_field: '{{locale}}/{{fields.name.first}}-{{tags.*}}',
+      };
+
+      mockGetField.mockReturnValueOnce(field).mockReturnValueOnce(field).mockReturnValueOnce(field);
+      mockGetEntriesByCollection.mockReturnValueOnce([alice, bob]);
+      // What the Relation field stores, including one value per list item
+      mockGetEntryOptions
+        .mockReturnValueOnce([{ value: 'en/Alice-a' }, { value: 'en/Alice-b' }])
+        .mockReturnValueOnce([{ value: 'en/Bob-' }]);
+
+      const result = getMetaData({
+        locale: 'en',
+        getFieldArgs: {
+          collectionName: 'posts',
+          fileName: undefined,
+          valueMap: { 'authors.0': 'en/Alice-b', 'authors.1': 'en/Bob-', 'authors.2': 'missing' },
+          isIndexFile: false,
+        },
+      }).toJS();
+
+      expect(mockGetEntryOptions).toHaveBeenCalledWith({
+        locale: 'en',
+        fieldConfig: field,
+        refEntry: alice,
+      });
+      expect(result.authors.authors['en/Alice-b']['name.first']).toBe('Alice');
+      expect(result.authors.authors['en/Bob-']['name.first']).toBe('Bob');
+      expect(result.authors.authors.missing).toBeUndefined();
+    });
+
+    it('should match a numeric stored value against the string option value', () => {
+      const entry = { slug: 'one', locales: { en: { content: { id: 1, title: 'One' } } } };
+      const field = { widget: 'relation', collection: 'items', value_field: 'id' };
+
+      mockGetField.mockReturnValueOnce(field);
+      mockGetEntriesByCollection.mockReturnValueOnce([entry]);
+      mockGetEntryOptions.mockReturnValueOnce([{ value: '1' }]);
+
+      const result = getMetaData({
+        locale: 'en',
+        getFieldArgs: {
+          collectionName: 'posts',
+          fileName: undefined,
+          valueMap: { item: 1 },
+          isIndexFile: false,
+        },
+      }).toJS();
+
+      expect(result.item.items[1].title).toBe('One');
     });
 
     it('should handle multiple relation fields', () => {
@@ -1035,6 +1161,30 @@ describe('React Helpers', () => {
       // The result is kept, so several previews reading it in the same tick share the computation
       expect(result.fieldsMetaData).toBe(fieldsMetaData);
       expect(mockGetField).toHaveBeenCalledOnce();
+    });
+
+    it('should leave the internal list item properties out of the data', () => {
+      const values = {
+        title: 'Hello',
+        'items.0.name': 'A',
+        'items.0.__sc_item_id': 'id-1',
+        'items.0.__sc_item_original_key_path': 'items.0',
+      };
+
+      const mockDraft = {
+        collectionName: 'posts',
+        fileName: undefined,
+        isIndexFile: false,
+        originalEntry: undefined,
+        currentValues: { en: values, ja: values },
+      };
+
+      const { entryMap, valueMap } = buildPreviewData({ draft: mockDraft, locale: 'en' });
+      const expected = { title: 'Hello', items: [{ name: 'A' }] };
+
+      expect(valueMap).toEqual({ title: 'Hello', 'items.0.name': 'A' });
+      expect(entryMap.get('data').toJS()).toEqual(expected);
+      expect(entryMap.getIn(['i18n', 'ja', 'data']).toJS()).toEqual(expected);
     });
 
     it('should build preview data with all required properties', () => {

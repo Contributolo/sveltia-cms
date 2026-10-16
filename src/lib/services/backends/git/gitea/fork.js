@@ -10,14 +10,14 @@ import {
   NOT_COLLABORATOR_ERROR_MESSAGE,
 } from '$lib/services/backends/git/shared/errors';
 import {
-  ensureForkPermission,
+  isOpenAuthoringConfiguredFor,
+  requestForkWithFallbackName,
   resolveWorkflowRepository,
   runOpenAuthoringSetUp,
+  setUpForkFor,
 } from '$lib/services/backends/git/shared/fork';
-import { encodePath } from '$lib/services/backends/git/shared/url';
-import { cmsConfig } from '$lib/services/config';
 import { user } from '$lib/services/user/account.svelte';
-import { forkedRepository } from '$lib/services/workflow/open-authoring';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import { RepositoryPath, User } from '$lib/types/private';
@@ -30,16 +30,11 @@ import { forkedRepository } from '$lib/services/workflow/open-authoring';
 const MAX_FORKS = 50;
 
 /**
- * Check whether Open Authoring is turned on in the site configuration. It doesn’t mean the
- * signed-in user is actually contributing through a fork: a user who can write to the configured
- * repository keeps working on it directly. Use the `openAuthoring` store for that.
+ * Check whether Open Authoring is turned on for this backend in the site configuration: see
+ * {@link isOpenAuthoringConfiguredFor}.
  * @returns {boolean} `true` if the `open_authoring` backend option is enabled.
  */
-export const isOpenAuthoringConfigured = () => {
-  const { backend } = cmsConfig.current ?? {};
-
-  return backend?.name === 'gitea' && backend.open_authoring === true;
-};
+export const isOpenAuthoringConfigured = () => isOpenAuthoringConfiguredFor('gitea');
 
 /**
  * Get the repository that receives the CMS’s commits: the signed-in user’s fork when the current
@@ -223,41 +218,31 @@ const isRepositoryNameTaken = async (name) => {
  */
 export const createFork = async () => {
   const { owner, repo } = repository;
-  const repoPath = `${owner}/${repo}`;
   const endpoint = `/repos/${owner}/${repo}/forks`;
-  /** @type {Record<string, any>} */
-  let result;
 
-  try {
-    result = /** @type {Record<string, any>} */ (
-      await fetchAPI(endpoint, { method: 'POST', body: {} })
-    );
-  } catch (/** @type {any} */ ex) {
+  const result = await requestForkWithFallbackName({
+    repoPath: `${owner}/${repo}`,
+    /**
+     * Request a fork at the default name.
+     * @returns {Promise<any>} New fork.
+     */
+    requestFork: () => fetchAPI(endpoint, { method: 'POST', body: {} }),
+    /**
+     * Request a fork named after the configured repository’s owner and name.
+     * @returns {Promise<any>} New fork.
+     */
+    requestRenamedFork: () =>
+      fetchAPI(endpoint, { method: 'POST', body: { name: `${owner}-${repo}` } }),
     // The instance doesn’t pick another name when the contributor already has an unrelated
     // repository of the same name, the way GitHub does, so give it one. Any other failure is real:
     // a fork of the repository already exists, or forking is turned off on the instance
-    if (ex.cause?.status !== 409 || !(await isRepositoryNameTaken(repo))) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to fork the repository.', ex);
-
-      throw createLocalizedError('Failed to fork the repository.', 'open_authoring.fork_failed', {
-        repo: repoPath,
-      });
-    }
-
-    try {
-      result = /** @type {Record<string, any>} */ (
-        await fetchAPI(endpoint, { method: 'POST', body: { name: `${owner}-${repo}` } })
-      );
-    } catch (/** @type {any} */ retryEx) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to fork the repository.', retryEx);
-
-      throw createLocalizedError('Failed to fork the repository.', 'open_authoring.fork_failed', {
-        repo: repoPath,
-      });
-    }
-  }
+    conflictStatuses: [409],
+    /**
+     * Check whether the contributor has a repository at the default name.
+     * @returns {Promise<boolean>} `true` if the name is taken.
+     */
+    isNameTaken: () => isRepositoryNameTaken(repo),
+  });
 
   return toRepositoryPath(result);
 };
@@ -278,7 +263,7 @@ const fetchForgejoSyncState = async ({ owner, repo }, branch) => {
     fork_commit: forkCommit,
     base_commit: baseCommit,
   } = /** @type {{ allowed?: boolean, fork_commit?: string, base_commit?: string }} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/sync_fork/${encodePath(branch)}`)
+    await fetchAPI(`/repos/${owner}/${repo}/sync_fork/${encodePathSegments(branch)}`)
   );
 
   if (forkCommit && forkCommit === baseCommit) {
@@ -329,7 +314,7 @@ export const syncFork = async (fork) => {
     response = /** @type {Response} */ (
       await fetchAPI(
         instance.isForgejo
-          ? `/repos/${owner}/${repo}/sync_fork/${encodePath(branch)}`
+          ? `/repos/${owner}/${repo}/sync_fork/${encodePathSegments(branch)}`
           : `/repos/${owner}/${repo}/merge-upstream`,
         {
           method: 'POST',
@@ -369,7 +354,7 @@ export const checkForkBranch = async ({ owner, repo }) => {
   const { branch } = /** @type {{ branch: string }} */ (repository);
 
   const response = /** @type {Response} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePath(branch)}`, {
+    await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePathSegments(branch)}`, {
       responseType: 'raw',
     })
   );
@@ -392,36 +377,32 @@ export const checkForkBranch = async ({ owner, repo }) => {
  * @see https://sveltiacms.app/en/docs/workflows/open
  */
 const setUpOpenAuthoring = async () => {
-  const { canWrite } = await fetchRepositoryAccess();
-
-  // A maintainer keeps working on the configured repository, as if Open Authoring was off
-  if (canWrite) {
-    return;
-  }
-
   const { owner, repo } = repository;
 
-  // Syncing the fork needs the branch name, which is otherwise resolved later in the data load
-  if (!repository.branch) {
-    await fetchDefaultBranchName();
-  }
-
-  const existingFork = await fetchFork();
-
-  if (existingFork) {
-    await syncFork(existingFork);
-    await checkForkBranch(existingFork);
-    forkedRepository.current = existingFork;
-
-    return;
-  }
-
-  await ensureForkPermission({
+  await setUpForkFor({
     repoPath: `${owner}/${repo}`,
-    allowForking: await fetchForkingAllowed(),
+    fetchAccess: fetchRepositoryAccess,
+    /**
+     * Resolve the branch name, which syncing the fork needs. It’s otherwise resolved later in the
+     * data load.
+     */
+    prepare: async () => {
+      if (!repository.branch) {
+        await fetchDefaultBranchName();
+      }
+    },
+    fetchFork,
+    /**
+     * Bring the existing fork up to date, and make sure it has the configured branch.
+     * @param {RepositoryPath} fork Fork.
+     */
+    prepareFork: async (fork) => {
+      await syncFork(fork);
+      await checkForkBranch(fork);
+    },
+    fetchForkingAllowed,
+    createFork,
   });
-
-  forkedRepository.current = await createFork();
 };
 
 /**

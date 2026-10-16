@@ -6,12 +6,19 @@ import { selectedCollection } from '$lib/services/contents/collection';
 import { getOrderFieldKey } from '$lib/services/contents/collection/entries/reorder/config';
 import { isArrayFileCollection } from '$lib/services/contents/collection/predicates';
 import { parseCustomSortableFields } from '$lib/services/contents/collection/view/options';
+import { SUMMARY_COLUMN_KEY } from '$lib/services/contents/collection/view/table-keys';
 import { getField } from '$lib/services/contents/entry/fields';
+import { getLocalizedOption } from '$lib/services/contents/i18n/options';
 import { isNumeric } from '$lib/services/utils/number';
 import { createDerivedState } from '$lib/services/utils/state.svelte';
 
 /**
- * @import { InternalEntryCollection, SortingConditions, SortOrder } from '$lib/types/private';
+ * @import {
+ * InternalEntryCollection,
+ * SortingConditions,
+ * SortKey,
+ * SortOrder,
+ * } from '$lib/types/private';
  * @import { Field, FieldKeyPath, NumberField } from '$lib/types/public';
  */
 
@@ -44,7 +51,7 @@ export const SPECIAL_SORT_KEY_TYPES = {
   slug: String,
   commit_author: String,
   commit_date: Date,
-  _summary: String,
+  [SUMMARY_COLUMN_KEY]: String,
   _manual: String,
 };
 
@@ -105,7 +112,7 @@ export const getSortConfig = ({ collection, isCommitAuthorAvailable, isCommitDat
   // Special handling for summary field: if the collection has a summary template defined, we add
   // `_summary` as a special sort key, which uses the generated summary value
   if (summaryTemplate) {
-    keys.unshift('_summary');
+    keys.unshift(SUMMARY_COLUMN_KEY);
   }
 
   // Make sure the keys are valid field keys or special keys. The canonical slug key,
@@ -221,23 +228,25 @@ export const getSortKeyLabel = ({ collection, key }) => {
         }
 
         const keyPath = arr.slice(0, index + 1).join('.');
+        const field = getField({ collectionName: collection.name, keyPath });
 
-        // @ts-ignore Hidden field doesn’t have `label` property
-        return getField({ collectionName: collection.name, keyPath })?.label || _key;
+        return getLocalizedOption({ config: field, option: 'label' }) || _key;
       })
       .filter(Boolean)
       .join(' – ');
   }
 
-  // @ts-ignore Hidden field doesn’t have `label` property
-  return collection.fields?.find(({ name }) => name === key)?.label || key;
+  const field = collection.fields?.find(({ name }) => name === key);
+
+  return getLocalizedOption({ config: field, option: 'label' }) || key;
 };
 
 /**
  * List of available sort keys for the selected entry collection. `getSortKeyLabel()` may return a
  * localized label, and it reads the current app locale, so the list is also recomputed when the
- * locale changes.
- * @type {{ readonly current: { key: string, label: string }[] }}
+ * locale changes. A key sorted as a number is marked as such, so that the sort menu words its
+ * orders for one, e.g. “small to large”.
+ * @type {{ readonly current: SortKey[] }}
  */
 export const sortKeys = createDerivedState(() => {
   const collection = selectedCollection.current;
@@ -255,5 +264,15 @@ export const sortKeys = createDerivedState(() => {
     isCommitDateAvailable: _allEntries.some((entry) => !!entry.commitDate),
   });
 
-  return keys.map((key) => ({ key, label: getSortKeyLabel({ collection, key }) }));
+  return keys.map((key) => {
+    const fieldConfig = getField({ collectionName: collection.name, keyPath: key });
+    /** @type {SortKey} */
+    const sortKey = { key, label: getSortKeyLabel({ collection, key }) };
+
+    if (getSortKeyType({ key, fieldConfig }) === Number) {
+      sortKey.type = 'number';
+    }
+
+    return sortKey;
+  });
 });

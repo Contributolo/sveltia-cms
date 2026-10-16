@@ -12,6 +12,7 @@
   import { planAssetDeletion } from '$lib/services/assets/data/cascade';
   import { deleteSubfolder, getSubfolderAssets } from '$lib/services/assets/data/subfolder';
   import { deletingSubfolder } from '$lib/services/assets/subfolders';
+  import { runCommit } from '$lib/services/backends/commit-prompt';
 
   /**
    * @import { CascadeDeletePlan } from '$lib/types/private';
@@ -42,12 +43,11 @@
       return;
     }
 
-    try {
-      await deleteSubfolder(subfolder.path);
-    } catch (/** @type {any} */ ex) {
+    const { ok, cancelled } = await runCommit(() => deleteSubfolder(subfolder.path));
+
+    // A cancellation at the commit message prompt isn’t a failure
+    if (!ok && !cancelled) {
       deletionFailed = true;
-      // eslint-disable-next-line no-console
-      console.error(ex);
     }
   };
 

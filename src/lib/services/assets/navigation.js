@@ -24,9 +24,11 @@ import {
 import { gitConfigFiles } from '$lib/services/backends/git/shared/config';
 import { isSearchRoute } from '$lib/services/search/navigation';
 import { env } from '$lib/services/user/env.svelte';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
- * @import { AssetFolderInfo } from '$lib/types/private';
+ * @import { ViewTransitionType } from '$lib/services/app/navigation';
+ * @import { Asset, AssetFolderInfo } from '$lib/types/private';
  */
 
 /**
@@ -73,6 +75,33 @@ export const getSelectedAssetFolderLabel = () =>
   appLocale.current && selectedAssetFolder.current
     ? getFolderLabelByCollection(selectedAssetFolder.current)
     : '';
+
+/**
+ * Get the history state to navigate with within the Asset Library. The selected asset folder
+ * travels as history state, the same way it does from the sidebar, so the page can tell it from
+ * another folder sharing its path, and an asset opened from a folder that doesn’t contain it
+ * directly, such as All Assets, is shown within that folder rather than its own.
+ * @returns {{ folder: AssetFolderInfo | undefined }} History state.
+ */
+export const getAssetFolderHistoryState = () => ({ folder: selectedAssetFolder.current });
+
+/**
+ * Show the details of a repository asset in the overlay, within the selected asset folder.
+ * @param {Asset} asset Asset.
+ * @param {object} [options] Options.
+ * @param {ViewTransitionType} [options.transitionType] View transition type.
+ * @param {boolean} [options.replaceState] Whether to replace the current history entry.
+ */
+export const showAssetDetails = (
+  { path },
+  { transitionType = 'forwards', replaceState = false } = {},
+) => {
+  goto(encodePathSegments(`/assets/${path}`), {
+    transitionType,
+    replaceState,
+    state: getAssetFolderHistoryState(),
+  });
+};
 
 /**
  * Discard the navigation still in flight, if any, so its delayed announcement is not made. Call
@@ -147,12 +176,15 @@ const resolveIndexRoute = (state) => {
       resolveAssetFolderPath('-/all')
     ).folder;
     selectedSubfolderPath.current = '';
-    // Redirect to All Assets
-    goto('/assets/-/all');
+    // Redirect to All Assets, replacing the index route in the history, so the browser’s Back
+    // button doesn’t come back here only to be redirected again
+    goto('/assets/-/all', { replaceState: true });
   } else {
     // No asset folder is configured, so redirect to the first external location, or to the files
     // linked from entries if there is none either
-    goto(getCloudServicePath(enabledCloudServices.current[0] ?? linkedFilesService));
+    goto(getCloudServicePath(enabledCloudServices.current[0] ?? linkedFilesService), {
+      replaceState: true,
+    });
   }
 
   return state;
@@ -232,8 +264,21 @@ export const resolveAssetsRoute = () => {
     return resolveIndexRoute(state);
   }
 
-  // The regex takes a last path segment with a dot for a file name, but a folder can have a dot in
-  // its name too, e.g. `v1.2`. Browse the folder if there is no asset at the path
+  // The regex takes a last path segment with a dot for a file name, but a file doesn’t have to have
+  // an extension, e.g. `LICENSE`. Show the asset if there is one at the path
+  if (
+    !fileName &&
+    folderPath.includes('/') &&
+    allAssets.current.some((asset) => asset.path === folderPath)
+  ) {
+    const index = folderPath.lastIndexOf('/');
+
+    fileName = folderPath.slice(index + 1);
+    folderPath = folderPath.slice(0, index);
+  }
+
+  // Conversely, a folder can have a dot in its name too, e.g. `v1.2`. Browse the folder if there is
+  // no asset at the path
   if (fileName) {
     const fullPath = `${folderPath}/${fileName}`;
 

@@ -1,5 +1,3 @@
-/* eslint-disable jsdoc/require-jsdoc */
-
 import { describe, expect, test, vi } from 'vitest';
 
 import { allEntries } from '$lib/services/contents';
@@ -20,10 +18,9 @@ import {
  * @import { InternalEntryCollection } from '$lib/types/private';
  */
 
-vi.mock('@sveltia/i18n', () => ({
-  _: (/** @type {string} */ key) => key,
-  locale: { current: 'en', set: vi.fn() },
-}));
+vi.mock('@sveltia/i18n', async () =>
+  (await import('$lib/test/i18n')).createI18nMock({ locale: 'en' }),
+);
 
 vi.mock('$lib/services/config');
 vi.mock('$lib/services/contents', () => ({ allEntries: { current: [] } }));
@@ -1281,5 +1278,38 @@ describe('Test sortKeys state', () => {
     // Clean up
     selectedCollection.current = undefined;
     allEntries.current = [];
+  });
+
+  test('marks a Number field key as a number, so the menu words its orders for one', async () => {
+    const { getField } = await import('$lib/services/contents/entry/fields');
+
+    /** @type {Record<string, any>} */
+    const fields = {
+      title: { name: 'title', widget: 'string' },
+      price: { name: 'price', label: 'Price', widget: 'number' },
+      code: { name: 'code', label: 'Code', widget: 'number', value_type: 'int/string' },
+    };
+
+    vi.mocked(getField).mockImplementation(({ keyPath }) => fields[keyPath]);
+
+    allEntries.current = [];
+    selectedCollection.current = /** @type {any} */ ({
+      name: 'products',
+      _type: 'entry',
+      folder: 'content/products',
+      sortable_fields: ['title', 'price', 'code'],
+      fields: Object.values(fields),
+      _i18n: { i18nEnabled: false },
+    });
+
+    // A Number field saving its value as a string is sorted as a string
+    expect(sortKeys.current).toEqual([
+      { key: 'title', label: 'title' },
+      { key: 'price', label: 'Price', type: 'number' },
+      { key: 'code', label: 'Code' },
+    ]);
+
+    // Clean up
+    selectedCollection.current = undefined;
   });
 });

@@ -6,7 +6,8 @@ import { globalAssetFolder } from '$lib/services/assets/folders';
 import { cmsConfig } from '$lib/services/config';
 import { trackPendingFieldUpdate } from '$lib/services/contents/editor/pending';
 import { createMockImageFile, initTestConfig } from '$lib/test/config';
-import { createMockDraft, renderWithDraft } from '$lib/test/draft';
+import { createMockDraft } from '$lib/test/draft';
+import { renderFieldEditor } from '$lib/test/field.svelte';
 
 import RichTextEditor from './rich-text-editor.svelte';
 
@@ -39,17 +40,6 @@ const renderEditor = async (
   /** @type {RichTextField} */
   const fieldConfig = { name: 'body', widget: 'richtext', ...config };
 
-  const props = $state({
-    locale: 'en',
-    keyPath: 'body',
-    typedKeyPath: 'body',
-    fieldId: 'body',
-    fieldLabel: 'Body',
-    fieldConfig,
-    currentValue,
-    ...extra,
-  });
-
   const draft = createMockDraft({
     collectionName,
     fields: [fieldConfig],
@@ -57,9 +47,12 @@ const renderEditor = async (
     values: { en: { body: currentValue } },
   });
 
-  const { container } = await renderWithDraft(RichTextEditor, {
+  const { props, container } = await renderFieldEditor(RichTextEditor, {
+    fieldConfig,
+    fieldLabel: 'Body',
+    currentValue,
+    props: extra,
     draft,
-    props,
     // The editor is always rendered within a field editor
     context: {
       'field-editor': { parentComponentNames: [], valueStoreKey: 'currentValues', ...context },
@@ -82,6 +75,35 @@ describe('RichTextEditor', () => {
     await expect.poll(() => editor.element().querySelector('h1')?.textContent).toBe('Title');
     expect(editor.element().querySelector('strong')).toHaveTextContent('bold');
     await expect.element(page.getByRole('button', { name: 'Bold' })).toBeVisible();
+  });
+
+  test('lets each paragraph take the direction of its own text without i18n', async () => {
+    // An Arabic paragraph, “Hello”, followed by an English one
+    const value = 'مرحبا\n\nHello'; // cspell:disable-line
+    const { container } = await renderEditor(value, {}, { props: { locale: '_default' } });
+    const editor = page.getByRole('textbox');
+
+    await expect
+      .poll(() =>
+        [...editor.element().querySelectorAll('p')].map((p) => getComputedStyle(p).direction),
+      )
+      .toEqual(['rtl', 'ltr']);
+
+    const textarea = /** @type {HTMLTextAreaElement} */ (container.querySelector('textarea'));
+
+    // The hidden `<textarea>` gets the value on every change, which `dir="auto"` would make slow
+    expect(textarea.dir).toBe('');
+  });
+
+  test('applies the direction of the locale', async () => {
+    const { container } = await renderEditor('Hello', {}, { props: { locale: 'ar' } });
+    const editor = page.getByRole('textbox');
+
+    await expect.poll(() => editor.element().getAttribute('dir')).toBe('rtl');
+
+    const textarea = /** @type {HTMLTextAreaElement} */ (container.querySelector('textarea'));
+
+    expect(textarea.dir).toBe('rtl');
   });
 
   test('stores the edited content as Markdown', async () => {
@@ -321,32 +343,43 @@ describe('RichTextEditor', () => {
     await expect.poll(() => props.currentValue).not.toContain('plain');
   });
 
-  test('offers no components when nested ones are disabled by the parent field', async () => {
-    await initTestConfig({
-      collections: [
+  // A List with a single subfield gives it a context of its own, which mustn’t hide the component
+  test.each([
+    ['rich-text-editor-component', 'nested-off', 'body:c1:content', 'body:c1:content'],
+    ['single-subfield-list-field', 'nested-off-list', 'body:c1:notes.0', 'body:c1:notes.*'],
+  ])(
+    'offers no components when nested ones are disabled by the parent field (%s)',
+    async (fieldContext, collectionName, keyPath, typedKeyPath) => {
+      await initTestConfig({
+        collections: [
+          {
+            name: collectionName,
+            label: 'Posts',
+            folder: 'content/posts',
+            fields: [{ name: 'body', widget: 'richtext', allow_nested_components: false }],
+          },
+        ],
+      });
+
+      await renderEditor(
+        'Hi',
+        {},
         {
-          name: 'nested-off',
-          label: 'Posts',
-          folder: 'content/posts',
-          fields: [{ name: 'body', widget: 'richtext', allow_nested_components: false }],
+          // The field config is cached per collection, so each test uses its own one
+          collectionName,
+          context: {
+            fieldContext,
+            parentComponentNames: ['card'],
+            valueStoreKey: 'extraValues',
+          },
+          props: { keyPath, typedKeyPath },
         },
-      ],
-    });
+      );
 
-    await renderEditor(
-      'Hi',
-      {},
-      {
-        // The field config is cached per collection, so each test uses its own one
-        collectionName: 'nested-off',
-        context: { fieldContext: 'rich-text-editor-component', parentComponentNames: ['card'] },
-        props: { keyPath: 'body:c1:content', typedKeyPath: 'body:c1:content' },
-      },
-    );
-
-    await expect.element(page.getByRole('button', { name: 'Bold' })).toBeVisible();
-    expect(page.getByRole('button', { name: /Insert/ }).elements()).toHaveLength(0);
-  });
+      await expect.element(page.getByRole('button', { name: 'Bold' })).toBeVisible();
+      expect(page.getByRole('button', { name: /Insert|Image/ }).elements()).toHaveLength(0);
+    },
+  );
 
   test('leaves the current component out of the nested ones', async () => {
     await initTestConfig({
@@ -370,6 +403,7 @@ describe('RichTextEditor', () => {
         context: {
           fieldContext: 'rich-text-editor-component',
           parentComponentNames: ['linked-image'],
+          valueStoreKey: 'extraValues',
         },
         props: { keyPath: 'body:c1:content', typedKeyPath: 'body:c1:content' },
       },
@@ -429,6 +463,7 @@ describe('RichTextEditor', () => {
           context: {
             fieldContext: 'rich-text-editor-component',
             parentComponentNames: ['x-youtube'],
+            valueStoreKey: 'extraValues',
           },
           props: { keyPath: 'body:c1:content', typedKeyPath: 'body:c1:content' },
         },

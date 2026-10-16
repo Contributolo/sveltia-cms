@@ -1,9 +1,12 @@
 // @ts-nocheck
+import { _ as translate } from '@sveltia/i18n';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   assertBranchNotMoved,
+  createBaseCommitMessage,
   createCommitMessage,
+  createLastCommitError,
   dedupeFileCommits,
   fetchPerPathCommits,
   hasSkipCIMarker,
@@ -753,6 +756,102 @@ describe('git/shared/commits', () => {
     });
   });
 
+  describe('createCommitMessage with a user message', () => {
+    const changes = [{ slug: 'my-post', path: 'content/posts/my-post.md' }];
+    const collection = { name: 'blog', label: 'Blog' };
+
+    it('should replace the message with the user’s in the `true` mode', () => {
+      mockCmsConfig.backend.prompt_commit_messages = true;
+
+      expect(
+        createCommitMessage([...changes, { path: 'static/a.jpg' }], {
+          commitType: 'update',
+          collection,
+          userMessage: '  Fix the typo in the title  ',
+        }),
+      ).toBe('Fix the typo in the title');
+    });
+
+    it('should add the user’s text before the message in the `prefix` mode', () => {
+      mockCmsConfig.backend.prompt_commit_messages = 'prefix';
+
+      expect(
+        createCommitMessage([...changes, { path: 'static/a.jpg' }], {
+          commitType: 'update',
+          collection,
+          userMessage: 'JIRA-123:',
+        }),
+      ).toBe('JIRA-123: Update Blog Post “my-post” +1');
+    });
+
+    it('should add the user’s text after the message in the `suffix` mode', () => {
+      mockCmsConfig.backend.prompt_commit_messages = 'suffix';
+
+      expect(
+        createCommitMessage(changes, { commitType: 'create', collection, userMessage: '(#42)' }),
+      ).toBe('Create Blog Post “my-post” (#42)');
+    });
+
+    it('should use the message made from the template when the user’s text is empty', () => {
+      mockCmsConfig.backend.prompt_commit_messages = true;
+
+      expect(
+        createCommitMessage(changes, { commitType: 'create', collection, userMessage: ' ' }),
+      ).toBe('Create Blog Post “my-post”');
+    });
+
+    it('should ignore the user’s text when prompting is not configured', () => {
+      expect(
+        createCommitMessage(changes, { commitType: 'create', collection, userMessage: 'Note' }),
+      ).toBe('Create Blog Post “my-post”');
+
+      mockCmsConfig.backend = undefined;
+
+      expect(
+        createCommitMessage(changes, { commitType: 'create', collection, userMessage: 'Note' }),
+      ).toBe('Create Blog Post “my-post”');
+    });
+
+    it('should wrap the user’s message for Open Authoring and add the [skip ci] prefix', () => {
+      mockState.openAuthoring = true;
+      mockCmsConfig.backend = {
+        commit_messages: { openAuthoring: '{{message}} (by {{author-login}})' },
+        skip_ci: true,
+        prompt_commit_messages: 'prefix',
+      };
+
+      expect(
+        createCommitMessage(changes, { commitType: 'update', collection, userMessage: 'ABC-1' }),
+      ).toBe('[skip ci] ABC-1 Update Blog Post “my-post” (by test-user)');
+    });
+  });
+
+  describe('createBaseCommitMessage', () => {
+    it('should create the message from the template without the prefixes or wrapping', () => {
+      mockState.openAuthoring = true;
+      mockCmsConfig.backend = {
+        commit_messages: { openAuthoring: 'From {{author-login}}: {{message}}' },
+        skip_ci: true,
+        prompt_commit_messages: 'prefix',
+      };
+
+      expect(
+        createBaseCommitMessage(
+          [
+            { slug: 'my-post', path: 'content/posts/my-post.md' },
+            { path: 'static/a.jpg' },
+            { path: 'static/b.jpg' },
+          ],
+          { commitType: 'update', collection: { name: 'blog' }, userMessage: 'Ignored' },
+        ),
+      ).toBe('Update Blog Post “my-post” +2');
+    });
+
+    it('should default to the update type', () => {
+      expect(createBaseCommitMessage([{ slug: 'a', path: 'a.md' }], {})).toBe('Update  “a”');
+    });
+  });
+
   describe('hasSkipCIMarker', () => {
     it('should match the marker this CMS writes', () => {
       expect(hasSkipCIMarker('[skip ci] Update Post “hello”')).toBe(true);
@@ -786,6 +885,18 @@ describe('git/shared/commits', () => {
         },
       );
     });
+  });
+});
+
+describe('createLastCommitError()', () => {
+  it.each([
+    ['repository_not_found', { repo: 'repo' }],
+    ['branch_not_found', { repo: 'repo', branch: 'main' }],
+  ])('creates an error with the localized %s message', (key, values) => {
+    const error = createLastCommitError(key, values);
+
+    expect(error.message).toBe('Failed to retrieve the last commit hash.');
+    expect(error.cause.message).toBe(translate(key, { values }));
   });
 });
 

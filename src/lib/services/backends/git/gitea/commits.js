@@ -6,13 +6,13 @@ import { fetchAPI } from '$lib/services/backends/git/shared/api';
 import {
   assertBranchNotMoved,
   createCommitMessage,
+  createLastCommitError,
   fetchPerPathCommits,
 } from '$lib/services/backends/git/shared/commits';
-import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
-import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
-import { encodePath } from '$lib/services/backends/git/shared/url';
+import { checkDirectCommitAllowed } from '$lib/services/backends/git/shared/fork';
+import { repositoryHead } from '$lib/services/backends/git/shared/head';
 import { user } from '$lib/services/user/account.svelte';
-import { openAuthoring } from '$lib/services/workflow/open-authoring';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import { CommitOptions, CommitResults, FileChange, FileCommit, User } from '$lib/types/private';
@@ -23,6 +23,7 @@ import { openAuthoring } from '$lib/services/workflow/open-authoring';
  * @property {object} commit Commit information, including the commit SHA and creation date.
  * @property {string} commit.sha Commit SHA.
  * @property {string} commit.created Commit creation date in ISO format.
+ * @property {{ sha: string }[]} [commit.parents] Parent commits, each with its SHA.
  * @property {({ path: string, sha: string } | null)[]} files List of saved files, each with its
  * path and SHA. It can be `null` if the file was deleted.
  */
@@ -49,10 +50,7 @@ export const fetchLastCommit = async () => {
       throw ex;
     }
 
-    throw createLocalizedError('Failed to retrieve the last commit hash.', 'branch_not_found', {
-      repo,
-      branch,
-    });
+    throw createLastCommitError('branch_not_found', { repo, branch });
   }
 };
 
@@ -86,10 +84,10 @@ const getKnownSha = async ({ action, path, previousPath, previousSha }, workflow
     throw new Error(`The last known version of ${knownPath} could not be determined.`);
   }
 
+  const filePath = encodePathSegments(knownPath);
+
   const { sha } = /** @type {{ sha: string }} */ (
-    await fetchAPI(
-      `/repos/${owner}/${repo}/contents/${encodePath(knownPath)}?ref=${encodeURIComponent(ref)}`,
-    )
+    await fetchAPI(`/repos/${owner}/${repo}/contents/${filePath}?ref=${encodeURIComponent(ref)}`)
   );
 
   return sha;
@@ -103,15 +101,7 @@ const getKnownSha = async ({ action, path, previousPath, previousSha }, workflow
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoChangeFiles
  */
 export const commitChanges = async (changes, options) => {
-  // An Open Authoring contributor can’t write to the configured repository at all, so a change that
-  // doesn’t go through Editorial Workflow has nowhere to land. Fail here with an explanation rather
-  // than letting the API reject the commit with a bare permission error
-  if (openAuthoring.current && !options.branch) {
-    throw createLocalizedError(
-      'Cannot commit directly to the configured repository',
-      'open_authoring.direct_commit_unsupported',
-    );
-  }
+  checkDirectCommitAllowed(options);
 
   // A workflow branch lives in the contributor’s fork with Open Authoring, while the configured
   // branch is only ever committed to by someone who can write to the configured repository
@@ -185,6 +175,9 @@ export const commitChanges = async (changes, options) => {
   return {
     sha: commit.sha,
     date: new Date(commit.created),
+    // Only the files being changed are checked, so the commit can land on top of someone else’s
+    // commit to another file; the caller tells that from the parent
+    parentSha: commit.parents?.[0]?.sha,
     files: Object.fromEntries(
       savedFiles.map((file, index) => [
         file?.path ?? changes[index].path,
@@ -215,6 +208,8 @@ export const fetchFileCommits = async (paths) => {
       ),
     (commit) => ({
       sha: commit.sha,
+      // A message written on Windows can have CRLF line breaks
+      message: (commit.commit?.message ?? '').split(/\r?\n/)[0],
       authorName: commit.commit?.author?.name ?? '',
       authorEmail: commit.commit?.author?.email,
       authorAvatarURL: commit.author?.avatar_url,

@@ -6,6 +6,7 @@ import { getReferencedPendingEntries } from '$lib/services/contents/draft/pendin
 import { createSavingEntryData } from '$lib/services/contents/draft/save/changes';
 import { assignManualSortOrder } from '$lib/services/contents/draft/save/sort-order';
 import { getCanonicalSlug, getFillSlugOptions, getSlugs } from '$lib/services/contents/draft/slugs';
+import { assignAutoIncrementValues } from '$lib/services/contents/fields/number/auto-increment';
 import { getEntryOptions, getRefEntries } from '$lib/services/contents/fields/relation/helpers';
 import { isWorkflowDraft, isWorkflowEnabled, unpublishedEntries } from '$lib/services/workflow';
 
@@ -43,12 +44,17 @@ vi.mock('$lib/services/contents/draft/pending-entries', () => ({
   getReferencedPendingEntries: vi.fn(),
 }));
 
-vi.mock('$lib/services/contents/draft/save/changes', () => ({
+vi.mock('$lib/services/contents/draft/save/changes', async (importOriginal) => ({
   createSavingEntryData: vi.fn(),
+  removeDisabledLocales: /** @type {any} */ (await importOriginal()).removeDisabledLocales,
 }));
 
 vi.mock('$lib/services/contents/draft/save/sort-order', () => ({
   assignManualSortOrder: vi.fn(),
+}));
+
+vi.mock('$lib/services/contents/fields/number/auto-increment', () => ({
+  assignAutoIncrementValues: vi.fn(),
 }));
 
 vi.mock('$lib/services/contents/draft/slugs', () => ({
@@ -311,6 +317,20 @@ describe('getPendingEntrySlugs', () => {
     expect(getCanonicalSlug).not.toHaveBeenCalled();
   });
 
+  it('numbers the slug after the entries pending on the parent draft', () => {
+    const pendingEntries = [createPending('react')];
+
+    vi.mocked(getSlugs).mockReturnValue({
+      defaultLocaleSlug: '1',
+      localizedSlugs: undefined,
+      canonicalSlug: undefined,
+    });
+
+    getPendingEntrySlugs({ draft, parentDraft: createParentDraft({ pendingEntries }) });
+
+    expect(getSlugs).toHaveBeenCalledWith({ draft, pendingEntries });
+  });
+
   it('renames the slug taken by a pending entry', () => {
     vi.mocked(getSlugs).mockReturnValue({
       defaultLocaleSlug: 'svelte',
@@ -422,7 +442,9 @@ describe('createPendingEntry', () => {
     const result = await createPendingEntry({ draft, parentDraft, fieldConfig });
 
     expect(assignManualSortOrder).toHaveBeenCalledWith(draft, 1);
-    expect(createSavingEntryData).toHaveBeenCalledWith({ draft, slugs });
+    expect(assignAutoIncrementValues).toHaveBeenCalledWith(draft, 1);
+    // The `preSave` event hooks are held back until the entry is committed with the parent
+    expect(createSavingEntryData).toHaveBeenCalledWith({ draft, slugs, runPreSave: false });
     expect(getEntryOptions).toHaveBeenCalledWith({
       locale: 'en',
       fieldConfig,
@@ -442,6 +464,22 @@ describe('createPendingEntry', () => {
       savingAssets,
       values: ['en/svelte', 'svelte', 'fr/svelte'],
     });
+  });
+
+  it('leaves the locales turned off out of the entry', async () => {
+    vi.mocked(createSavingEntryData).mockResolvedValue(
+      /** @type {any} */ ({
+        // A locale turned off only carries the path its file would have
+        savingEntry: { ...savingEntry, locales: { ...savingEntry.locales, fr: { path: 'x.md' } } },
+        changes,
+        savingAssets,
+      }),
+    );
+
+    const parentDraft = createParentDraft({ currentValues: { en: {} } });
+    const result = await createPendingEntry({ draft, parentDraft, fieldConfig });
+
+    expect(result.entry).toEqual(savingEntry);
   });
 });
 

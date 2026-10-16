@@ -6,9 +6,12 @@ import { isAssetInFolder } from '$lib/services/assets';
 import { getAssetFolder } from '$lib/services/assets/folders';
 import { getMediaFieldSource, getRichTextMediaSource } from '$lib/services/assets/media-field';
 import { allAssets } from '$lib/services/assets/state';
+import { getCollection } from '$lib/services/contents/collection';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
 import { getCollectionFileEntry } from '$lib/services/contents/collection/files';
+import { filterRealValues } from '$lib/services/contents/draft';
 import { getField } from '$lib/services/contents/entry/fields';
+import { getEntryOptions } from '$lib/services/contents/fields/relation/helpers';
 import { getOrCreate, memoizeOnSource } from '$lib/services/utils/cache';
 import { unflattenMap } from '$lib/services/utils/object';
 
@@ -25,7 +28,7 @@ import { unflattenMap } from '$lib/services/utils/object';
  * InternalLocaleCode,
  * TypedFieldKeyPath,
  * } from '$lib/types/private';
- * @import { ApiAsset, ApiEntry, FieldKeyPath, GetAsset } from '$lib/types/public';
+ * @import { ApiAsset, ApiEntry, FieldKeyPath, GetAsset, RelationField } from '$lib/types/public';
  */
 
 /**
@@ -137,10 +140,12 @@ export const convertEntryToMap = ({ entry, locale, collectionName, associatedAss
  * used by editor component previews.
  * @param {string[]} [args.componentNames] Names or IDs of the editor components the RichText field
  * can contain, whose field-level media folders are also searched.
+ * @param {InternalLocaleCode} [args.locale] Locale being previewed, which an entry-relative path is
+ * relative to. Default: the default locale.
  * @returns {GetAsset} Function that gets asset URLs.
  */
 export const createGetAsset =
-  ({ entry, collectionName, fileName, files, typedKeyPath, componentNames }) =>
+  ({ entry, collectionName, fileName, files, typedKeyPath, componentNames, locale }) =>
   /**
    * Get the asset for a given asset path.
    * @param {string} path Path to the asset, the blob URL of a file that hasn’t been saved yet, or
@@ -154,7 +159,7 @@ export const createGetAsset =
       return new UnsavedAssetProxy(path, unsavedFile);
     }
 
-    const args = { value: path, entry, collectionName, fileName, typedKeyPath };
+    const args = { value: path, entry, collectionName, fileName, typedKeyPath, locale };
 
     const { asset, url } =
       (componentNames
@@ -173,52 +178,48 @@ export const createGetAsset =
   };
 
 /**
- * Cache of {@link getReferencedEntryLookup} results, keyed by the entry list they index.
- * @type {WeakMap<Entry[], Map<string, Map<any, Entry>>>}
+ * Cache of {@link getReferencedEntryLookup} results, keyed by the entry list they index, then by
+ * the Relation field config, then by locale.
+ * @type {WeakMap<Entry[], WeakMap<RelationField, Map<InternalLocaleCode, Map<any, Entry>>>>}
  */
 const referencedEntryLookupCache = new WeakMap();
 
 /**
  * Get a lookup table of the given referenced entries by the value a Relation field stores. The
- * table is built once per entry list, locale and value field, instead of the list being scanned
- * for every value — the metadata is rebuilt whenever the entry draft is updated.
+ * values are resolved with the field’s `value_field` template the same way as the field’s options,
+ * so a template like `{{locale}}/{{slug}}` or `{{fields.name.first}}` matches the stored values.
+ * The table is built once per entry list, field and locale, instead of the list being scanned for
+ * every value — the metadata is rebuilt whenever the entry draft is updated.
  * @param {Entry[]} entries Referenced entries.
  * @param {InternalLocaleCode} locale Locale code.
- * @param {string} valueField Relation field’s `value_field` option.
+ * @param {RelationField} fieldConfig Relation field config.
  * @returns {Map<any, Entry>} Entries by value. When several entries share a value, the first one
  * is kept.
  */
-const getReferencedEntryLookup = (entries, locale, valueField) => {
-  let lookups = referencedEntryLookupCache.get(entries);
+const getReferencedEntryLookup = (entries, locale, fieldConfig) =>
+  getOrCreate(
+    getOrCreate(
+      getOrCreate(referencedEntryLookupCache, entries, () => new WeakMap()),
+      fieldConfig,
+      () => new Map(),
+    ),
+    locale,
+    () => {
+      /** @type {Map<any, Entry>} */
+      const lookup = new Map();
 
-  if (!lookups) {
-    lookups = new Map();
-    referencedEntryLookupCache.set(entries, lookups);
-  }
+      entries.forEach((refEntry) => {
+        // A `value_field` referencing a list field gives one value per list item
+        getEntryOptions({ locale, fieldConfig, refEntry }).forEach(({ value }) => {
+          if (!lookup.has(value)) {
+            lookup.set(value, refEntry);
+          }
+        });
+      });
 
-  const key = `${locale}\n${valueField}`;
-  const cached = lookups.get(key);
-
-  if (cached) {
-    return cached;
-  }
-
-  /** @type {Map<any, Entry>} */
-  const lookup = new Map();
-
-  entries.forEach((entry) => {
-    const value =
-      valueField === '{{slug}}' ? entry.slug : entry.locales[locale]?.content?.[valueField];
-
-    if (!lookup.has(value)) {
-      lookup.set(value, entry);
-    }
-  });
-
-  lookups.set(key, lookup);
-
-  return lookup;
-};
+      return lookup;
+    },
+  );
 
 /**
  * Get metadata for fields. For relation fields, looks up and stores the referenced entry content
@@ -242,11 +243,7 @@ export const getMetaData = ({ locale, getFieldArgs }) => {
 
     // Populate metadata for relation fields by looking up referenced entries
     if (field?.widget === 'relation') {
-      const {
-        value_field: valueField = '{{slug}}',
-        collection: refCollection,
-        file: refFile,
-      } = field;
+      const { collection: refCollection, file: refFile } = field;
 
       const refEntries = (() => {
         const cacheKey = `${refCollection}:${refFile ?? ''}`;
@@ -267,13 +264,24 @@ export const getMetaData = ({ locale, getFieldArgs }) => {
         return entries;
       })();
 
-      metaData[keyPath] ??= {};
-      metaData[keyPath][refCollection] ??= {};
-      metaData[keyPath][refCollection][value] = getReferencedEntryLookup(
+      // The option values are strings, while a value written by hand may be a number, e.g. `1`
+      const refEntry = getReferencedEntryLookup(
         refEntries,
         locale,
-        valueField,
-      ).get(value)?.locales[locale]?.content;
+        /** @type {RelationField} */ (field),
+      ).get(String(value));
+
+      const defaultLocale = getCollection(refCollection)?._i18n.defaultLocale;
+
+      metaData[keyPath] ??= {};
+      metaData[keyPath][refCollection] ??= {};
+      // Fall back to the referenced collection’s default locale, then `_default` (no i18n), the
+      // same way the field’s options are looked up
+      metaData[keyPath][refCollection][value] = (
+        refEntry?.locales[locale] ??
+        (defaultLocale ? refEntry?.locales[defaultLocale] : undefined) ??
+        refEntry?.locales._default
+      )?.content;
     }
   });
 
@@ -281,7 +289,9 @@ export const getMetaData = ({ locale, getFieldArgs }) => {
 };
 
 /**
- * Build a synthetic entry object with current values for live preview updates.
+ * Build a synthetic entry object with current values for live preview updates. The internal
+ * properties the editor adds to list items, like `__sc_item_id`, are left out, as they’re not part
+ * of the content.
  * @param {object} args Arguments.
  * @param {Entry | undefined} args.originalEntry The original entry object.
  * @param {Record<InternalLocaleCode, FlattenedEntryContent>} args.currentValues Object with locale
@@ -298,7 +308,7 @@ export const buildEntry = ({ originalEntry, currentValues }) =>
         {
           slug: originalEntry?.locales[locale]?.slug ?? originalEntry?.slug,
           path: originalEntry?.locales[locale]?.path ?? originalEntry?.subPath,
-          content,
+          content: filterRealValues(content),
         },
       ]),
     ),
@@ -372,6 +382,6 @@ export const buildPreviewData = ({ draft, locale }) => {
 
       return fieldsMetaData;
     },
-    getAsset: createGetAsset({ entry, collectionName, fileName, files }),
+    getAsset: createGetAsset({ entry, collectionName, fileName, files, locale }),
   };
 };

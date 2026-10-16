@@ -1,9 +1,14 @@
 import { stringify as stringifyTOML } from 'smol-toml';
-import { Document, isMap } from 'yaml';
+import { Document, isMap, visit } from 'yaml';
 
 import { customFileFormatRegistry } from '$lib/services/api/registries';
 import { cmsConfig } from '$lib/services/config';
 import { FRONTMATTER_FORMATS } from '$lib/services/contents/file/constants';
+import {
+  getUnsafeIntegerSource,
+  hasUnsafeIntegerSources,
+  restoreBigInts,
+} from '$lib/services/contents/file/integers';
 
 /**
  * @import { Scalar, ToStringOptions } from 'yaml';
@@ -15,6 +20,25 @@ import { FRONTMATTER_FORMATS } from '$lib/services/contents/file/constants';
  * YamlFormatOptions,
  * } from '$lib/types/public';
  */
+
+/**
+ * Get `JSON.rawJSON()`, which TypeScript doesn’t know yet.
+ * @returns {((text: string) => any) | undefined} Function, or `undefined` in a browser without it.
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/rawJSON
+ */
+const getRawJSON = () => /** @type {{ rawJSON?: (text: string) => any }} */ (JSON).rawJSON;
+
+/**
+ * Create a `JSON.stringify()` replacer that writes an integer read from a file, which a `number`
+ * can’t represent exactly, as it was read.
+ * @param {(text: string) => any} rawJSON `JSON.rawJSON()`.
+ * @returns {(key: string, value: any) => any} Replacer.
+ */
+const createUnsafeIntegerReplacer = (rawJSON) => (_key, value) => {
+  const source = getUnsafeIntegerSource(value);
+
+  return source === undefined ? value : rawJSON(source);
+};
 
 /**
  * Format the given object as a JSON document using the built-in method.
@@ -29,9 +53,13 @@ export const formatJSON = (obj, options = cmsConfig.current?.output?.json ?? {})
     indent_size: indentSize = indentStyle === 'tab' ? 1 : 2,
   } = options;
 
+  const rawJSON = getRawJSON();
+
   return JSON.stringify(
     obj,
-    null,
+    // Write an integer that a `number` can’t represent exactly as it was read. A browser without
+    // `JSON.rawJSON()` writes the number
+    hasUnsafeIntegerSources() && rawJSON ? createUnsafeIntegerReplacer(rawJSON) : undefined,
     indentStyle === 'tab' ? '\t'.repeat(indentSize) : indentSize,
   ).trim();
 };
@@ -42,7 +70,9 @@ export const formatJSON = (obj, options = cmsConfig.current?.output?.json ?? {})
  * @returns {string} Formatted document.
  * @see https://github.com/squirrelchat/smol-toml
  */
-export const formatTOML = (obj) => stringifyTOML(obj).trim();
+export const formatTOML = (obj) =>
+  // Write an integer that a `number` can’t represent exactly as it was read
+  stringifyTOML(hasUnsafeIntegerSources() ? restoreBigInts(obj) : obj).trim();
 
 /**
  * Add the given comments to the keys of a YAML map and the maps nested in it, like Netlify/Decap
@@ -62,7 +92,8 @@ const addYAMLComments = (node, comments, prefix = '') => {
     // A key created from an object is always a scalar
     const key = /** @type {Scalar} */ (_key);
     const keyPath = `${prefix}${key.value}`;
-    const comment = comments[keyPath];
+    // A key named after an `Object.prototype` member, e.g. `toString`, mustn’t pick up that member
+    const comment = Object.hasOwn(comments, keyPath) ? comments[keyPath] : undefined;
 
     if (comment) {
       // A line break can be given as a real one or, like Netlify/Decap CMS, as an escaped `\n`
@@ -75,6 +106,52 @@ const addYAMLComments = (node, comments, prefix = '') => {
     addYAMLComments(value, comments, `${keyPath}.`);
   });
 };
+
+/**
+ * Regular expression matching a string that a YAML 1.1 parser, like Psych used by Jekyll or go-yaml
+ * v2 used by older Hugo releases, reads as a boolean, e.g. `yes`, `No` or `off`, the “Norway
+ * problem”.
+ * @see https://yaml.org/type/bool.html
+ */
+const YAML_1_1_BOOL_REGEX =
+  /^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$/;
+
+/**
+ * Regular expression matching a string that a YAML 1.1 parser reads as a number: an integer or a
+ * float with underscores, a binary or octal integer, or a sexagesimal number like `1:20` (80),
+ * as well as an integer or a float with commas, which Psych also accepts. A date isn’t included, as
+ * it’s meant to be read as one.
+ * @see https://yaml.org/type/int.html
+ * @see https://yaml.org/type/float.html
+ * @see https://github.com/ruby/psych/blob/master/lib/psych/scalar_scanner.rb
+ */
+const YAML_1_1_NUMBER_REGEX = new RegExp(
+  [
+    '^[-+]?(?:',
+    [
+      // Binary, octal and hexadecimal integers
+      '0b[01_,]+',
+      '0[0-7_,]+',
+      '0x[\\da-fA-F_,]+',
+      // Decimal integers and floats
+      '(?:\\d[\\d_,]*)?\\.[\\d_,]*(?:[eE][-+]?\\d+)?',
+      '\\d[\\d_,]*',
+      // Sexagesimal integers and floats
+      '\\d[\\d_]*(?::[0-5]?\\d)+(?:\\.[\\d_]*)?',
+    ].join('|'),
+    ')$',
+  ].join(''),
+);
+
+/**
+ * Check whether the given string would be read as something else than a string by a YAML 1.1
+ * parser if written as a plain scalar. The `yaml` library follows YAML 1.2, which only quotes a
+ * string that a YAML 1.2 parser would misread, like `true` or `1.5`.
+ * @param {string} value String.
+ * @returns {boolean} Result.
+ */
+export const isAmbiguousYAMLString = (value) =>
+  YAML_1_1_BOOL_REGEX.test(value) || YAML_1_1_NUMBER_REGEX.test(value);
 
 /**
  * Format the given object as a YAML document using a library.
@@ -114,6 +191,29 @@ export const formatYAML = (
 
   const doc = new Document(obj);
 
+  // Quote the strings, including keys, that a YAML 1.1 parser would read as a boolean or a number,
+  // which a YAML 1.2 parser doesn’t, so the `yaml` library writes them plain. Don’t use the
+  // `version: '1.1'` option instead, as it would also quote dates
+  visit(doc, {
+    /**
+     * Quote a string scalar if needed, and restore an integer that a `number` can’t represent.
+     * @param {unknown} _key Key of the node in its parent.
+     * @param {Scalar} node Scalar node.
+     */
+    Scalar: (_key, node) => {
+      if (typeof node.value === 'string' && isAmbiguousYAMLString(node.value)) {
+        node.type = toStringOptions.singleQuote ? 'QUOTE_SINGLE' : 'QUOTE_DOUBLE';
+      }
+
+      // Write an integer that a `number` can’t represent exactly as it was read
+      const source = getUnsafeIntegerSource(node.value);
+
+      if (source !== undefined) {
+        node.value = BigInt(source);
+      }
+    },
+  });
+
   addYAMLComments(doc.contents, comments);
 
   return doc.toString(toStringOptions).trim();
@@ -141,9 +241,16 @@ export const formatFrontMatter = ({ content, _file, comments }) => {
   const [sd, ed] = fmDelimiters ?? ['---', '---'];
   let body = '';
 
-  if (!bodyInline && bodyKey in content) {
-    body = typeof content[bodyKey] === 'string' ? content[bodyKey] : '';
-    delete content[bodyKey];
+  if (!bodyInline && Object.hasOwn(content, bodyKey)) {
+    const value = content[bodyKey];
+
+    // Only text can go below the front matter. Any other value, e.g. an object in a file not
+    // written by the CMS, stays in the front matter rather than being thrown away; a missing value
+    // is just an empty body
+    if (typeof value === 'string' || value === null || value === undefined) {
+      body = value ?? '';
+      delete content[bodyKey];
+    }
   }
 
   // Support Markdown without a front matter block, particularly for VitePress

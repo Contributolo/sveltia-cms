@@ -1,22 +1,28 @@
 <script>
   import { _ } from '@sveltia/i18n';
+  import { Alert, Toast } from '@sveltia/ui';
   import { getPathInfo } from '@sveltia/utils/file';
 
   import RenameDialog from '$lib/components/assets/list/rename-dialog.svelte';
-  import { encodeRoutePath, goto, parseLocation } from '$lib/services/app/navigation';
+  import { goto, parseLocation } from '$lib/services/app/navigation';
   import { getAssetsByDirName } from '$lib/services/assets';
   import { moveAssets } from '$lib/services/assets/data/move';
   import { getAssetUsedEntries } from '$lib/services/assets/details';
+  import { getAssetFolderHistoryState } from '$lib/services/assets/navigation';
   import { renamingAsset } from '$lib/services/assets/state';
+  import { getFolderNamesInDir } from '$lib/services/assets/subfolders';
+  import { runCommit } from '$lib/services/backends/commit-prompt';
   import { getReadonlyEntryLabel, isEntryReadonly } from '$lib/services/contents/entry/readonly';
   import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
   import { watchAsync } from '$lib/services/utils/state.svelte';
+  import { encodePathSegments } from '$lib/services/utils/url';
 
   /**
    * @import { Entry } from '$lib/types/private';
    */
 
   let open = $state(false);
+  let renamingFailed = $state(false);
   /** @type {Entry[]} */
   let usedEntries = $state([]);
 
@@ -41,6 +47,8 @@
           .filter((n) => n !== asset.name)
       : [],
   );
+  /** Names of the subfolders next to the asset, which a file can’t take either. */
+  const folderNames = $derived(asset ? getFolderNamesInDir(dirname) : []);
 
   /**
    * Rename the asset by moving it to a new path. Also, update the URL hash silently to reflect the
@@ -56,12 +64,25 @@
     const oldPath = asset.path;
     const newPath = `${dirname}/${newName}`;
 
-    await moveAssets('rename', [{ asset, path: newPath }]);
+    const { ok, cancelled } = await runCommit(() =>
+      moveAssets('rename', [{ asset, path: newPath }]),
+    );
+
+    if (!ok) {
+      // A cancellation at the commit message prompt isn’t a failure
+      if (!cancelled) {
+        renamingFailed = true;
+      }
+
+      return;
+    }
 
     if (parseLocation().path === `/assets/${oldPath}`) {
-      await goto(encodeRoutePath(`/assets/${newPath}`), {
+      await goto(encodePathSegments(`/assets/${newPath}`), {
         replaceState: true,
         notifyChange: false,
+        // Keep the folder the asset was opened from, e.g. All Assets
+        state: getAssetFolderHistoryState(),
       });
     }
   };
@@ -81,6 +102,7 @@
   bind:open
   name={basename}
   {otherNames}
+  {folderNames}
   usedEntryCount={usedEntries.length}
   {blockedMessage}
   slugificationEnabled={getDefaultMediaLibraryOptions().config.slugify_filename}
@@ -89,3 +111,7 @@
     renamingAsset.current = undefined;
   }}
 />
+
+<Toast bind:show={renamingFailed}>
+  <Alert status="error">{_('renaming_asset_failed')}</Alert>
+</Toast>

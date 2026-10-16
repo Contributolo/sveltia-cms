@@ -89,6 +89,13 @@ export class MockGitea extends MockGitRepository {
   treePageSize = 1000;
 
   /**
+   * Directories listed by the contents endpoint, keyed with the made-up SHA it gave each, which
+   * the trees endpoint lists in turn.
+   * @type {Map<string, { tree: Map<string, string>, prefix: string }>}
+   */
+  subtrees = new Map();
+
+  /**
    * Maximum number of items the instance returns in a page of a list, which it applies whatever
    * the request asks for. The CMS reads it from the settings endpoint and pages through.
    */
@@ -108,12 +115,6 @@ export class MockGitea extends MockGitRepository {
   labels = [];
 
   /**
-   * The signed-in user’s fork of the repository, once {@link createFork} has made it.
-   * @type {{ owner: string, repo: string } | undefined}
-   */
-  fork = undefined;
-
-  /**
    * Whether the fork request fails because the user already has a repository of that name, which
    * makes the CMS ask for the fork under another name.
    */
@@ -123,6 +124,12 @@ export class MockGitea extends MockGitRepository {
    * Whether forking is turned off on the instance, which only Forgejo can do and report.
    */
   forksDisabled = false;
+
+  /**
+   * Commit statuses reported for each commit with {@link reportBuild}, keyed by commit SHA.
+   * @type {Map<string, Record<string, any>[]>}
+   */
+  builds = new Map();
 
   /**
    * Open a pull request the way the instance does.
@@ -162,6 +169,28 @@ export class MockGitea extends MockGitRepository {
   }
 
   /**
+   * Report the builds of a commit with commit statuses, which is all Gitea/Forgejo has for them: an
+   * external CI/CD service posts one, and Gitea/Forgejo Actions posts one for every job, linked to
+   * the job log. A later report replaces the earlier ones.
+   * @param {string} sha Commit SHA.
+   * @param {object} builds Builds.
+   * @param {{ context: string, status: string, target_url?: string, description?: string }[]}
+   * builds.statuses Latest status of each context, with a status like `pending` or `success`.
+   */
+  reportBuild(sha, { statuses }) {
+    this.builds.set(
+      sha,
+      statuses.map((status, index) => ({
+        id: index + 1,
+        description: '',
+        target_url: '',
+        updated_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+        ...status,
+      })),
+    );
+  }
+
+  /**
    * Define a label on the repository, unless it’s already there.
    * @param {string} name Label name.
    * @param {string} [color] Label color.
@@ -179,30 +208,6 @@ export class MockGitea extends MockGitRepository {
     this.labels.push(label);
 
     return label;
-  }
-
-  /**
-   * Fork the repository onto the signed-in user’s account, with a copy of the configured branch.
-   * Like a fork on the instance, it shares the commits and blobs of the repository, and only its
-   * branches are its own.
-   * @param {object} [options] Options.
-   * @param {string} [options.repo] Name of the fork, the repository’s own by default.
-   * @returns {{ owner: string, repo: string }} Fork.
-   */
-  createFork({ repo = this.repo } = {}) {
-    this.fork = { owner: this.user.login, repo };
-    this.refs.set(this.forkBranch(this.branch), this.head.oid);
-
-    return this.fork;
-  }
-
-  /**
-   * Get the key of a branch in the fork, for {@link refs}, {@link commit} and {@link readFile}.
-   * @param {string} branch Branch name.
-   * @returns {string} Key, e.g. `mona:cms/posts/hello`.
-   */
-  forkBranch(branch) {
-    return `${this.user.login}:${branch}`;
   }
 
   /**
@@ -398,13 +403,14 @@ export class MockGitea extends MockGitRepository {
       return this.handleTreeRequest(filePath.replace(/^trees\//, ''), searchParams);
     }
 
-    // Gitea reads several files at once with this endpoint, which Forgejo doesn’t have
+    // Gitea reads several files at once with this endpoint, which Forgejo doesn’t have. Like the
+    // other endpoints, it takes a commit SHA as well as a branch name as the ref
     if (method === 'POST' && resource === 'file-contents' && !this.isForgejo) {
-      const { tree } = this.getHead(searchParams.get('ref') ?? this.branch);
+      const ref = searchParams.get('ref') ?? this.branch;
 
       return {
         json: /** @type {string[]} */ (body?.files ?? []).map((filePath_) => {
-          const sha = tree.get(filePath_);
+          const sha = this.getFileSHA(ref, filePath_);
 
           return sha ? this.toContentsItem(sha, { path: filePath_ }) : null;
         }),
@@ -497,6 +503,19 @@ export class MockGitea extends MockGitRepository {
 
     if (method === 'POST' && path === 'contents') {
       return this.handleCommit(/** @type {Record<string, any>} */ (body));
+    }
+
+    // The combined status of a commit, which only has the latest status of each context
+    if (method === 'GET' && resource === 'commits' && rest[1] === 'status') {
+      const statuses = this.builds.get(rest[0]) ?? [];
+
+      return {
+        json: {
+          sha: rest[0],
+          total_count: statuses.length,
+          statuses,
+        },
+      };
     }
 
     if (method === 'GET' && path === 'commits') {
@@ -1028,6 +1047,20 @@ export class MockGitea extends MockGitRepository {
   }
 
   /**
+   * Get a made-up SHA for a directory of a file tree, which the trees endpoint then lists.
+   * @param {Map<string, string>} tree File tree.
+   * @param {string} dir Directory path.
+   * @returns {string} SHA.
+   */
+  getSubtreeSHA(tree, dir) {
+    const sha = /** @type {string} */ (MockGitRepository.getDirSHA(tree, dir));
+
+    this.subtrees.set(sha, { tree, prefix: `${dir}/` });
+
+    return sha;
+  }
+
+  /**
    * List the entries of a folder, the way the contents endpoint does for a path that isn’t a file.
    * @param {Map<string, string>} tree File tree.
    * @param {string} dir Folder path, or an empty string for the root.
@@ -1049,7 +1082,7 @@ export class MockGitea extends MockGitRepository {
       entries.set(
         entryPath,
         rest.length
-          ? { name, path: entryPath, type: 'dir' }
+          ? { name, path: entryPath, type: 'dir', sha: this.getSubtreeSHA(tree, entryPath) }
           : { name, path: entryPath, type: 'file', sha },
       );
     });
@@ -1195,13 +1228,15 @@ export class MockGitea extends MockGitRepository {
   }
 
   /**
-   * Get the blob SHA of a file on a branch.
-   * @param {string} branch Branch name.
+   * Get the blob SHA of a file at a branch or commit.
+   * @param {string} ref Branch name or commit SHA.
    * @param {string} path File path.
-   * @returns {string | undefined} SHA, or `undefined` if the branch or the file doesn’t exist.
+   * @returns {string | undefined} SHA, or `undefined` if the ref or the file doesn’t exist.
    */
-  getFileSHA(branch, path) {
-    return this.refs.has(branch) ? this.getHead(branch).tree.get(path) : undefined;
+  getFileSHA(ref, path) {
+    const commit = this.refs.has(ref) ? this.getHead(ref) : this.getCommit(ref);
+
+    return commit?.tree.get(path);
   }
 
   /**
@@ -1212,18 +1247,26 @@ export class MockGitea extends MockGitRepository {
    */
   handleTreeRequest(ref, searchParams) {
     const commit = this.refs.has(ref) ? this.getHead(ref) : this.getCommit(ref);
+    const subtree = this.subtrees.get(ref);
 
-    if (!commit) {
+    if (!commit && !subtree) {
       return { status: 404, json: { message: 'Not Found' } };
     }
 
+    // A subtree lists the files in its directory, with paths relative to it
+    const { tree, prefix } = commit ? { tree: commit.tree, prefix: '' } : subtree;
     const page = Number(searchParams.get('page') ?? 1);
-    const entries = [...commit.tree].sort(([a], [b]) => a.localeCompare(b));
+
+    const entries = [...tree]
+      .filter(([path]) => path.startsWith(prefix))
+      .map(([path, sha]) => [path.slice(prefix.length), sha])
+      .sort(([a], [b]) => a.localeCompare(b));
+
     const start = (page - 1) * this.treePageSize;
 
     return {
       json: {
-        sha: commit.oid,
+        sha: commit?.oid ?? ref,
         tree: entries.slice(start, start + this.treePageSize).map(([path, sha]) => ({
           path,
           mode: '100644',
@@ -1383,7 +1426,11 @@ export class MockGitea extends MockGitRepository {
     return {
       status: 201,
       json: {
-        commit: { sha: commit.oid, created: commit.date.toISOString() },
+        commit: {
+          sha: commit.oid,
+          created: commit.date.toISOString(),
+          parents: commit.parents.map((sha) => ({ sha })),
+        },
         files: /** @type {Record<string, any>[]} */ (files).map(({ operation, path }) =>
           operation === 'delete' ? null : { path, sha: tree.get(path) },
         ),

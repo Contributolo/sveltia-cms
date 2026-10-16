@@ -11,6 +11,8 @@ import { lockedBranch } from '$lib/services/backends/branch-access';
 import { env } from '$lib/services/user/env.svelte';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 import { createMockAsset, createMockImageFile, initTestConfig, setAssets } from '$lib/test/config';
+import { createMockAssetFolder } from '$lib/test/factories';
+import { waitForToastsToHide } from '$lib/test/toast';
 
 import PrimaryToolbar from './primary-toolbar.svelte';
 
@@ -38,6 +40,20 @@ describe('PrimaryToolbar', () => {
     lockedBranch.current = undefined;
     focusedAsset.current = undefined;
     selectedAssets.current = [];
+  });
+
+  test('opens the focused asset’s details within the selected folder, e.g. All Assets', async () => {
+    window.location.hash = '#/assets/-/all';
+
+    const allAssetsFolder = { internalPath: undefined, publicPath: undefined };
+
+    selectedAssetFolder.current = /** @type {any} */ (allAssetsFolder);
+
+    await render(PrimaryToolbar);
+    focusedAsset.current = firstAsset;
+    await page.getByRole('button', { name: 'Show Preview' }).click();
+    await expect.poll(() => window.location.hash).toBe('#/assets/static/uploads/a.png');
+    expect(window.history.state.folder).toEqual(allAssetsFolder);
   });
 
   test('disables the asset actions until an asset is focused', async () => {
@@ -82,13 +98,7 @@ describe('PrimaryToolbar', () => {
   });
 
   test('shows the folder name and deletes the selected assets', async () => {
-    selectedAssetFolder.current = /** @type {any} */ ({
-      collectionName: undefined,
-      internalPath: 'static/uploads',
-      publicPath: '/uploads',
-      entryRelative: false,
-      hasTemplateTags: false,
-    });
+    selectedAssetFolder.current = /** @type {any} */ (createMockAssetFolder());
 
     const { container } = await render(PrimaryToolbar);
 
@@ -111,6 +121,61 @@ describe('PrimaryToolbar', () => {
 
     await vi.waitFor(() => expect(deleteAssets).toHaveBeenCalledWith(assets));
   });
+
+  test('reports a failure to delete the selected assets', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(deleteAssets).mockRejectedValueOnce(new Error('offline'));
+
+    try {
+      await render(PrimaryToolbar);
+
+      // The selection is reset whenever the listed assets change, so select the assets afterwards
+      await tick();
+      selectedAssets.current = [...assets];
+
+      await page.getByRole('button', { name: 'Delete Selected Assets' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+      await vi.waitFor(() => expect(deleteAssets).toHaveBeenCalledWith(assets));
+      await expect
+        .poll(() =>
+          document
+            .querySelector('.sui.toast:not([aria-hidden="true"]) .sui.alert.error')
+            ?.textContent?.replace(/\s+/g, ' ')
+            .trim(),
+        )
+        .toBe('error Error Delete failed.');
+      expect(error).toHaveBeenCalledWith(new Error('offline'));
+      await waitForToastsToHide();
+    } finally {
+      error.mockRestore();
+    }
+  }, 15000);
+
+  test('says nothing when the commit is cancelled', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(deleteAssets).mockRejectedValueOnce(new Error('commit_cancelled'));
+
+    try {
+      await render(PrimaryToolbar);
+
+      // The selection is reset whenever the listed assets change, so select the assets afterwards
+      await tick();
+      selectedAssets.current = [...assets];
+
+      await page.getByRole('button', { name: 'Delete Selected Assets' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+      await vi.waitFor(() => expect(deleteAssets).toHaveBeenCalledWith(assets));
+      await expect.element(page.getByRole('alertdialog')).not.toBeInTheDocument();
+      expect(
+        document.querySelector('.sui.toast:not([aria-hidden="true"]) .sui.alert.error'),
+      ).toBeNull();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  }, 15000);
 
   test('disables uploading and deleting while contributing via a fork', async () => {
     forkedRepository.current = /** @type {any} */ ({ owner: 'me', repo: 'site' });

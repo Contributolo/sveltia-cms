@@ -1,11 +1,12 @@
 <script>
   import { _ } from '@sveltia/i18n';
-  import { Dialog, Switch, TextArea } from '@sveltia/ui';
+  import { Alert, Dialog, Switch, TextArea, Toast } from '@sveltia/ui';
 
   import { saveAssets } from '$lib/services/assets/data/create';
   import { getAssetBlob } from '$lib/services/assets/info';
   import { editingAsset } from '$lib/services/assets/state';
   import { showAssetOverlay } from '$lib/services/assets/view';
+  import { runCommit } from '$lib/services/backends/commit-prompt';
 
   /**
    * @import { Asset } from '$lib/types/private';
@@ -21,6 +22,9 @@
   let currentValue = $state();
   /** @type {boolean | 'mixed'} */
   let wrap = $state(false);
+  /** Whether the edited text is being saved, during which the state is kept for a retry. */
+  let saving = false;
+  let savingFailed = $state(false);
 
   /**
    * Initialize the state.
@@ -43,20 +47,49 @@
   };
 
   /**
-   * Save the edited asset.
+   * Save the edited asset. If saving fails, the dialog is opened again with the edited text, so the
+   * user can retry without losing it.
    */
   const saveAsset = async () => {
-    /* v8 ignore next 10 -- the dialog is only shown once the asset is loaded */
-    if (asset && blob && typeof currentValue === 'string') {
-      await saveAssets(
+    /* v8 ignore next 3 -- the dialog is only shown once the asset is loaded */
+    if (!asset || !blob || typeof currentValue !== 'string') {
+      return;
+    }
+
+    saving = true;
+
+    const { folder, name } = asset;
+    const text = currentValue;
+    const { type } = blob;
+
+    const { ok, cancelled } = await runCommit(() =>
+      saveAssets(
         {
-          folder: asset.folder,
-          files: [new File([currentValue], asset.name, { type: blob.type })],
+          folder,
+          files: [new File([text], name, { type })],
           originalAssets: [asset],
         },
         { commitType: 'uploadMedia' },
-      );
+      ),
+    );
+
+    saving = false;
+
+    if (!ok) {
+      // A cancellation at the commit message prompt isn’t a failure
+      if (!cancelled) {
+        savingFailed = true;
+      }
+
+      // The asset details overlay may have been closed in the meantime
+      if (showAssetOverlay.current) {
+        open = true;
+
+        return;
+      }
     }
+
+    resetState();
   };
 
   /* v8 ignore start -- the title is only read while the dialog is open, for an asset */
@@ -87,7 +120,10 @@
     saveAsset();
   }}
   onClose={() => {
-    resetState();
+    // Keep the state while saving, in case the dialog has to be reopened
+    if (!saving) {
+      resetState();
+    }
   }}
 >
   <div role="none" class="wrapper" class:wrap>
@@ -97,6 +133,10 @@
     <Switch label={_('wrap_long_lines')} bind:checked={wrap} />
   {/snippet}
 </Dialog>
+
+<Toast bind:show={savingFailed}>
+  <Alert status="error">{_('saving_asset_failed')}</Alert>
+</Toast>
 
 <style>
   .wrapper {

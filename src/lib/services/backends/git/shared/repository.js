@@ -1,5 +1,7 @@
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
+import { getRootDir } from '$lib/services/backends/root-dir';
 import { prefs } from '$lib/services/user/prefs.svelte';
+import { encodePathSegments } from '$lib/services/utils/url';
 
 /**
  * @import { RepositoryBaseURLs, RepositoryInfo } from '$lib/types/private';
@@ -30,20 +32,50 @@ export const REPOSITORY_INFO_PLACEHOLDER = {
 const API_PATH_REGEX = /^(?<origin>(?:[a-z][a-z\d+.-]*:)?\/\/[^/]*)?(?<path>.*?)\/api(?:\/.*)?$/i;
 
 /**
- * Get the base URL for the repository from the REST API root URL.
+ * Get the base URL of the service’s web interface from the REST API root URL. A self-hosted
+ * instance can live under a subpath, which is kept.
  * @param {string} restApiRoot REST API root URL. It can be `https://api.github.com`,
  * `https://github.example.com`, `https://gitlab.com/api/v3`, `https://example.com/gitea/api/v1`,
  * etc.
+ * @returns {string} Base URL, e.g. `https://github.com` or `https://example.com/gitea`.
+ */
+export const getInstanceURL = (restApiRoot) =>
+  restApiRoot === 'https://api.github.com'
+    ? 'https://github.com'
+    : restApiRoot.replace(API_PATH_REGEX, '$<origin>$<path>');
+
+/**
+ * Get the base URL for the repository from the REST API root URL.
+ * @param {string} restApiRoot REST API root URL. See {@link getInstanceURL}.
  * @param {string} repoPath Repository path, e.g., `owner/repo`.
  * @returns {string} Base URL for the repository.
  */
-export const getRepoURL = (restApiRoot, repoPath) => {
-  const baseURL =
-    restApiRoot === 'https://api.github.com'
-      ? 'https://github.com'
-      : restApiRoot.replace(API_PATH_REGEX, '$<origin>$<path>');
+export const getRepoURL = (restApiRoot, repoPath) => `${getInstanceURL(restApiRoot)}/${repoPath}`;
 
-  return `${baseURL}/${repoPath}`;
+/**
+ * Generate the base URLs for accessing the repository’s resources, pointing the tree and blob URLs
+ * at the configured root directory, so a file path relative to it can be appended. Without a
+ * branch, the tree base URL is the repository itself and there is no blob base URL, so they’re left
+ * as they are.
+ * @param {(repoURL: string, branch?: string) => RepositoryBaseURLs} getBaseURLs Backend’s function
+ * to generate the base URLs.
+ * @param {string} repoURL The base URL of the repository.
+ * @param {string} [branch] Branch name.
+ * @returns {RepositoryBaseURLs} Base URLs.
+ */
+const getScopedBaseURLs = (getBaseURLs, repoURL, branch) => {
+  const urls = getBaseURLs(repoURL, branch);
+  const rootDir = getRootDir();
+
+  if (!rootDir || !branch) {
+    return urls;
+  }
+
+  return {
+    ...urls,
+    treeBaseURL: `${urls.treeBaseURL}/${encodePathSegments(rootDir)}`,
+    blobBaseURL: `${urls.blobBaseURL}/${encodePathSegments(rootDir)}`,
+  };
 };
 
 /**
@@ -58,8 +90,8 @@ export const getRepoURL = (restApiRoot, repoPath) => {
  * @param {string} args.restApiRoot REST API root URL of the configured instance.
  * @param {string} args.defaultApiRoot REST API root URL of the service’s hosted instance, used to
  * tell whether the configured instance is self-hosted.
- * @param {(repoURL: string) => string} args.getTokenPageURL Function to get the URL of the page
- * for creating a new Personal Access Token.
+ * @param {(instanceURL: string) => string} args.getTokenPageURL Function to get the URL of the
+ * page for creating a new Personal Access Token from the base URL of the service’s web interface.
  * @param {(repoURL: string, branch?: string) => RepositoryBaseURLs} args.getBaseURLs Function to
  * generate the base URLs for accessing the repository’s resources.
  * @returns {RepositoryInfo} The updated repository info.
@@ -80,6 +112,7 @@ export const initRepositoryInfo = (
 ) => {
   const repoPath = `${owner}/${repo}`;
   const repoURL = getRepoURL(restApiRoot, repoPath);
+  const rootDir = getRootDir();
 
   Object.assign(
     repository,
@@ -90,11 +123,13 @@ export const initRepositoryInfo = (
       repo,
       branch,
       repoURL,
-      tokenPageURL: getTokenPageURL(repoURL),
-      databaseName: `${service}:${repoPath}`,
+      tokenPageURL: getTokenPageURL(getInstanceURL(restApiRoot)),
+      // The cached files are keyed with paths relative to the root directory, so each directory
+      // of a monorepo gets a database of its own
+      databaseName: rootDir ? `${service}:${repoPath}:${rootDir}` : `${service}:${repoPath}`,
       isSelfHosted: restApiRoot !== defaultApiRoot,
     }),
-    getBaseURLs(repoURL, branch),
+    getScopedBaseURLs(getBaseURLs, repoURL, branch),
   );
 
   if (prefs.devModeEnabled) {
@@ -135,7 +170,7 @@ export const applyDefaultBranch = (repository, { found, branch, getBaseURLs }) =
     });
   }
 
-  Object.assign(repository, { branch }, getBaseURLs(repoURL, branch));
+  Object.assign(repository, { branch }, getScopedBaseURLs(getBaseURLs, repoURL, branch));
 
   return branch;
 };

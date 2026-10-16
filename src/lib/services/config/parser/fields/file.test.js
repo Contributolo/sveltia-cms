@@ -1,17 +1,15 @@
-/* eslint-disable jsdoc/require-jsdoc */
-
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createCollectors } from '$lib/test/config-parser';
+
 /**
- * @import { ConfigParserCollectors, ConfigParserContext } from '$lib/types/private';
+ * @import { ConfigParserContext } from '$lib/types/private';
  */
 
-vi.mock('@sveltia/i18n', () => ({
-  _: (/** @type {string} */ key) => key,
-  locale: { current: 'en-US', set: vi.fn() },
-}));
+vi.mock('@sveltia/i18n', async () =>
+  (await import('$lib/test/i18n')).createI18nMock({ locale: 'en-US' }),
+);
 
-const mockGetStore = vi.fn();
 const mockAddMessage = vi.fn();
 const mockCheckUnsupportedOptions = vi.fn();
 
@@ -19,19 +17,6 @@ vi.mock('$lib/services/config/parser/utils/validator', () => ({
   addMessage: mockAddMessage,
   checkUnsupportedOptions: mockCheckUnsupportedOptions,
 }));
-
-/**
- * Create a fresh collectors object for testing.
- * @returns {ConfigParserCollectors} Collectors instance.
- */
-function createCollectors() {
-  return {
-    errors: new Set(),
-    warnings: new Set(),
-    mediaFields: new Set(),
-    relationFields: new Set(),
-  };
-}
 
 /**
  * Create a fresh context object for testing.
@@ -48,11 +33,58 @@ function createContext() {
 describe('File Field Parser', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockGetStore.mockImplementation((store) => store);
   });
 
   describe('parseFileFieldConfig', () => {
+    it('should check the template tags in the field’s folder options', async () => {
+      const { parseFileFieldConfig } = await import('./file.js');
+      const context = createContext();
+      const collectors = createCollectors();
+      const config = { name: 'image', widget: 'image', media_folder: '/static/{{fields.title}}' };
+
+      parseFileFieldConfig({ config, context, collectors });
+
+      expect(mockAddMessage).toHaveBeenCalledWith({
+        strKey: 'unsupported_folder_template_tag',
+        values: { option: 'media_folder', tag: '{{fields.title}}' },
+        context,
+        collectors,
+      });
+    });
+
+    it('should warn about the `duplicate_if_empty` i18n strategy with multiple files', async () => {
+      const { parseFileFieldConfig } = await import('./file.js');
+      const context = createContext();
+      const collectors = createCollectors();
+
+      [
+        { multiple: false, i18n: 'duplicate_if_empty' },
+        { i18n: 'duplicate_if_empty' },
+        { multiple: true, i18n: true },
+      ].forEach((options) => {
+        parseFileFieldConfig({
+          config: /** @type {any} */ ({ name: 'images', widget: 'image', ...options }),
+          context,
+          collectors,
+        });
+      });
+
+      expect(mockAddMessage).not.toHaveBeenCalled();
+
+      parseFileFieldConfig({
+        config: { name: 'images', widget: 'image', multiple: true, i18n: 'duplicate_if_empty' },
+        context,
+        collectors,
+      });
+
+      expect(mockAddMessage).toHaveBeenCalledExactlyOnceWith({
+        type: 'warning',
+        strKey: 'duplicate_if_empty_multiple',
+        context,
+        collectors,
+      });
+    });
+
     it('should parse file field', async () => {
       const { parseFileFieldConfig } = await import('./file.js');
       const context = createContext();

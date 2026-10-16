@@ -6,8 +6,9 @@ import { isObject } from '@sveltia/utils/object';
 import { warnDeprecation } from '$lib/services/config/deprecations';
 import { parseCollectionFiles } from '$lib/services/config/parser/collection-files';
 import { checkArrayFileOptions } from '$lib/services/config/parser/collections/array-file';
+import { checkBulkEditFields } from '$lib/services/config/parser/collections/bulk-edit';
 import { checkCollectionFilter } from '$lib/services/config/parser/collections/filter';
-import { isFormatMismatch } from '$lib/services/config/parser/collections/format';
+import { checkBodyField, isFormatMismatch } from '$lib/services/config/parser/collections/format';
 import { checkIdentifierField } from '$lib/services/config/parser/collections/identifier';
 import { checkPreviewPath } from '$lib/services/config/parser/collections/preview';
 import { checkSlugOptions } from '$lib/services/config/parser/collections/slug';
@@ -15,6 +16,8 @@ import { checkCollectionTemplates } from '$lib/services/config/parser/collection
 import { checkViewOptions } from '$lib/services/config/parser/collections/views';
 import { parseFields } from '$lib/services/config/parser/fields';
 import { checkI18nOverrides } from '$lib/services/config/parser/i18n';
+import { checkFolderTemplateTags } from '$lib/services/config/parser/media';
+import { parsePublishMode } from '$lib/services/config/parser/publish-mode';
 import {
   addMessage,
   checkName,
@@ -63,6 +66,7 @@ export const parseEntryCollection = (context, collectors) => {
   const { cmsConfig, collection } = context;
 
   const {
+    body_field: bodyField,
     extension,
     fields,
     folder,
@@ -71,6 +75,7 @@ export const parseEntryCollection = (context, collectors) => {
     preview_path,
     preview_path_date_field,
     reorder,
+    bulk_edit: bulkEdit,
     slug_length: legacySlugLength,
     view_groups,
   } = collection;
@@ -122,6 +127,7 @@ export const parseEntryCollection = (context, collectors) => {
   }
 
   parseFields(fields, context, collectors);
+  checkBodyField({ extension, format, bodyField, fields, context, collectors });
 
   // Validate the `identifier_field` option, and the `title` field it defaults to, against the
   // fields. An index file has a fixed name, so its own fields don’t count
@@ -157,11 +163,34 @@ export const parseEntryCollection = (context, collectors) => {
       });
     }
 
-    parseFields(
-      index_file === true ? fields : (index_file.fields ?? fields),
-      { cmsConfig, collection, isIndexFile: true },
-      collectors,
-    );
+    const indexFileContext = { cmsConfig, collection, isIndexFile: true };
+    const indexFileFields = index_file === true ? fields : (index_file.fields ?? fields);
+
+    parseFields(indexFileFields, indexFileContext, collectors);
+
+    // The index file can have fields or a format of its own, unlike the collection’s checked above.
+    // Its extension and format replace the collection’s together, as in `getIndexFileFormat()`
+    if (isObject(index_file)) {
+      const {
+        extension: indexExtension,
+        format: indexFormat,
+        fields: indexFields,
+      } = /** @type {CollectionIndexFile} */ (index_file);
+
+      const hasOwnFormat = indexExtension !== undefined || indexFormat !== undefined;
+
+      if (indexFields || hasOwnFormat) {
+        checkBodyField({
+          ...(hasOwnFormat
+            ? { extension: indexExtension, format: indexFormat }
+            : { extension, format }),
+          bodyField,
+          fields: indexFileFields,
+          context: indexFileContext,
+          collectors,
+        });
+      }
+    }
   }
 
   // Validate the group named with the `reorder` option: an unknown name would silently fall back to
@@ -182,6 +211,10 @@ export const parseEntryCollection = (context, collectors) => {
       });
     }
   }
+
+  // Validate the fields named with the `bulk_edit` option: one that doesn’t exist, or can’t be
+  // edited in bulk, would silently be left out of the bulk editor
+  checkBulkEditFields({ bulkEdit, fields, context, collectors });
 
   // Validate the `preview_path` option against the fields that can fill in its date and time tags.
   // An index file can define its own fields, and the preview path reads from those for that entry,
@@ -239,6 +272,18 @@ export const parseCollection = ({ cmsConfig, collection }, collectors) => {
   // Validate the `i18n` option against the site-level configuration it builds on. A divider has
   // been ruled out above
   checkI18nOverrides({ cmsConfig, collection: /** @type {Collection} */ (collection) }, collectors);
+
+  checkFolderTemplateTags({
+    config: collection,
+    context: { cmsConfig, collection: /** @type {Collection} */ (collection) },
+    collectors,
+  });
+
+  parsePublishMode({
+    value: /** @type {Collection} */ (collection).publish_mode,
+    context: { cmsConfig, collection: /** @type {Collection} */ (collection) },
+    collectors,
+  });
 
   if (hasFiles) {
     parseCollectionFiles({ cmsConfig, collection }, collectors);

@@ -3,6 +3,7 @@
   import { Alert, Menu, MenuButton, Spacer } from '@sveltia/ui';
   import { getContext, setContext } from 'svelte';
 
+  import ErrorBoundary from '$lib/components/common/error-boundary.svelte';
   import CopyMenuItems from '$lib/components/contents/details/editor/copy-menu-items.svelte';
   import FieldEditorGroup from '$lib/components/contents/details/editor/field-editor-group.svelte';
   import ResetMenuItems from '$lib/components/contents/details/editor/reset-menu-items.svelte';
@@ -12,10 +13,19 @@
   import { customFieldTypeRegistry } from '$lib/services/api/registries';
   import { isDraftReadonly } from '$lib/services/config/readonly';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
+  import { deferDraftWrite } from '$lib/services/contents/draft/update/deferred';
   import { canResetField, resetField } from '$lib/services/contents/draft/update/reset';
   import { isFieldChanged, revertChanges } from '$lib/services/contents/draft/update/revert';
-  import { getValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
+  import { getFieldValueMapSnapshot } from '$lib/services/contents/draft/value-map.svelte';
+  import { isInEditorComponent } from '$lib/services/contents/editor/field-context';
+  import {
+    getEditorFieldConfig,
+    getFieldEditorFlags,
+    getFieldInputLabels,
+    TRANSLATABLE_FIELD_TYPES,
+  } from '$lib/services/contents/editor/field-flags';
   import { getFieldLocaleAccess } from '$lib/services/contents/editor/locale';
+  import { createResetMenuState } from '$lib/services/contents/editor/reset-menu.svelte';
   import {
     getCurrentValue,
     getFieldKind,
@@ -23,9 +33,11 @@
     isFieldRequired,
   } from '$lib/services/contents/entry/fields';
   import { isAutoNowField } from '$lib/services/contents/fields/date-time/auto-now';
+  import { isAutoIncrementField } from '$lib/services/contents/fields/number/auto-increment';
   import { getDraftI18nConfig } from '$lib/services/contents/i18n/config';
+  import { getFieldLabel, getLocalizedOption } from '$lib/services/contents/i18n/options';
   import { createRawState } from '$lib/services/utils/state.svelte';
-  import { sanitizeInlineMarkdown } from '$lib/services/utils/string';
+  import { sanitizeHelpText } from '$lib/services/utils/string';
   import { isPendingDeletion } from '$lib/services/workflow';
 
   /**
@@ -38,15 +50,7 @@
    * InternalLocaleCode,
    * TypedFieldKeyPath,
    * } from '$lib/types/private';
-   * @import {
-   * BooleanField,
-   * CustomField,
-   * Field,
-   * FieldKeyPath,
-   * NumberField,
-   * StringField,
-   * VisibleField,
-   * } from '$lib/types/public';
+   * @import { CustomField, Field, FieldKeyPath } from '$lib/types/public';
    */
 
   /** @type {FieldEditorContext} */
@@ -61,6 +65,10 @@
    * @property {FieldContext} [context] Where the field is rendered.
    * @property {string} [componentName] Name of the parent rich text editor component, if any.
    * @property {DraftValueStoreKey} [valueStoreKey] Key to store the values in {@link EntryDraft}.
+   * @property {boolean} [inline] Whether to render only the field’s control, without the label,
+   * the hint or the validation message, to be placed within a line of text, as an editor component
+   * in the `inline` mode does. A Select or Relation field then always shows a dropdown list, as
+   * radio buttons wouldn’t fit.
    */
 
   const entryDraft = getEntryDraftContext();
@@ -75,30 +83,16 @@
     context: fieldContext = parent.fieldContext ?? undefined,
     componentName,
     valueStoreKey = parent.valueStoreKey ?? 'currentValues',
+    inline = false,
     /* eslint-enable prefer-const */
   } = $props();
 
   const fieldId = $props.id();
 
   /**
-   * Parse the given string as Markdown and sanitize the result to only allow certain tags. A
-   * literal `\n` is turned into a line break.
-   * @param {string} str Original string.
-   * @returns {string} Sanitized string.
-   */
-  const _sanitize = (str) =>
-    sanitizeInlineMarkdown(str.replaceAll('\\n', '<br>'), {
-      allowedTags: ['strong', 'em', 'del', 'code', 'a', 'br'],
-    });
-
-  /**
-   * Write a value coming from the widget editor back to the entry draft.
-   *
-   * The write is deferred to a microtask so that it happens outside Svelte’s update cycle. Widget
-   * editors sync their local state to this binding from an `$effect`, and Svelte can only memoize
-   * its dirty-marking traversal for writes made outside a running reaction. Without the deferral,
-   * marking re-walks the derived graph once per path that reaches it, which is exponential in the
-   * depth of the editor tree — tens of seconds per keystroke on a deeply nested entry.
+   * Write a value coming from the widget editor back to the entry draft. Widget editors sync their
+   * local state to this binding from an `$effect`, so the write is deferred; see
+   * {@link deferDraftWrite}.
    * @param {any} value New value.
    */
   const writeValue = (value) => {
@@ -114,7 +108,7 @@
     const _locale = locale;
     const _keyPath = keyPath;
 
-    queueMicrotask(() => {
+    deferDraftWrite(() => {
       /* v8 ignore next 3 -- the editor may have been closed in the meantime */
       if (draft) {
         draft[store][_locale][_keyPath] = value;
@@ -136,41 +130,25 @@
     }),
   );
 
-  const inEditorComponent = $derived(fieldContext === 'rich-text-editor-component');
-  const { name: fieldName, widget: fieldType = 'string' } = $derived(fieldConfig);
-  const {
-    label = '',
-    hint = '',
-    readonly: readonlyOption,
-  } = $derived(/** @type {VisibleField} */ (fieldConfig));
+  const inEditorComponent = $derived(isInEditorComponent(valueStoreKey));
+  const { widget: fieldType = 'string' } = $derived(fieldConfig);
+  const hint = $derived(getLocalizedOption({ config: fieldConfig, option: 'hint', locale }) ?? '');
   const required = $derived(isFieldRequired({ fieldConfig, locale }));
   const multiple = $derived(isFieldMultiple(fieldConfig));
-  const allowPrefix = $derived(['string'].includes(fieldType));
-  const prefix = $derived(
-    allowPrefix ? /** @type {StringField} */ (fieldConfig).prefix : undefined,
+  const { prefix, suffix, beforeInputLabel, afterInputLabel, hasExtraLabels } = $derived(
+    getFieldInputLabels(fieldConfig),
   );
-  const suffix = $derived(
-    allowPrefix ? /** @type {StringField} */ (fieldConfig).suffix : undefined,
-  );
-  const allowExtraLabels = $derived(['boolean', 'number', 'string'].includes(fieldType));
-  const beforeInputLabel = $derived(
-    allowExtraLabels
-      ? /** @type {BooleanField | NumberField | StringField} */ (fieldConfig).before_input
-      : undefined,
-  );
-  const afterInputLabel = $derived(
-    allowExtraLabels
-      ? /** @type {BooleanField | NumberField | StringField} */ (fieldConfig).after_input
-      : undefined,
-  );
-  const hasExtraLabels = $derived(!!(prefix || suffix || beforeInputLabel || afterInputLabel));
   const isList = $derived(fieldType === 'list' || multiple);
   const originalValues = $derived(entryDraft.current?.originalValues);
   const { i18nEnabled, allLocales, defaultLocale } = $derived(
     getDraftI18nConfig(entryDraft.current),
   );
   const otherLocales = $derived(i18nEnabled ? allLocales.filter((l) => l !== locale) : []);
-  const valueMap = $derived(getValueMapSnapshot(entryDraft.current, locale, valueStoreKey));
+  // Only the field’s own values are depended on, so the editor isn’t updated whenever another
+  // field in the entry changes
+  const valueMap = $derived(
+    getFieldValueMapSnapshot(entryDraft.current, locale, keyPath, valueStoreKey),
+  );
   // Whether the field is shown, and whether it follows the default locale, in this locale
   const {
     canTranslate,
@@ -201,7 +179,7 @@
     }),
   );
   const validity = $derived(entryDraft.current?.validities[locale][keyPath]);
-  const fieldLabel = $derived(label || fieldName);
+  const fieldLabel = $derived(getFieldLabel({ config: fieldConfig, locale }));
   // An entry awaiting deletion is shown for reference only. Unlike `readonly`, which is also set
   // for a duplicated locale, this hides the options that would change the content
   const pendingDeletion = $derived(isPendingDeletion(entryDraft.current?.originalEntry));
@@ -213,44 +191,53 @@
   // hidden while the entry is being created because it has no meaningful value until then. The
   // option is ignored in a rich text editor component, whose values aren’t set on save
   const autoNow = $derived(!inEditorComponent && isAutoNowField(fieldConfig));
-  const hidden = $derived(fieldType === 'compute' || (autoNow && !!entryDraft.current?.isNew));
-  const readonly = $derived(
-    // The `readonly` option defaults to `true` for the UUID field type, which can be unlocked
-    (readonlyOption ?? fieldType === 'uuid') ||
-      autoNow ||
-      locked ||
-      isDuplicated ||
-      fieldType === 'compute',
+  // A Number field with the `auto_increment` option is numbered on save, the same way. It only
+  // applies to a field holding one value per entry of an entry collection
+  /* v8 ignore start -- The field is only rendered along with a draft, but the draft can be gone
+  while the editor is torn down */
+  const autoIncrement = $derived(
+    !!entryDraft.current &&
+      isAutoIncrementField({
+        fieldConfig,
+        collection: entryDraft.current.collection,
+        isIndexFile: entryDraft.current.isIndexFile,
+        keyPath,
+        inEditorComponent,
+      }),
+  );
+  /* v8 ignore stop */
+  const autoSet = $derived(autoNow || autoIncrement);
+  const { hidden, readonly } = $derived(
+    getFieldEditorFlags({
+      fieldConfig,
+      autoSet,
+      locked,
+      isDuplicated,
+      isNew: !!entryDraft.current?.isNew,
+    }),
   );
   // A field can be restored to its default value or cleared, unless it can’t be edited or its keys
   // follow the default locale, as with a KeyValue field using the `duplicate_keys` i18n strategy
   const canReset = $derived(!inEditorComponent && !readonly && !areKeysDuplicated);
-  /**
-   * Whether restoring the default value or clearing the field would change anything. It takes
-   * going through the whole field, so it’s only checked as the menu opens rather than on every
-   * change.
-   */
-  let resetAvailability = $state({ restore: false, clear: false });
-  const invalid = $derived(validity?.valid === false);
-
-  /**
-   * Check whether restoring the default value or clearing the field would change anything.
-   */
-  const updateResetAvailability = () => {
+  // The field’s reset actions are taken right away rather than confirmed in a dialog, so only the
+  // availability is used
+  const resetMenu = createResetMenuState(() => {
     const args = { valueMap, fieldConfig, keyPath, locale, defaultLocale };
 
-    resetAvailability = {
+    return {
       restore: canResetField({ ...args, restore: true }),
       clear: canResetField(args),
     };
-  };
+  });
+  const invalid = $derived(validity?.valid === false);
+  const editorFieldConfig = $derived(getEditorFieldConfig({ fieldConfig, inline }));
   const editorProps = $derived({
     locale,
     keyPath,
     typedKeyPath,
     fieldId,
     fieldLabel,
-    fieldConfig,
+    fieldConfig: editorFieldConfig,
     readonly,
     required,
     invalid,
@@ -259,7 +246,7 @@
 
 {#snippet beforeInput()}
   {#if beforeInputLabel}
-    <div role="none" class="before-input">{@html _sanitize(beforeInputLabel)}</div>
+    <div role="none" class="before-input">{@html sanitizeHelpText(beforeInputLabel)}</div>
   {/if}
   {#if prefix}
     <div role="none" class="prefix">{prefix}</div>
@@ -271,11 +258,31 @@
     <div role="none" class="suffix">{suffix}</div>
   {/if}
   {#if afterInputLabel}
-    <div role="none" class="after-input">{@html _sanitize(afterInputLabel)}</div>
+    <div role="none" class="after-input">{@html sanitizeHelpText(afterInputLabel)}</div>
   {/if}
 {/snippet}
 
-{#if entryDraft.current && canEdit && fieldType !== 'hidden'}
+{#if entryDraft.current && canEdit && fieldType !== 'hidden' && inline}
+  <!-- Only the field types with a compact control can be inline, which excludes a custom one; see
+  `isInlineComponentFieldList()` -->
+  {@const Editor = editors[fieldType]}
+  <span
+    role="none"
+    class="field inline"
+    data-field-type={fieldType}
+    data-key-path={keyPath}
+    data-typed-key-path={typedKeyPath}
+  >
+    <!-- The control is labelled with this, as it is with the heading otherwise -->
+    <span id="{fieldId}-label" hidden>{fieldLabel}</span>
+    <ErrorBoundary>
+      <Editor
+        {...editorProps}
+        bind:currentValue={() => currentValue, (value) => writeValue(value)}
+      />
+    </ErrorBoundary>
+  </span>
+{:else if entryDraft.current && canEdit && fieldType !== 'hidden'}
   <FieldEditorGroup
     aria-label={_('x_field', { values: { field: fieldLabel } })}
     data-field-type={fieldType}
@@ -289,7 +296,7 @@
         <span class="required" aria-hidden="true">*</span>
       {/if}
       <Spacer flex />
-      {#if canCopy && !draftReadonly && ['richtext', 'markdown', 'string', 'text', 'list', 'object'].includes(fieldType)}
+      {#if canCopy && !draftReadonly && TRANSLATABLE_FIELD_TYPES.includes(fieldType)}
         <TranslateButton size="small" {locale} {otherLocales} {keyPath} />
       {/if}
       <!-- Every option in the menu edits the content, which a read-only entry doesn’t allow -->
@@ -301,8 +308,8 @@
           disabled={pendingDeletion}
           popupPosition="bottom-right"
           aria-label={_('show_field_options')}
-          onclick={updateResetAvailability}
-          onkeydown={updateResetAvailability}
+          onclick={resetMenu.update}
+          onkeydown={resetMenu.update}
         >
           {#snippet popup()}
             <Menu ariaLabel={_('field_options')}>
@@ -316,7 +323,7 @@
                 separator={!!canCopy}
                 available={{
                   revert: !isRevertDisabled,
-                  ...(canReset ? resetAvailability : {}),
+                  ...(canReset ? resetMenu.availability : {}),
                 }}
                 onSelect={(action) => {
                   const draft = /** @type {EntryDraft} */ (entryDraft.current);
@@ -345,33 +352,35 @@
       </ValidationError>
     {/if}
     <div role="none" class="field-wrapper" class:has-extra-labels={hasExtraLabels}>
-      {#if customFieldType}
-        {@render beforeInput()}
-        <CustomEditor
-          {...{ ...editorProps, fieldConfig: /** @type {CustomField} */ (fieldConfig) }}
-          control={customFieldType.control}
-          {currentValue}
-        />
-        {@render afterInput()}
-      {:else if getFieldKind(fieldConfig) === 'unknown'}
-        <Alert status="warning">
-          {_('unsupported_field_type_x', { values: { name: fieldType } })}
-        </Alert>
-      {:else}
-        {@const Editor = editors[fieldType]}
-        {@render beforeInput()}
-        <Editor
-          {...editorProps}
-          bind:currentValue={() => currentValue, (value) => writeValue(value)}
-        />
-        {@render afterInput()}
-      {/if}
+      <ErrorBoundary>
+        {#if customFieldType}
+          {@render beforeInput()}
+          <CustomEditor
+            {...{ ...editorProps, fieldConfig: /** @type {CustomField} */ (fieldConfig) }}
+            control={customFieldType.control}
+            {currentValue}
+          />
+          {@render afterInput()}
+        {:else if getFieldKind(fieldConfig) === 'unknown'}
+          <Alert status="warning">
+            {_('unsupported_field_type_x', { values: { name: fieldType } })}
+          </Alert>
+        {:else}
+          {@const Editor = editors[fieldType]}
+          {@render beforeInput()}
+          <Editor
+            {...editorProps}
+            bind:currentValue={() => currentValue, (value) => writeValue(value)}
+          />
+          {@render afterInput()}
+        {/if}
+      </ErrorBoundary>
     </div>
     {#if !readonly && (hint || extraHint.current)}
       {@const ExtraHint = extraHint.current}
       <div role="none" class="footer">
         {#if hint}
-          <p class="hint">{@html _sanitize(hint)}</p>
+          <p class="hint">{@html sanitizeHelpText(hint)}</p>
         {/if}
         <ExtraHint {fieldConfig} {locale} {currentValue} />
       </div>
@@ -393,7 +402,11 @@
         width: 100%;
       }
 
-      input:is([type='color'], [type='number']) {
+      /* A native color, date or time input is still styled for a custom field type that renders
+        one. The built-in editors use Sveltia UI components instead, which have the `sui` class and
+        styles of their own, so they’re left out */
+
+      input:is([type='color']:not(.sui), [type='number']) {
         border-width: 1px;
         border-color: var(--sui-primary-border-color);
         border-radius: var(--sui-control-medium-border-radius);
@@ -410,7 +423,7 @@
         color: inherit;
       }
 
-      input:is([type='date'], [type='datetime-local'], [type='time']) {
+      input:is([type='date'], [type='datetime-local'], [type='time']):not(.sui) {
         margin: var(--sui-focus-ring-width);
         border-width: var(--sui-textbox-border-width, 1px);
         border-color: var(--sui-primary-border-color);
@@ -434,7 +447,7 @@
           [type='date'],
           [type='datetime-local'],
           [type='time']
-        ) {
+        ):not(.sui) {
         border-color: var(--sui-error-border-color);
       }
 

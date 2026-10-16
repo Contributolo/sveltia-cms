@@ -1565,7 +1565,7 @@ config:
     oauth_implicit_flow: De geconfigureerde authenticatiemethode (implicit flow) wordt niet ondersteund in Sveltia CMS. Gebruik in plaats daarvan een andere <a>authenticatiemethode</a>.
     github_pkce_unsupported: PKCE-autorisatie wordt nog niet ondersteund vanwege beperkingen van GitHub. Gebruik in plaats daarvan een andere <a>authenticatiemethode</a>.
     oauth_no_app_id: De OAuth-applicatie-ID is niet gedefinieerd.
-    # Don’t localize `open_authoring` and `editorial_workflow`
+    # Don’t localize `open_authoring`, `editorial_workflow` and `preview`
     open_authoring_no_workflow: De optie `open_authoring` vereist de publicatiemodus `editorial_workflow`. Zie de <a>documentatie</a> voor details.
     # Don’t localize `auth_methods`
     no_auth_methods: De optie `auth_methods` moet minstens één methode bevatten.
@@ -1979,13 +1979,23 @@ prefs:
       description: Links onderstrepen in het voorbeeld van het item en in labels van de gebruikersinterface.
       switch_label: Links altijd onderstrepen
 
-  # Advanced panel
-  advanced:
-    title: Geavanceerd
-    beta:
-      title: Bètafuncties
-      description: Schakel bètafuncties in die mogelijk instabiel of nog niet vertaald zijn.
-      switch_label: Deelnemen aan het bètaprogramma
+  # Data Management panel
+  data:
+    clear_data:
+      title: Gegevens wissen
+      # Clear File Cache button
+      file_cache:
+        description: Verwijder de lokaal gecachte bestandsinhoud en afbeeldingsminiaturen om opslagruimte vrij te maken of problemen door verouderde gegevens op te lossen.
+        button_label: Bestandscache wissen
+        confirmation: De lokaal gecachte bestandsinhoud en afbeeldingsminiaturen worden verwijderd. Je niet-opgeslagen concepten en instellingen blijven behouden, en verwijderde gegevens worden waar nodig opnieuw gedownload of gegenereerd. Het CMS wordt daarna opnieuw geladen.
+      # Erase All Data button
+      all_data:
+        description: Verwijder alles wat het CMS in deze browser bewaart, inclusief gecachte bestanden, niet-opgeslagen concepten en instellingen. Alles wat al in je repository is opgeslagen, blijft ongewijzigd.
+        button_label: Alle gegevens wissen
+        confirmation: Alle gegevens die in deze browser zijn opgeslagen, worden verwijderd, inclusief gecachte bestandsinhoud, afbeeldingsminiaturen, niet-opgeslagen concepten, instellingen en de inlogstatus. Je repository blijft ongewijzigd, maar wijzigingen die je niet hebt opgeslagen gaan verloren en je moet opnieuw inloggen. Het CMS wordt daarna opnieuw geladen.
+
+  # Developer panel
+  developer:
     developer_mode:
       title: Ontwikkelaarsmodus
       description: Schakel functies voor ontwikkelaars in, waaronder gedetailleerde consolelogs en native contextmenu’s.
@@ -2003,18 +2013,6 @@ prefs:
         field_label: Authorization-header (bijv. Bearer <token>) (optioneel)
         saved: Authorization-header opgeslagen.
         removed: Authorization-header verwijderd.
-    clear_data:
-      title: Gegevens wissen
-      # Clear File Cache button
-      file_cache:
-        description: Verwijder de lokaal gecachte bestandsinhoud en afbeeldingsminiaturen om opslagruimte vrij te maken of problemen door verouderde gegevens op te lossen.
-        button_label: Bestandscache wissen
-        confirmation: De lokaal gecachte bestandsinhoud en afbeeldingsminiaturen worden verwijderd. Je niet-opgeslagen concepten en instellingen blijven behouden, en verwijderde gegevens worden waar nodig opnieuw gedownload of gegenereerd. Het CMS wordt daarna opnieuw geladen.
-      # Erase All Data button
-      all_data:
-        description: Verwijder alles wat het CMS in deze browser bewaart, inclusief gecachte bestanden, niet-opgeslagen concepten en instellingen. Alles wat al in je repository is opgeslagen, blijft ongewijzigd.
-        button_label: Alle gegevens wissen
-        confirmation: Alle gegevens die in deze browser zijn opgeslagen, worden verwijderd, inclusief gecachte bestandsinhoud, afbeeldingsminiaturen, niet-opgeslagen concepten, instellingen en de inlogstatus. Je repository blijft ongewijzigd, maar wijzigingen die je niet hebt opgeslagen gaan verloren en je moet opnieuw inloggen. Het CMS wordt daarna opnieuw geladen.
 
 # ==============================================================================
 # Keyboard Shortcuts

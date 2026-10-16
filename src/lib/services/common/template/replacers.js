@@ -1,6 +1,7 @@
 import { generateUUID } from '@sveltia/utils/crypto';
 import { getPathInfo } from '@sveltia/utils/file';
 
+import { customStringTransformationRegistry } from '$lib/services/api/registries';
 import { slugify } from '$lib/services/common/slug';
 import { UUID_TYPES } from '$lib/services/common/template/constants';
 import {
@@ -27,6 +28,7 @@ import { sanitizePath } from '$lib/services/utils/file';
  * @typedef {object} ReplaceSubContextBase
  * @property {string} identifierField Field name to identify the title.
  * @property {string | undefined} basePath Base path for the entry file.
+ * @property {RegExp} [fullPathRegEx] Entry path matcher of the entry collection.
  */
 
 /**
@@ -71,6 +73,7 @@ export const replaceTemplateTag = (tag, context) => {
     locale,
     dateTimeParts,
     basePath,
+    fullPathRegEx,
     assetFileName,
   } = context;
 
@@ -116,6 +119,7 @@ export const replaceTemplateTag = (tag, context) => {
       entryFilePath,
       basePath,
       getFileNameLocaleSuffixes(collection),
+      fullPathRegEx,
     );
 
     if (filePathValue !== undefined) {
@@ -130,8 +134,11 @@ export const replaceTemplateTag = (tag, context) => {
     }
   }
 
-  // Handle field values
-  return content[stripFieldTagPrefix(tag)];
+  const keyPath = stripFieldTagPrefix(tag);
+
+  // Handle field values. A field named after an `Object.prototype` member, e.g. `constructor`,
+  // mustn’t resolve to that member when the content lacks the field
+  return Object.hasOwn(content, keyPath) ? content[keyPath] : undefined;
 };
 
 /**
@@ -150,17 +157,17 @@ export const replaceTemplatePlaceholder = (placeholder, context) => {
     String(replaceTemplateTag(innerTag, replaceSubContext) ?? ''),
   );
 
-  // Fall back with a random ID unless the `default` transformation is defined
+  // Fall back with a random ID unless the `default` transformation or a custom one is defined,
+  // which may give a value for a missing one
   const hasDefaultTransformation = parsedTransformations.some(
     (tf) => tf.args.defaultValue !== undefined,
   );
 
-  const hasComplexNestedTemplateArgs = parsedTransformations.some((tf) =>
-    [tf.args.defaultValue, tf.args.truthyValue, tf.args.falsyValue].some(
-      (arg) => typeof arg === 'string' && arg.includes('{{') && !/^{{[^{}]+}}$/.test(arg),
-    ),
+  const hasCustomTransformation = parsedTransformations.some((tf) =>
+    customStringTransformationRegistry.has(tf.method),
   );
 
+  const isMissingValue = value === undefined;
   const { type, locale } = replaceSubContext;
 
   // A random fallback keeps generated slugs and paths unique, but a `preview_path` is recomputed on
@@ -180,26 +187,20 @@ export const replaceTemplatePlaceholder = (placeholder, context) => {
     }
   };
 
-  if (value === undefined && !hasDefaultTransformation) {
+  /**
+   * Get a random ID for an unresolvable tag, which is reused like the other random values.
+   * @returns {string} Random ID.
+   */
+  const getFallbackValue = () => {
     bailOnUnresolvableTag();
 
     return getRandomValue(replaceSubContext, `${locale}:fallback:${placeholder}`, () =>
       generateUUID('short'),
     );
-  }
+  };
 
-  if (
-    (value === undefined || value === '') &&
-    hasDefaultTransformation &&
-    hasComplexNestedTemplateArgs
-  ) {
-    bailOnUnresolvableTag();
-
-    return getRandomValue(
-      replaceSubContext,
-      `${locale}:fallback:${placeholder}`,
-      () => `${generateUUID('short')}-${generateUUID('short')}`,
-    );
+  if (isMissingValue && !hasDefaultTransformation && !hasCustomTransformation) {
+    return getFallbackValue();
   }
 
   if (transformations.length) {
@@ -209,6 +210,12 @@ export const replaceTemplatePlaceholder = (placeholder, context) => {
       transformations,
       locale,
     });
+  }
+
+  // A custom transformation may give nothing for a missing value after all. The result of `default`
+  // is kept as is, even if its nested template resolves to nothing
+  if (isMissingValue && !hasDefaultTransformation && value === '') {
+    return getFallbackValue();
   }
 
   // Sanitize path traversal attempts first by removing `.` and `..` segments to prevent writing

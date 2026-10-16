@@ -1,20 +1,28 @@
 import { parse } from 'marked';
+import { SvelteSet } from 'svelte/reactivity';
 
+import { createLazyModule } from '$lib/services/api/lazy-module';
 import { loadModule } from '$lib/services/app/dependencies';
-import { getInheritedI18nOption } from '$lib/services/contents/draft/create/proxy.svelte';
 import { copyFromLocaleToast, translatorApiKeyDialogState } from '$lib/services/contents/editor';
-import { getField } from '$lib/services/contents/entry/fields';
+import { getDraftFieldArgs, getField } from '$lib/services/contents/entry/fields';
 import { isKeyPathWithin } from '$lib/services/contents/entry/key-paths';
 import { RICH_TEXT_FIELD_TYPES, TEXT_FIELD_TYPES } from '$lib/services/contents/fields';
 import { getListFieldInfo } from '$lib/services/contents/fields/list/helpers';
 import { getValueFormat } from '$lib/services/contents/fields/rich-text';
+import { isDuplicateIfEmptyField } from '$lib/services/contents/i18n/duplicate-if-empty';
 import { isFieldTranslatable } from '$lib/services/contents/i18n/fields';
 import { translator } from '$lib/services/integrations/translators';
 import { prefs } from '$lib/services/user/prefs.svelte';
 import { escapeHTML } from '$lib/services/utils/string';
 
 /**
- * @import { EntryDraft, InternalLocaleCode, LocaleContentMap } from '$lib/types/private';
+ * @import { EntryDraftState } from '$lib/services/contents/draft/state.svelte';
+ * @import {
+ * EntryDraft,
+ * GetFieldArgs,
+ * InternalLocaleCode,
+ * LocaleContentMap,
+ * } from '$lib/types/private';
  * @import { Field, FieldKeyPath, ListField, RichTextField } from '$lib/types/public';
  */
 
@@ -34,32 +42,48 @@ import { escapeHTML } from '$lib/services/utils/string';
  */
 
 /**
- * Turndown service instance, created on first use.
- * @type {Promise<import('turndown')> | undefined}
+ * @typedef {object} PendingTranslation
+ * @property {EntryDraft} draft Entry draft being translated into.
+ * @property {InternalLocaleCode} targetLanguage Target locale.
+ * @property {FieldKeyPath} keyPath Field key path, or an empty string for all the fields.
  */
-let turndownServicePromise;
 
 /**
- * Get a Turndown service instance for converting HTML to Markdown. The library is only needed when
- * a translator without Markdown support hands HTML back, so it’s loaded from the CDN on demand
- * rather than shipped in the bundle.
- * @returns {Promise<import('turndown')>} Service instance.
- * @see https://github.com/mixmark-io/turndown
+ * Translations in flight. A request costs money and takes a while, so the same one isn’t sent again
+ * until it’s settled, and the UI disables the button that would send it.
+ * @type {SvelteSet<PendingTranslation>}
  */
-export const getTurndownService = async () => {
-  turndownServicePromise ??= (async () => {
-    /** @type {{ default: typeof import('turndown') }} */
-    let module;
+export const pendingTranslations = new SvelteSet();
 
-    try {
-      module = await loadModule('turndown', 'lib/turndown.browser.es.js');
-    } catch (error) {
-      // Let a later call try again, e.g. once the network is back
-      turndownServicePromise = undefined;
-      throw error;
-    }
+/**
+ * Check if the fields at the given key path are being translated into the given locale.
+ * @param {object} args Arguments.
+ * @param {EntryDraft | null | undefined} args.draft Entry draft.
+ * @param {InternalLocaleCode} args.targetLanguage Target locale.
+ * @param {FieldKeyPath} [args.keyPath] Field key path. Omit this for all the fields.
+ * @returns {boolean} Result.
+ */
+export const isTranslationPending = ({ draft, targetLanguage, keyPath = '' }) =>
+  [...pendingTranslations].some(
+    (translation) =>
+      translation.draft === draft &&
+      translation.targetLanguage === targetLanguage &&
+      translation.keyPath === keyPath,
+  );
 
-    const { default: TurndownService } = module;
+/**
+ * Loader for a Turndown service instance, created on first use. A failed load isn’t remembered, so
+ * a later call can try again, e.g. once the network is back.
+ */
+const turndownLoader = createLazyModule({
+  /**
+   * Fetch the library from the CDN and create a service instance.
+   * @returns {Promise<import('turndown')>} Service instance.
+   */
+  loader: async () => {
+    const { default: TurndownService } = /** @type {{ default: typeof import('turndown') }} */ (
+      await loadModule('turndown', 'lib/turndown.browser.es.js')
+    );
 
     const service = new TurndownService({
       headingStyle: 'atx',
@@ -71,10 +95,18 @@ export const getTurndownService = async () => {
     service.keep(['span', 'div']);
 
     return service;
-  })();
+  },
+  notLoadedMessage: 'Turndown is not loaded yet. Call `getTurndownService()` first.',
+});
 
-  return turndownServicePromise;
-};
+/**
+ * Get a Turndown service instance for converting HTML to Markdown. The library is only needed when
+ * a translator without Markdown support hands HTML back, so it’s loaded from the CDN on demand
+ * rather than shipped in the bundle.
+ * @returns {Promise<import('turndown')>} Service instance.
+ * @see https://github.com/mixmark-io/turndown
+ */
+export const getTurndownService = turndownLoader.load;
 
 /**
  * Named HTML character references a translator may return, besides numeric ones.
@@ -102,6 +134,38 @@ const decodeHTMLEntities = (text) =>
   });
 
 /**
+ * Regular expression matching the key path of a list item, capturing the key path of the list.
+ */
+const LIST_ITEM_KEY_PATH_REGEX = /^(.+)\.\d+$/;
+
+/**
+ * Get the `i18n` option that decides whether a field can be copied or translated from another
+ * locale. Like the editor (`getFieldLocaleAccess()`), the validator and the default values, it’s
+ * the field’s own option, so a subfield without one isn’t written in a locale where the editor
+ * hides it, even if the List or Object field it belongs to is translatable. An item of a List field
+ * without subfields has no configuration of its own, so it takes the option of the List field,
+ * which the editor shows as a whole.
+ * @param {object} args Arguments.
+ * @param {Field | undefined} args.field Field configuration, if the key path has one.
+ * @param {GetFieldArgs} args.getFieldArgs Arguments for the `getField` function, including the key
+ * path of the field.
+ * @returns {Field['i18n']} Option.
+ */
+const getCopyI18nOption = ({ field, getFieldArgs }) => {
+  if (field) {
+    return field.i18n;
+  }
+
+  const [, listKeyPath] = getFieldArgs.keyPath.match(LIST_ITEM_KEY_PATH_REGEX) ?? [];
+  const listField = listKeyPath ? getField({ ...getFieldArgs, keyPath: listKeyPath }) : undefined;
+
+  return listField?.widget === 'list' &&
+    !getListFieldInfo(/** @type {ListField} */ (listField)).hasSubFields
+    ? listField.i18n
+    : undefined;
+};
+
+/**
  * Get a list of fields to be copied or translated from the source locale to the target locale.
  * @param {object} args Arguments.
  * @param {EntryDraft} args.draft Entry draft.
@@ -109,10 +173,10 @@ const decodeHTMLEntities = (text) =>
  * @returns {CopyingFieldMap} Copied or translated field values.
  */
 export const getCopyingFieldMap = ({ draft, options }) => {
-  const { collectionName, fileName, currentValues, isIndexFile } = draft;
+  const { currentValues } = draft;
   const { sourceLanguage, targetLanguage, keyPath = '', translate = false } = options;
   const valueMap = currentValues[sourceLanguage];
-  const getFieldArgs = { collectionName, fileName, valueMap, isIndexFile };
+  const getFieldArgs = getDraftFieldArgs(draft, { valueMap });
 
   return Object.fromEntries(
     Object.entries(valueMap)
@@ -125,13 +189,9 @@ export const getCopyingFieldMap = ({ draft, options }) => {
           (keyPath && !isKeyPathWithin(_keyPath, keyPath)) ||
           // Only a translatable field has a value of its own in each locale: a field that isn’t
           // localized is only saved in the default locale, and a duplicated one can’t be edited
-          // in the other locales. An item of a List field without subfields has no configuration
-          // of its own, so it takes the option of the List field
+          // in the other locales
           !isFieldTranslatable(
-            getInheritedI18nOption({
-              fieldConfig: field ?? /** @type {Field} */ ({}),
-              getFieldArgs: { ...getFieldArgs, keyPath: _keyPath },
-            }),
+            getCopyI18nOption({ field, getFieldArgs: { ...getFieldArgs, keyPath: _keyPath } }),
           ) ||
           typeof value !== 'string' ||
           !value ||
@@ -140,8 +200,13 @@ export const getCopyingFieldMap = ({ draft, options }) => {
           (fieldType === 'list' &&
           getListFieldInfo(/** @type {ListField} */ (field)).hasSubFields) ||
           (!translate && value === targetLocaleValue) ||
-          // Skip populated fields when translating all the fields
-          (!keyPath && translate && !!targetLocaleValue)
+          // Skip populated fields when translating all the fields, except for a field using the
+          // `duplicate_if_empty` strategy that still holds the source locale’s value, which hasn’t
+          // been translated yet
+          (!keyPath &&
+            translate &&
+            !!targetLocaleValue &&
+            !(!!field && isDuplicateIfEmptyField(field) && value === targetLocaleValue))
         ) {
           return null;
         }
@@ -182,11 +247,28 @@ export const updateToast = (status, message, { count, sourceLanguage }) => {
  * updated with the translated values.
  * @param {CopyOptions} args.options Copy options.
  * @param {CopyingFieldMap} args.copingFieldMap Copied or translated field values.
+ * @param {() => boolean} [args.isDraftClosed] Function telling whether the draft has been closed
+ * since the request was made, in which case the results are dropped.
  */
-export const translateFields = async ({ currentValues, options, copingFieldMap }) => {
+export const translateFields = async ({
+  currentValues,
+  options,
+  copingFieldMap,
+  isDraftClosed = () => false,
+}) => {
   const { serviceId } = translator.current;
-  const { sourceLanguage, targetLanguage } = options;
+  const { sourceLanguage, targetLanguage, keyPath } = options;
   const count = Object.keys(copingFieldMap).length;
+
+  // The target values as they were when the fields to translate were picked, so that a field the
+  // user fills in while the request is in flight isn’t overwritten when translating all the fields
+  const targetValues = Object.fromEntries(
+    Object.keys(copingFieldMap).map((_keyPath) => [
+      _keyPath,
+      currentValues[targetLanguage][_keyPath],
+    ]),
+  );
+
   let apiKey = prefs.apiKeys?.[serviceId];
 
   if (!apiKey) {
@@ -230,8 +312,21 @@ export const translateFields = async ({ currentValues, options, copingFieldMap }
 
     const turndownService = needsTurndown ? await getTurndownService() : undefined;
 
+    // The user has opened another entry in the meantime
+    if (isDraftClosed()) {
+      return;
+    }
+
+    let translatedCount = 0;
+
     Object.entries(copingFieldMap).forEach(([_keyPath, { format }], index) => {
       const value = translatedValues[index];
+
+      if (!keyPath && currentValues[targetLanguage][_keyPath] !== targetValues[_keyPath]) {
+        return;
+      }
+
+      translatedCount += 1;
 
       // Convert the value back to Markdown or plain text if needed. The HTML comes back with its
       // special characters as entities, which Turndown decodes for a Markdown value
@@ -244,10 +339,13 @@ export const translateFields = async ({ currentValues, options, copingFieldMap }
             : decodeHTMLEntities(value);
     });
 
-    updateToast('success', 'translation.complete', { count, sourceLanguage });
+    updateToast('success', 'translation.complete', { count: translatedCount, sourceLanguage });
   } catch (ex) {
-    // @todo Show a detailed error message.
-    updateToast('error', 'translation.error', { count, sourceLanguage });
+    if (!isDraftClosed()) {
+      // @todo Show a detailed error message.
+      updateToast('error', 'translation.error', { count, sourceLanguage });
+    }
+
     // eslint-disable-next-line no-console
     console.error(ex);
   }
@@ -273,13 +371,21 @@ export const copyFields = ({ currentValues, options, copingFieldMap }) => {
 };
 
 /**
- * Copy or translate field value(s) from another locale.
+ * Copy or translate field value(s) from another locale. A translation already in flight for the
+ * same fields and locale isn’t requested again.
  * @param {object} args Arguments.
  * @param {EntryDraft} args.draft Entry draft.
  * @param {CopyOptions} args.options Copy options.
+ * @param {EntryDraftState} [args.entryDraft] Entry draft state of the editor. If given, the results
+ * of a translation are dropped once the draft is no longer the one in the editor.
  */
-export const copyFromLocale = async ({ draft, options }) => {
-  const { sourceLanguage, translate = false } = options;
+export const copyFromLocale = async ({ draft, options, entryDraft }) => {
+  const { sourceLanguage, targetLanguage, keyPath = '', translate = false } = options;
+
+  if (translate && isTranslationPending({ draft, targetLanguage, keyPath })) {
+    return;
+  }
+
   const { currentValues } = draft;
   const copingFieldMap = getCopyingFieldMap({ draft, options });
   const count = Object.keys(copingFieldMap).length;
@@ -291,7 +397,21 @@ export const copyFromLocale = async ({ draft, options }) => {
   }
 
   if (translate) {
-    await translateFields({ currentValues, options, copingFieldMap });
+    /** @type {PendingTranslation} */
+    const pendingTranslation = { draft, targetLanguage, keyPath };
+    /**
+     * Check whether the draft is no longer the one in the editor.
+     * @returns {boolean} Result.
+     */
+    const isDraftClosed = () => !!entryDraft && entryDraft.current !== draft;
+
+    pendingTranslations.add(pendingTranslation);
+
+    try {
+      await translateFields({ currentValues, options, copingFieldMap, isDraftClosed });
+    } finally {
+      pendingTranslations.delete(pendingTranslation);
+    }
   } else {
     copyFields({ currentValues, options, copingFieldMap });
   }

@@ -1,6 +1,8 @@
 import { sleep } from '@sveltia/utils/misc';
 
+import { runConcurrently } from '$lib/services/backends/git/shared/concurrency';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
+import { cmsConfig } from '$lib/services/config';
 import {
   ENTRY_ALREADY_PUBLISHED,
   forkedRepository,
@@ -11,12 +13,15 @@ import {
 
 /**
  * @import {
+ * CommitOptions,
  * CommitResults,
+ * ForkRequestState,
  * RepositoryInfo,
  * RepositoryPath,
  * WorkflowPullRequest,
  * WorkflowStatus,
  * } from '$lib/types/private';
+ * @import { GitBackend } from '$lib/types/public';
  */
 
 /**
@@ -26,6 +31,20 @@ import {
 const FORK_POLL = {
   interval: 1000,
   attempts: 30,
+};
+
+/**
+ * Check whether Open Authoring is turned on for the given backend in the site configuration. It
+ * doesn’t mean the signed-in user is actually contributing through a fork: a user who can write to
+ * the configured repository keeps working on it directly. Use the `openAuthoring` store for that.
+ * @param {GitBackend['name']} name Backend name, e.g. `github`.
+ * @returns {boolean} `true` if the given backend is configured, with the `open_authoring` option
+ * enabled.
+ */
+export const isOpenAuthoringConfiguredFor = (name) => {
+  const { backend } = cmsConfig.current ?? {};
+
+  return backend?.name === name && 'open_authoring' in backend && backend.open_authoring === true;
 };
 
 /**
@@ -61,6 +80,61 @@ export const ensureForkPermission = async ({ repoPath, allowForking }) => {
       'Permission to fork the repository was declined',
       'open_authoring.fork_declined',
     );
+  }
+};
+
+/**
+ * Log the given failure to create a fork and create an error that tells the user about it.
+ * @param {string} repoPath Repository path that was to be forked, e.g. `owner/repo`.
+ * @param {Error} ex Failure.
+ * @returns {Error} Error to throw.
+ */
+export const createForkError = (repoPath, ex) => {
+  // eslint-disable-next-line no-console
+  console.error('Failed to fork the repository.', ex);
+
+  return createLocalizedError('Failed to fork the repository.', 'open_authoring.fork_failed', {
+    repo: repoPath,
+  });
+};
+
+/**
+ * Ask the service to fork the configured repository, falling back to another name when the
+ * contributor already has an unrelated repository at the default one. Unlike GitHub, which picks
+ * another name itself, Gitea/Forgejo and GitLab refuse the request then.
+ * @param {object} args Arguments.
+ * @param {string} args.repoPath Repository path to be forked, e.g. `owner/repo`, for the error
+ * message.
+ * @param {() => Promise<any>} args.requestFork Function to request a fork at the default name.
+ * @param {() => Promise<any>} args.requestRenamedFork Function to request a fork at the fallback
+ * name.
+ * @param {number[]} args.conflictStatuses HTTP status codes the service refuses a name that’s
+ * already taken with.
+ * @param {() => Promise<boolean>} args.isNameTaken Function to check whether the contributor has a
+ * repository at the default name, which tells a name conflict from any other refusal, e.g. a fork
+ * of the repository that already exists, or forking being turned off.
+ * @returns {Promise<Record<string, any>>} Service’s response describing the new fork.
+ * @throws {Error} When the fork could not be created.
+ */
+export const requestForkWithFallbackName = async ({
+  repoPath,
+  requestFork,
+  requestRenamedFork,
+  conflictStatuses,
+  isNameTaken,
+}) => {
+  try {
+    return await requestFork();
+  } catch (/** @type {any} */ ex) {
+    if (!conflictStatuses.includes(ex.cause?.status) || !(await isNameTaken())) {
+      throw createForkError(repoPath, ex);
+    }
+  }
+
+  try {
+    return await requestRenamedFork();
+  } catch (/** @type {any} */ ex) {
+    throw createForkError(repoPath, ex);
   }
 };
 
@@ -121,6 +195,55 @@ export const runOpenAuthoringSetUp = async (setUp) => {
 };
 
 /**
+ * Work out how the signed-in user is going to write to the repository, and set up a fork for them
+ * if they can’t write to the configured one. This replaces the plain access check performed when
+ * Open Authoring is turned off, because a contributor without write access is expected here rather
+ * than turned away. The steps are the same on every service, which supplies the requests that
+ * differ.
+ * @template {{ canWrite: boolean }} A
+ * @param {object} args Arguments.
+ * @param {string} args.repoPath Configured repository path, e.g. `owner/repo`.
+ * @param {() => Promise<A>} args.fetchAccess Function to read the signed-in user’s access to the
+ * configured repository.
+ * @param {() => Promise<void>} [args.prepare] Function to run once the user turns out to be a
+ * contributor, before the fork is looked up.
+ * @param {() => Promise<RepositoryPath | undefined>} args.fetchFork Function to look up the user’s
+ * existing fork.
+ * @param {(fork: RepositoryPath) => Promise<void>} [args.prepareFork] Function to bring an existing
+ * fork up to date, or check it’s usable, before it’s taken.
+ * @param {(access: A) => boolean | Promise<boolean>} args.fetchForkingAllowed Function to tell
+ * whether the configured repository can be forked, given the access read earlier.
+ * @param {() => Promise<RepositoryPath>} args.createFork Function to create a fork.
+ * @throws {Error} When the fork could not be set up.
+ * @see https://sveltiacms.app/en/docs/workflows/open
+ */
+export const setUpForkFor = async (args) => {
+  const { repoPath, fetchAccess, prepare, fetchFork, prepareFork, fetchForkingAllowed } = args;
+  const access = await fetchAccess();
+
+  // A maintainer keeps working on the configured repository, as if Open Authoring was off
+  if (access.canWrite) {
+    return;
+  }
+
+  await prepare?.();
+
+  const existingFork = await fetchFork();
+
+  if (existingFork) {
+    await prepareFork?.(existingFork);
+    forkedRepository.current = existingFork;
+
+    return;
+  }
+
+  // Forking can be turned off on the repository or the instance, and the user has to agree to it
+  await ensureForkPermission({ repoPath, allowForking: await fetchForkingAllowed(access) });
+
+  forkedRepository.current = await args.createFork();
+};
+
+/**
  * Make sure the signed-in user can publish an unpublished entry, which an Open Authoring
  * contributor can’t: merging their own pull request is what they lack the access for in the first
  * place.
@@ -131,6 +254,23 @@ export const checkPublishAllowed = () => {
     throw createLocalizedError(
       'Cannot publish as an Open Authoring contributor',
       'open_authoring.publish_unsupported',
+    );
+  }
+};
+
+/**
+ * Make sure the signed-in user can make the given commit. An Open Authoring contributor can’t write
+ * to the configured repository at all, so a change that doesn’t go through Editorial Workflow has
+ * nowhere to land. This fails with an explanation rather than letting the API reject the commit
+ * with a bare permission error.
+ * @param {CommitOptions} options Commit options.
+ * @throws {Error} When the user is a contributor and the commit isn’t on a workflow branch.
+ */
+export const checkDirectCommitAllowed = ({ branch }) => {
+  if (openAuthoring.current && !branch) {
+    throw createLocalizedError(
+      'Cannot commit directly to the configured repository',
+      'open_authoring.direct_commit_unsupported',
     );
   }
 };
@@ -186,6 +326,124 @@ export const checkMergedBranch = async ({ branch, mergedSHA, fetchBranchHead, de
   }
 
   throw createLocalizedError(ENTRY_ALREADY_PUBLISHED, 'open_authoring.entry_already_published');
+};
+
+/**
+ * Go through the Editorial Workflow branches in the contributor’s fork, deleting the ones left
+ * over from a merged request and parsing the rest. A merged request whose head the branch still
+ * points at has nothing left on it. Tidying it up keeps the fork from collecting a branch per
+ * published entry, and saves comparing each one with the configured branch on every load just to
+ * find out it holds nothing. A branch the contributor has committed to since the merge has a
+ * different head, so it survives and shows up as a fresh draft.
+ * @template T
+ * @param {T[]} items Branches as read by the backend.
+ * @param {(item: T, index: number) => { leftover: string } | { pending: WorkflowPullRequest }}
+ * classify Function to tell a leftover branch, by its name, from one with an entry on it, parsed.
+ * @param {(branch: string) => Promise<void>} deleteBranch Function to delete a branch.
+ * @returns {Promise<WorkflowPullRequest[]>} Parsed branches that weren’t left over.
+ */
+export const pruneForkBranches = async (items, classify, deleteBranch) => {
+  /** @type {string[]} */
+  const leftover = [];
+  /** @type {WorkflowPullRequest[]} */
+  const pending = [];
+
+  items.forEach((item, index) => {
+    const result = classify(item, index);
+
+    if ('leftover' in result) {
+      leftover.push(result.leftover);
+    } else {
+      pending.push(result.pending);
+    }
+  });
+
+  // Deleting a branch is best effort: `deleteBranch` logs a failure rather than raising it, and a
+  // branch that outlives this is picked up on the next load
+  await runConcurrently(leftover, deleteBranch);
+
+  return pending;
+};
+
+/**
+ * Move an Open Authoring entry between the drafting and review stages. A contributor can’t label a
+ * request on a repository they don’t have access to, so the stage is recorded in the request
+ * itself: a draft is a branch with no request, or one that’s still a draft, while an entry in
+ * review has a request waiting for a maintainer. The steps are the same on every service, which
+ * supplies the requests that differ.
+ * @param {object} args Arguments.
+ * @param {WorkflowPullRequest} args.pullRequest Pull request.
+ * @param {WorkflowStatus} args.status New status.
+ * @param {'number' | 'nodeId'} args.requestKey Property of the pull request that identifies the
+ * request on the service, `undefined` until one is opened.
+ * @param {(args: { branch: string, title: string, status: WorkflowStatus }) =>
+ * Promise<WorkflowPullRequest>} args.createRequest Function to open the request.
+ * @param {(pullRequest: WorkflowPullRequest) => Promise<ForkRequestState | undefined>}
+ * args.fetchRequest Function to read the current state of the request. `undefined` means the
+ * request couldn’t be found, in which case the entry carries on with what it knows.
+ * @param {(args: { pullRequest: WorkflowPullRequest, status: WorkflowStatus, state?: string,
+ * draft?: boolean }) => Promise<void>} args.applyStatus Function to bring the request in line with
+ * the new status, given the state it’s in.
+ * @param {(branch: string) => Promise<string | undefined>} args.fetchBranchHead Function to read
+ * the commit a branch points at: see {@link checkMergedBranch}.
+ * @param {(branch: string) => Promise<void>} args.deleteBranch Function to delete a branch.
+ * @returns {Promise<WorkflowPullRequest>} Updated pull request, or a new one if the known one is no
+ * longer the entry’s.
+ * @throws {Error} When the entry is being marked ready to publish, which a contributor can’t do, or
+ * has been published since the board was loaded: see {@link checkMergedBranch}.
+ * @see https://github.com/sveltia/sveltia-cms/security/advisories/GHSA-8h97-74c4-g246
+ */
+export const updateForkStatusWith = async (args) => {
+  const { pullRequest, status, requestKey, createRequest, fetchRequest, applyStatus } = args;
+  const { fetchBranchHead, deleteBranch } = args;
+
+  checkStatusAllowed(status);
+
+  const { branch, title } = pullRequest;
+
+  // Nothing has been opened yet, so moving out of the drafting stage is what creates the request.
+  // Moving within the drafting stage leaves the branch as it is
+  if (pullRequest[requestKey] === undefined) {
+    return status === 'draft'
+      ? { ...pullRequest, status, updatedDate: new Date() }
+      : createRequest({ branch, title, status });
+  }
+
+  // The request may have been closed, reopened or merged outside the CMS, so read the current state
+  // rather than inferring it from the status the entry was last seen with
+  const request = await fetchRequest(pullRequest);
+
+  if (request) {
+    const { merged, isEntryRequest, getMergedSHA } = request;
+
+    // It may have been merged into the configured branch since the board was loaded. With nothing
+    // committed to the branch since, the entry is published and has nothing left to review
+    if (merged && isEntryRequest) {
+      await checkMergedBranch({
+        branch,
+        mergedSHA: await getMergedSHA(),
+        fetchBranchHead,
+        deleteBranch,
+      });
+    }
+
+    // Otherwise a merged request, or one aimed at another branch since the board was loaded, is no
+    // longer the entry’s review, which is how the next load would see it too: reopening it or
+    // taking it out of draft would put a request for that other branch in front of the maintainers,
+    // or claim a merged one is in review. So the entry carries on without it, as a fresh draft. A
+    // service allows one open request per head and base, so one aimed elsewhere doesn’t stand in
+    // the way of a new one to the configured branch
+    if (merged || !isEntryRequest) {
+      return updateForkStatusWith({
+        ...args,
+        pullRequest: { ...pullRequest, number: undefined, nodeId: undefined, url: undefined },
+      });
+    }
+  }
+
+  await applyStatus({ pullRequest, status, state: request?.state, draft: request?.draft });
+
+  return { ...pullRequest, status, updatedDate: new Date() };
 };
 
 /**

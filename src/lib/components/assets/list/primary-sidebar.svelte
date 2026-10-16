@@ -6,7 +6,7 @@
 
   import QuickSearchBar from '$lib/components/global/toolbar/items/quick-search-bar.svelte';
   import { appNumberFormatter } from '$lib/services/app/i18n';
-  import { encodeRoutePath, goto } from '$lib/services/app/navigation';
+  import { goto } from '$lib/services/app/navigation';
   import { getAssetsByFolder } from '$lib/services/assets';
   import {
     enabledCloudServices,
@@ -18,6 +18,7 @@
   import {
     allAssetFolders,
     canCreateAsset,
+    getAssetFolderKey,
     selectedAssetFolder,
   } from '$lib/services/assets/folders';
   import { allAssets } from '$lib/services/assets/state';
@@ -29,6 +30,7 @@
     getCollectionFileIndex,
   } from '$lib/services/contents/collection/files';
   import { env } from '$lib/services/user/env.svelte';
+  import { encodePathSegments } from '$lib/services/utils/url';
 
   /**
    * @import { AssetFolderInfo } from '$lib/types/private';
@@ -101,7 +103,7 @@
   <Listbox ariaLabel={_('asset_folder_list')} aria-controls="assets-container">
     {#if folders.length}
       <OptionGroup label={_('asset_location.repository')}>
-        {#each folders as folder, index ([folder.collectionName, folder.fileName, folder.internalPath].join(':'))}
+        {#each folders as folder, index (getAssetFolderKey(folder))}
           {#await sleep() then}
             {@const { collectionName, fileName, internalPath } = folder}
             {@const collection = collectionName ? getCollection(collectionName) : undefined}
@@ -115,7 +117,7 @@
               selected={env.isSmallScreen || isSearchPage ? false : selected}
               label={getFolderLabel(folder)}
               onSelect={() => {
-                goto(encodeRoutePath(`/assets/${internalPath ?? '-/all'}`), {
+                goto(encodePathSegments(`/assets/${internalPath ?? '-/all'}`), {
                   transitionType: 'forwards',
                   // An internal path can be shared by multiple collections, files and fields. Pass
                   // the folder info as history state so we can distinguish these different asset
@@ -127,7 +129,7 @@
                 // Selecting the folder already selected doesn’t fire `onSelect` again, but a click
                 // on it while one of its subfolders is browsed should still lead back to its root
                 if (selected && selectedSubfolderPath.current) {
-                  goto(encodeRoutePath(`/assets/${internalPath}`), {
+                  goto(encodePathSegments(`/assets/${internalPath}`), {
                     transitionType: 'backwards',
                     state: { folder },
                   });

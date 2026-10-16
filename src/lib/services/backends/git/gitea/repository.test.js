@@ -4,6 +4,7 @@ import { lockedBranch, mergeLockedBranch } from '$lib/services/backends/branch-a
 import { REPOSITORY_INFO_PLACEHOLDER } from '$lib/services/backends/git/shared/repository';
 
 import {
+  _resetRepositoryInfoCache,
   checkBranchAccess,
   checkRepositoryAccess,
   fetchBranch,
@@ -11,7 +12,6 @@ import {
   getBaseURLs,
   getRepositoryInfo,
   repository,
-  resetRepositoryInfoCache,
 } from './repository.js';
 
 // Mock dependencies with vi.hoisted to ensure proper hoisting
@@ -22,9 +22,7 @@ const { mockUser } = vi.hoisted(() => ({
   mockUser: { account: /** @type {{ id: number } | undefined} */ ({ id: 1 }) },
 }));
 
-vi.mock('@sveltia/i18n', () => ({
-  _: vi.fn((key) => key),
-}));
+vi.mock('@sveltia/i18n', async () => (await import('$lib/test/i18n')).createI18nMock());
 
 vi.mock('$lib/services/backends/git/shared/api', () => ({
   fetchAPI: fetchAPIMock,
@@ -43,7 +41,7 @@ describe('Gitea Repository Service', () => {
     vi.clearAllMocks();
 
     // Reset the repository info cache
-    resetRepositoryInfoCache();
+    _resetRepositoryInfoCache();
     mockUser.account = { id: 1 };
 
     // Mock _ to return a translation function (following pattern from other tests)
@@ -152,18 +150,29 @@ describe('Gitea Repository Service', () => {
       await expect(checkRepositoryAccess()).rejects.toThrow('Not a collaborator of the repository');
     });
 
-    test('should handle API fetch error', async () => {
-      fetchAPIMock.mockRejectedValue(new Error('Network error'));
+    test('should report a missing repository on a 404', async () => {
+      fetchAPIMock.mockRejectedValue(new Error('Not found', { cause: { status: 404 } }));
 
       await expect(checkRepositoryAccess()).rejects.toThrow('Failed to check repository access');
     });
 
-    test('should re-throw collaborator errors', async () => {
-      const collaboratorError = new Error('Not a collaborator of the repository');
-
-      fetchAPIMock.mockRejectedValue(collaboratorError);
+    test.each([401, 403])('should report no access on a %i', async (status) => {
+      fetchAPIMock.mockRejectedValue(new Error('Denied', { cause: { status } }));
 
       await expect(checkRepositoryAccess()).rejects.toThrow('Not a collaborator of the repository');
+    });
+
+    test.each([
+      ['a server error', new Error('Server error', { cause: { status: 500 } })],
+      ['a rate limit', new Error('Too many requests', { cause: { status: 429 } })],
+      ['a network error', new Error('Failed to send the request', { cause: new TypeError() })],
+      ['a non-error rejection', undefined],
+    ])('should report a failed check rather than a missing repository on %s', async (_, error) => {
+      fetchAPIMock.mockRejectedValue(error);
+
+      await expect(checkRepositoryAccess()).rejects.toThrow(
+        'Failed to check the repository permission.',
+      );
     });
   });
 
@@ -487,7 +496,7 @@ describe('Gitea Repository Service', () => {
 
     test('should use cached data after successful fetch', async () => {
       // Reset cache first
-      resetRepositoryInfoCache();
+      _resetRepositoryInfoCache();
 
       const mockRepoInfo = {
         id: 456,

@@ -23,6 +23,9 @@
    * any kind if `undefined`.
    * @property {boolean} [selectFolder] Whether a folder is being selected instead of files, which
    * takes no dropped files and lists subfolders only.
+   * @property {boolean} [uploadDisabled] Whether nothing can be uploaded to the directory being
+   * browsed, such as a read-only folder or one the CMS itself is served from, which then takes no
+   * dropped files.
    * @property {string | undefined} [accept] Accepted file type specifiers.
    * @property {Asset[]} [assets] Asset list.
    * @property {string} [searchTerms] Search terms for filtering assets.
@@ -49,6 +52,7 @@
     multiple = false,
     kind = undefined,
     selectFolder = false,
+    uploadDisabled = false,
     accept = undefined,
     assets = [],
     searchTerms = '',
@@ -77,7 +81,19 @@
   });
 </script>
 
-<DropZone bind:this={dropZone} disabled={selectFolder} {multiple} {accept} {onDrop}>
+<!--
+  Dropped files are not filtered by `accept` here, just like the files chosen with the Upload
+  button: the field checks the format once the inserted files have been processed, which is the
+  only point a transformation could have changed it.
+-->
+<DropZone
+  bind:this={dropZone}
+  disabled={selectFolder || uploadDisabled}
+  {multiple}
+  {accept}
+  filterDroppedFiles={false}
+  {onDrop}
+>
   <div role="none" class="wrapper">
     <PickerBreadcrumb rootLabel={folderLabel} path={subfolderPath} {onNavigate} />
     <div role="none" class="panel">

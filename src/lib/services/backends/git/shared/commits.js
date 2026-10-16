@@ -61,28 +61,43 @@ const fillTemplate = (template, values) =>
   );
 
 /**
- * Create a Git commit message.
+ * Get the backend options of the current configuration.
+ * @returns {GitBackend} Options, which are empty if there is no configuration.
+ */
+const getBackendOptions = () => /** @type {GitBackend} */ (cmsConfig.current?.backend ?? {});
+
+/**
+ * Get the values of the author placeholders in a commit message template.
+ * @returns {Record<string, string>} Values keyed by placeholder name.
+ */
+const getAuthorValues = () => {
+  const { email = '', login = '', name = '' } = /** @type {User} */ (user.account);
+
+  return { 'author-email': email, 'author-login': login, 'author-name': name };
+};
+
+/**
+ * Create the part of a Git commit message that comes from the `commit_messages` template: the
+ * template filled in, followed by the number of the other files changed, if any. It’s what the
+ * user is shown when asked for a commit message.
  * @param {FileChange[]} changes File changes to be saved.
  * @param {CommitOptions} options Commit options.
+ * @param {GitBackend} [backendOptions] Backend options. Default: those of the current
+ * configuration.
  * @returns {string} Formatted message.
  */
-export const createCommitMessage = (
+export const createBaseCommitMessage = (
   changes,
-  { commitType = 'update', collection, skipCI = undefined },
+  { commitType = 'update', collection },
+  backendOptions = getBackendOptions(),
 ) => {
-  const {
-    commit_messages: customCommitMessages = {},
-    skip_ci: skipCIEnabled,
-    automatic_deployments: autoDeploy,
-  } = /** @type {GitBackend} */ (cmsConfig.current?.backend ?? {});
-
-  const { email = '', login = '', name = '' } = /** @type {User} */ (user.account);
+  const { commit_messages: customCommitMessages = {} } = backendOptions;
   const [firstSlug = ''] = changes.map((item) => item.slug).filter(Boolean);
   const [firstPath, ...remainingPaths] = changes.map(({ path }) => path);
   const collectionLabel = collection ? getCollectionLabel(collection, { useSingular: true }) : '';
   // @ts-ignore
   let message = customCommitMessages[commitType] || DEFAULT_COMMIT_MESSAGES[commitType] || '';
-  const authorValues = { 'author-email': email, 'author-login': login, 'author-name': name };
+  const authorValues = getAuthorValues();
 
   if (['create', 'update', 'delete'].includes(commitType)) {
     message = fillTemplate(message, {
@@ -101,12 +116,68 @@ export const createCommitMessage = (
     message += ` +${remainingPaths.length}`;
   }
 
+  return message;
+};
+
+/**
+ * Combine the message made from the template with the text the user has entered when asked for a
+ * commit message, as the `prompt_commit_messages` backend option says.
+ * @param {string} message Message made from the template.
+ * @param {string | undefined} userMessage Text the user has entered.
+ * @param {GitBackend['prompt_commit_messages']} mode Value of the `prompt_commit_messages` option.
+ * @returns {string} Combined message.
+ */
+const applyUserMessage = (message, userMessage, mode) => {
+  const text = userMessage?.trim();
+
+  if (!text) {
+    return message;
+  }
+
+  if (mode === true) {
+    return text;
+  }
+
+  if (mode === 'prefix') {
+    return `${text} ${message}`;
+  }
+
+  if (mode === 'suffix') {
+    return `${message} ${text}`;
+  }
+
+  return message;
+};
+
+/**
+ * Create a Git commit message.
+ * @param {FileChange[]} changes File changes to be saved.
+ * @param {CommitOptions} options Commit options.
+ * @returns {string} Formatted message.
+ */
+export const createCommitMessage = (changes, options) => {
+  const { commitType = 'update', skipCI = undefined, userMessage } = options;
+  const backendOptions = getBackendOptions();
+
+  const {
+    commit_messages: customCommitMessages = {},
+    skip_ci: skipCIEnabled,
+    automatic_deployments: autoDeploy,
+    prompt_commit_messages: promptMode,
+  } = backendOptions;
+
+  let message = applyUserMessage(
+    createBaseCommitMessage(changes, options, backendOptions),
+    userMessage,
+    promptMode,
+  );
+
   // With Open Authoring the commit is made by an outside contributor, so the message can be wrapped
   // to record who wrote it. The default template is the message on its own, which changes nothing
   if (openAuthoring.current) {
     message = fillTemplate(
       customCommitMessages.openAuthoring || DEFAULT_COMMIT_MESSAGES.openAuthoring,
-      { message, ...authorValues },
+      { message, ...getAuthorValues() },
     );
   }
 
@@ -145,6 +216,17 @@ export const dedupeFileCommits = (commits) => {
 
   return [...commitMap.values()].sort((a, b) => b.date.getTime() - a.date.getTime());
 };
+
+/**
+ * Create the error to throw when the last commit on the configured branch can’t be retrieved,
+ * because the repository or the branch can’t be found.
+ * @param {'repository_not_found' | 'branch_not_found'} key I18n key of the message to show.
+ * @param {{ repo: string, branch?: string }} values Repository name, and the branch name for a
+ * missing branch, to show in the message.
+ * @returns {Error} Error.
+ */
+export const createLastCommitError = (key, values) =>
+  createLocalizedError('Failed to retrieve the last commit hash.', key, values);
 
 /**
  * Throw an error telling the user that the branch has moved, if its head is no longer the one a

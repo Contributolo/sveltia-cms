@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { getWorkflowRepository } from '$lib/services/backends/git/gitea/fork';
 import { repository } from '$lib/services/backends/git/gitea/repository';
-import { repositoryHead } from '$lib/services/backends/git/shared/fetch';
+import { repositoryHead } from '$lib/services/backends/git/shared/head';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
 
 import { commitChanges, fetchFileCommits, fetchLastCommit } from './commits.js';
@@ -17,9 +17,7 @@ const fetchAPIMock = vi.hoisted(() => vi.fn());
 const encodeBase64Mock = vi.hoisted(() => vi.fn());
 const createCommitMessageMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@sveltia/i18n', () => ({
-  _: vi.fn((key) => key),
-}));
+vi.mock('@sveltia/i18n', async () => (await import('$lib/test/i18n')).createI18nMock());
 
 vi.mock('$lib/services/backends/git/shared/api', () => ({
   fetchAPI: fetchAPIMock,
@@ -43,7 +41,7 @@ vi.mock('$lib/services/backends/git/gitea/repository', async (importOriginal) =>
   return actual;
 });
 
-vi.mock('$lib/services/backends/git/shared/fetch', () => ({
+vi.mock('$lib/services/backends/git/shared/head', () => ({
   repositoryHead: { current: '' },
 }));
 
@@ -457,6 +455,22 @@ describe('Gitea Commits Service', () => {
         },
       );
 
+      test('reports the parent the commit has been made on top of', async () => {
+        fetchAPIMock.mockResolvedValue({
+          commit: {
+            sha: 'c1',
+            created: '2023-01-01T00:00:00Z',
+            parents: [{ sha: 'colleague-sha', url: 'https://example.com/colleague-sha' }],
+          },
+          files: [{ path: 'a.md', sha: 'new-blob-sha' }],
+        });
+
+        const result = await commitChanges(changes, options);
+
+        // Someone else’s commit to another file doesn’t stop this one, which lands on top of it
+        expect(result.parentSha).toBe('colleague-sha');
+      });
+
       test('doesn’t look up a SHA for a new file', async () => {
         fetchAPIMock.mockResolvedValueOnce({
           commit: { sha: 'c1', created: '2023-01-01T00:00:00Z' },
@@ -825,6 +839,7 @@ describe('Gitea Commits Service', () => {
         {
           sha: 'abc123',
           commit: {
+            message: 'Update Post “hello”\r\n\r\nWith a body\r\n',
             author: { name: 'Alice', email: 'alice@example.com', date: '2024-06-01T12:00:00Z' },
           },
           author: { avatar_url: 'https://example.com/alice.png', login: 'alice' },
@@ -843,6 +858,7 @@ describe('Gitea Commits Service', () => {
       expect(result).toHaveLength(2);
       expect(result[0]).toEqual({
         sha: 'abc123',
+        message: 'Update Post “hello”',
         authorName: 'Alice',
         authorEmail: 'alice@example.com',
         authorAvatarURL: 'https://example.com/alice.png',
@@ -851,6 +867,7 @@ describe('Gitea Commits Service', () => {
       });
       expect(result[1]).toEqual({
         sha: 'def456',
+        message: '',
         authorName: 'Bob',
         authorEmail: 'bob@example.com',
         authorAvatarURL: 'https://example.com/bob.png',
@@ -926,6 +943,7 @@ describe('Gitea Commits Service', () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
         sha: 'no-author',
+        message: '',
         authorName: '',
         authorEmail: undefined,
         authorAvatarURL: undefined,
