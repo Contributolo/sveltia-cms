@@ -178,6 +178,8 @@ sign_in_error:
 backend_unsupported_version: Das {$name}-Backend erfordert {$name} {$version} oder neuer.
 # {$repo} is the repository identifier, typically in owner/repo format
 repository_no_access: Sie haben keinen Zugriff auf das Repository „{$repo}“.
+# {$repo} is the repository identifier, typically in owner/repo format
+repository_no_write_access: Sie haben keinen Schreibzugriff auf das Repository „{$repo}“.
 repository_not_found: Das Repository „{$repo}“ existiert nicht.
 repository_empty: Das Repository „{$repo}“ hat keine Branches.
 # {$repo} is the repository identifier, and {$branch} is the configured branch name
@@ -238,6 +240,14 @@ signed_in_as_x: Angemeldet als {$name}
 working_with_local_repo: Arbeitet mit lokalem Repository
 working_with_test_repo: Arbeitet mit Test-Repository
 working_in_demo_mode: Demo-Modus
+
+# Demo welcome dialog: shown once after signing in to a demo site, where the test repository is
+# seeded with sample content and the changes are only stored in the browser
+demo_welcome:
+  title: Willkommen in der Demo von Sveltia CMS
+  description: Erkunden Sie das CMS und bearbeiten Sie die Beispielinhalte. Ihre Änderungen werden nur in diesem Browser gespeichert. Nichts wird online veröffentlicht, und niemand sonst kann sie sehen.
+  reset_hint: Um mit den ursprünglichen Inhalten neu zu beginnen, wählen Sie „Alle Daten löschen“ unter Einstellungen > Datenverwaltung.
+  button_label: Loslegen
 
 # Account menu: action items for sign-out and app installation
 sign_out: Abmelden
@@ -1539,6 +1549,13 @@ entry_sidebar:
     title: Rückverweise
     no_entries: Kein Eintrag verweist auf diesen Eintrag.
 
+# Status shown next to the Save button while an entry with many new files is being saved
+# {$done} and {$total} are the number of files prepared and to prepare, or the number of commits
+# made and the estimated number of commits in all
+save_progress:
+  preparing: 'Dateien werden vorbereitet: {$done} von {$total}'
+  committing: 'Wird auf GitHub gespeichert: {$done} von etwa {$total} Commits'
+
 # Entry save error dialog
 saving_entry:
   error:
@@ -1651,6 +1668,15 @@ map_lat_lng: Karte mit Breitengrad {$latitude}, Längengrad {$longitude}
 remove_this_item: Dieses Element entfernen
 move_up: Nach oben
 move_down: Nach unten
+# Menu of a list item or file with the extra reorder actions, shown in a list of 3 or more items
+reorder_options: Optionen zum Anordnen
+move_to_top: Ganz nach oben
+move_to_bottom: Ganz nach unten
+# Opens a dialog asking for the position to move a list item to
+move_to: Verschieben an…
+# Dialog asking for the new position of an item. {$count} is the number of items in the list
+move_to_description: Geben Sie eine Position von 1 bis {$count} ein.
+move_to_position: Position
 # aria-label for the drag handle that reorders a list item. The item can be dragged with a pointer,
 # or moved with the arrow keys while the handle has focus
 reorder_item: Element neu anordnen
@@ -2167,6 +2193,10 @@ config:
     code_field_invalid_default_object: Die Option `default` des Code-Feldes muss eine Zeichenkette sein, weil die Option `output_code_only` auf `true` steht.
     # {$key} is a property name of the default object, {$code} and {$lang} are the configured property names; Don’t localize `default` and `keys`
     code_field_invalid_default_key: Die Option `default` des Code-Feldes hat die Eigenschaft `{$key}`, die Option `keys` erlaubt aber nur `{$code}` und `{$lang}`.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_invalid_expression: Die Option `value` des Berechnungs-Feldes muss ein gültiger arithmetischer Ausdruck wie `\{\{fields.price\}\} * \{\{fields.quantity\}\}` sein, weil die Option `value_type` auf `{$valueType}` steht.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_uuid_in_expression: Die Option `value` des Berechnungs-Feldes kann kein UUID-Tag wie `\{\{uuid\}\}` verwenden, weil die Option `value_type` auf `{$valueType}` steht und den Wert damit zu einem arithmetischen Ausdruck macht.
     # {$value} is the default value and {$valueType} is the configured value type; Don’t localize `default` and `value_type`
     number_field_default_not_integer: Die Option `default` des Zahlen-Feldes ist auf `{$value}` gesetzt, muss aber eine Ganzzahl sein, weil die Option `value_type` auf `{$valueType}` steht.
     number_field_default_not_number: Die Option `default` des Zahlen-Feldes ist auf `{$value}` gesetzt, muss aber eine Zahl sein, weil die Option `value_type` auf `{$valueType}` steht.
@@ -2186,6 +2216,9 @@ config:
     relation_field_invalid_display_field: Das referenzierte Anzeigefeld `{$field}` ist ungültig oder nicht definiert.
     relation_field_invalid_search_field: Das referenzierte Suchfeld `{$field}` ist ungültig oder nicht definiert.
     relation_field_invalid_filter_field: Das referenzierte Filterfeld `{$field}` ist ungültig oder nicht definiert.
+    relation_field_invalid_sort_field: Das referenzierte Sortierfeld `{$field}` ist ungültig oder nicht definiert.
+    # Don’t localize `sort_by` and `file`
+    relation_field_sort_by_file_ignored: Die Option `sort_by` gilt nicht für eine Relation zu einer Datei, deren Optionen der Reihenfolge der Listenelemente folgen. Sie wird ignoriert.
     unexpected: Unerwarteter Fehler
 
     # Schema validation errors, reported when the configuration doesn’t match the published JSON
@@ -2226,6 +2259,12 @@ config:
     conflicting_timezone_options: Es sind sowohl `picker_utc` als auch neuere Zeitzonen-Optionen (`input_timezone` oder `output_utc`) gesetzt. Die neuen Optionen haben Vorrang. Entfernen Sie `picker_utc` am besten aus Ihrer Konfiguration.
     # Don’t localize `localize_format` and `format`
     localize_format_without_format: Die Option `localize_format` hat keine Wirkung, weil das Feld keine Option `format` hat und sein Wert im Format ISO 8601 gespeichert wird.
+    # {$name} is a template tag like `fields.lines.*.price`; Don’t localize `value`, `*` and `sum()`
+    compute_field_wildcard_without_item: Die Option `value` des Berechnungs-Feldes verweist auf `{$name}`, das Feld liegt aber in keinem Element der Liste, für die `*` steht, daher ergibt der Verweis nichts. Nur eine Aggregatfunktion wie `sum()` kann alle Elemente einer Liste verwenden.
+    # {$name} is a template tag like `fields.lines.*.amount`; Don’t localize `value`
+    compute_field_self_reference: Die Option `value` des Berechnungs-Feldes verweist als `{$name}` auf das Feld selbst, daher ändert sich sein Wert bei jeder Berechnung und steht nie fest.
+    # {$name} is a template tag like `fields.total`; Don’t localize `value`
+    compute_field_reference_cycle: Die Option `value` des Berechnungs-Feldes verweist auf `{$name}`, ein anderes Berechnungs-Feld, das direkt oder über andere Felder auf dieses Feld zurückverweist, daher stehen ihre Werte nie fest.
     # Don’t localize `localize_format`, `true` and `de`
     localize_format_without_i18n: Die Option `localize_format` ist `true`, für die Sammlung ist i18n aber nicht aktiviert, daher wird der Wert auf Englisch geschrieben. Setzen Sie die Option stattdessen auf einen Sprachcode wie `de`.
     # {$locale} is the locale code from the configuration; Don’t localize `localize_format`
