@@ -178,6 +178,8 @@ sign_in_error:
 backend_unsupported_version: '{$name} バックエンドには {$name} {$version} 以降のバージョンが必要です。'
 # {$repo} is the repository identifier, typically in owner/repo format
 repository_no_access: あなたには「{$repo}」リポジトリへのアクセス権がありません。
+# {$repo} is the repository identifier, typically in owner/repo format
+repository_no_write_access: あなたには「{$repo}」リポジトリへの書き込み権限がありません。
 repository_not_found: 「{$repo}」リポジトリは存在しません。
 repository_empty: 「{$repo}」リポジトリにはブランチがありません。
 # {$repo} is the repository identifier, and {$branch} is the configured branch name
@@ -235,6 +237,14 @@ signed_in_as_x: '{$name} としてログイン中'
 working_with_local_repo: ローカルリポジトリで作業中
 working_with_test_repo: テストリポジトリで作業中
 working_in_demo_mode: デモモード
+
+# Demo welcome dialog: shown once after signing in to a demo site, where the test repository is
+# seeded with sample content and the changes are only stored in the browser
+demo_welcome:
+  title: Sveltia CMS デモへようこそ
+  description: CMS を自由に操作して、サンプルコンテンツを編集してみてください。変更内容はこのブラウザーにのみ保存されます。オンラインで公開されることはなく、他のユーザーに見られることもありません。
+  reset_hint: 元のコンテンツからやり直すには、設定 > データ管理 で「すべてのデータを消去」を選択してください。
+  button_label: はじめる
 
 # Account menu: action items for sign-out and app installation
 sign_out: ログアウト
@@ -1453,6 +1463,13 @@ entry_sidebar:
     title: バックリンク
     no_entries: このエントリーを参照しているエントリーはありません。
 
+# Status shown next to the Save button while an entry with many new files is being saved
+# {$done} and {$total} are the number of files prepared and to prepare, or the number of commits
+# made and the estimated number of commits in all
+save_progress:
+  preparing: 'ファイルを準備中: {$done} / {$total}'
+  committing: 'GitHub に保存中: {$done} / 約 {$total} コミット'
+
 # Entry save error dialog
 saving_entry:
   error:
@@ -1556,6 +1573,15 @@ map_lat_lng: 緯度 {$latitude}、経度 {$longitude} の地図
 remove_this_item: このアイテムを削除
 move_up: 上へ移動
 move_down: 下へ移動
+# Menu of a list item or file with the extra reorder actions, shown in a list of 3 or more items
+reorder_options: 並べ替えオプション
+move_to_top: 先頭へ移動
+move_to_bottom: 末尾へ移動
+# Opens a dialog asking for the position to move a list item to
+move_to: 指定した位置へ移動…
+# Dialog asking for the new position of an item. {$count} is the number of items in the list
+move_to_description: 1 から {$count} までの位置を入力してください。
+move_to_position: 位置
 # aria-label for the drag handle that reorders a list item. The item can be dragged with a pointer,
 # or moved with the arrow keys while the handle has focus
 reorder_item: アイテムを並び替え
@@ -2062,6 +2088,10 @@ config:
     code_field_invalid_default_object: '`output_code_only` オプションが `true` のため、Code フィールドの `default` オプションは文字列でなければなりません。'
     # {$key} is a property name of the default object, {$code} and {$lang} are the configured property names; Don’t localize `default` and `keys`
     code_field_invalid_default_key: Code フィールドの `default` オプションに `{$key}` プロパティが含まれていますが、`keys` オプションで許可されているのは `{$code}` と `{$lang}` のみです。
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_invalid_expression: '`value_type` オプションが `{$valueType}` のため、Compute フィールドの `value` オプションは `\{\{fields.price\}\} * \{\{fields.quantity\}\}` のような有効な計算式でなければなりません。'
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_uuid_in_expression: '`value_type` オプションが `{$valueType}` で `value` オプションが計算式として扱われるため、Compute フィールドの `value` オプションでは `\{\{uuid\}\}` などの UUID タグを使用できません。'
     # {$value} is the default value and {$valueType} is the configured value type; Don’t localize `default` and `value_type`
     number_field_default_not_integer: Number フィールドの `default` オプションに `{$value}` が指定されていますが、`value_type` オプションが `{$valueType}` のため、整数でなければなりません。
     number_field_default_not_number: Number フィールドの `default` オプションに `{$value}` が指定されていますが、`value_type` オプションが `{$valueType}` のため、数値でなければなりません。
@@ -2081,6 +2111,9 @@ config:
     relation_field_invalid_display_field: 参照されている表示フィールド `{$field}` は無効であるか定義されていません。
     relation_field_invalid_search_field: 参照されている検索フィールド `{$field}` は無効であるか定義されていません。
     relation_field_invalid_filter_field: 参照されているフィルターフィールド `{$field}` は無効であるか定義されていません。
+    relation_field_invalid_sort_field: 参照されている並べ替えフィールド `{$field}` は無効であるか定義されていません。
+    # Don’t localize `sort_by` and `file`
+    relation_field_sort_by_file_ignored: '`sort_by` オプションはファイルへの参照には適用されません。オプションはリスト項目の順序に従います。このオプションは無視されます。'
     unexpected: 予期せぬ問題
 
     # Schema validation errors, reported when the configuration doesn’t match the published JSON
@@ -2121,6 +2154,12 @@ config:
     conflicting_timezone_options: '`picker_utc` と新しいタイムゾーンオプション (`input_timezone` または `output_utc`) の両方が設定されています。新しいオプションが優先されます。設定から `picker_utc` を削除することを検討してください。'
     # Don’t localize `localize_format` and `format`
     localize_format_without_format: 'フィールドに `format` オプションがなく、値が ISO 8601 形式で保存されるため、`localize_format` オプションは効果がありません。'
+    # {$name} is a template tag like `fields.lines.*.price`; Don’t localize `value`, `*` and `sum()`
+    compute_field_wildcard_without_item: Compute フィールドの `value` オプションで `{$name}` が参照されていますが、このフィールドは `*` が表すリストの項目内にないため、空の値になります。リストのすべての項目を使えるのは `sum()` などの集計関数だけです。
+    # {$name} is a template tag like `fields.lines.*.amount`; Don’t localize `value`
+    compute_field_self_reference: Compute フィールドの `value` オプションで `{$name}` としてフィールド自身が参照されているため、計算のたびに値が変わり、確定しません。
+    # {$name} is a template tag like `fields.total`; Don’t localize `value`
+    compute_field_reference_cycle: Compute フィールドの `value` オプションで参照されている `{$name}` は、直接または他のフィールドを介してこのフィールドを参照し返す Compute フィールドであるため、値が確定しません。
     # Don’t localize `localize_format`, `true` and `de`
     localize_format_without_i18n: '`localize_format` オプションが `true` に設定されていますが、コレクションで i18n が有効になっていないため、値は英語で書き込まれます。代わりに `de` のようなロケールコードを指定してください。'
     # {$locale} is the locale code from the configuration; Don’t localize `localize_format`

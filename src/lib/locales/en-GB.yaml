@@ -178,6 +178,8 @@ sign_in_error:
 backend_unsupported_version: The {$name} backend requires {$name} {$version} or later.
 # {$repo} is the repository identifier, typically in owner/repo format
 repository_no_access: You don’t have access to the “{$repo}” repository.
+# {$repo} is the repository identifier, typically in owner/repo format
+repository_no_write_access: You don’t have write access to the “{$repo}” repository.
 repository_not_found: The “{$repo}” repository doesn’t exist.
 repository_empty: The “{$repo}” repository has no branches.
 # {$repo} is the repository identifier, and {$branch} is the configured branch name
@@ -238,6 +240,14 @@ signed_in_as_x: Signed In as {$name}
 working_with_local_repo: Working with Local Repository
 working_with_test_repo: Working with Test Repository
 working_in_demo_mode: Demo Mode
+
+# Demo welcome dialog: shown once after signing in to a demo site, where the test repository is
+# seeded with sample content and the changes are only stored in the browser
+demo_welcome:
+  title: Welcome to Sveltia CMS Demo
+  description: Feel free to explore the CMS and edit the sample content. Your changes are only saved in this browser. Nothing is published online, and no one else can see them.
+  reset_hint: To start over with the original content, select Erase All Data under Settings > Data Management.
+  button_label: Get Started
 
 # Account menu: action items for sign-out and app installation
 sign_out: Sign Out
@@ -1534,6 +1544,13 @@ entry_sidebar:
     title: Backlinks
     no_entries: No entries are referencing this entry.
 
+# Status shown next to the Save button while an entry with many new files is being saved
+# {$done} and {$total} are the number of files prepared and to prepare, or the number of commits
+# made and the estimated number of commits in all
+save_progress:
+  preparing: 'Preparing files: {$done} of {$total}'
+  committing: 'Saving to GitHub: {$done} of about {$total} commits'
+
 # Entry save error dialog
 saving_entry:
   error:
@@ -1646,6 +1663,15 @@ map_lat_lng: Map showing latitude {$latitude}, longitude {$longitude}
 remove_this_item: Remove This Item
 move_up: Move Up
 move_down: Move Down
+# Menu of a list item or file with the extra reorder actions, shown in a list of 3 or more items
+reorder_options: Reorder Options
+move_to_top: Move to Top
+move_to_bottom: Move to Bottom
+# Opens a dialog asking for the position to move a list item to
+move_to: Move to…
+# Dialog asking for the new position of an item. {$count} is the number of items in the list
+move_to_description: Enter a position from 1 to {$count}.
+move_to_position: Position
 # aria-label for the drag handle that reorders a list item. The item can be dragged with a pointer,
 # or moved with the arrow keys while the handle has focus
 reorder_item: Reorder Item
@@ -2160,6 +2186,10 @@ config:
     code_field_invalid_default_object: The Code field’s `default` option must be a string because the `output_code_only` option is `true`.
     # {$key} is a property name of the default object, {$code} and {$lang} are the configured property names; Don’t localize `default` and `keys`
     code_field_invalid_default_key: The Code field’s `default` option has the `{$key}` property, but the `keys` option only allows `{$code}` and `{$lang}`.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_invalid_expression: The Compute field’s `value` option must be a valid arithmetic expression, like `\{\{fields.price\}\} * \{\{fields.quantity\}\}`, because the `value_type` option is `{$valueType}`.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_uuid_in_expression: The Compute field’s `value` option can’t use a UUID tag like `\{\{uuid\}\}` because the `value_type` option is `{$valueType}`, which makes it an arithmetic expression.
     # {$value} is the default value and {$valueType} is the configured value type; Don’t localize `default` and `value_type`
     number_field_default_not_integer: The Number field’s `default` option is set to `{$value}`, but it must be an integer because the `value_type` option is `{$valueType}`.
     number_field_default_not_number: The Number field’s `default` option is set to `{$value}`, but it must be a number because the `value_type` option is `{$valueType}`.
@@ -2179,6 +2209,9 @@ config:
     relation_field_invalid_display_field: The referenced display field `{$field}` is invalid or not defined.
     relation_field_invalid_search_field: The referenced search field `{$field}` is invalid or not defined.
     relation_field_invalid_filter_field: The referenced filter field `{$field}` is invalid or not defined.
+    relation_field_invalid_sort_field: The referenced sort field `{$field}` is invalid or not defined.
+    # Don’t localize `sort_by` and `file`
+    relation_field_sort_by_file_ignored: The `sort_by` option doesn’t apply to a relation to a file, whose options follow the order of the list items. It will be ignored.
     unexpected: Unexpected error
 
     # Schema validation errors, reported when the configuration doesn’t match the published JSON
@@ -2219,6 +2252,12 @@ config:
     conflicting_timezone_options: Both `picker_utc` and newer timezone options (`input_timezone` or `output_utc`) are set. The new options take precedence. Consider removing `picker_utc` from your configuration.
     # Don’t localize `localize_format` and `format`
     localize_format_without_format: The `localize_format` option has no effect, because the field has no `format` option and its value is stored in the ISO 8601 format.
+    # {$name} is a template tag like `fields.lines.*.price`; Don’t localize `value`, `*` and `sum()`
+    compute_field_wildcard_without_item: The Compute field’s `value` option refers to `{$name}`, but the field isn’t in an item of the list that `*` stands for, so it resolves to nothing. Only an aggregate function like `sum()` can use every item of a list.
+    # {$name} is a template tag like `fields.lines.*.amount`; Don’t localize `value`
+    compute_field_self_reference: The Compute field’s `value` option refers to the field itself as `{$name}`, so its value changes every time it’s computed and never settles.
+    # {$name} is a template tag like `fields.total`; Don’t localize `value`
+    compute_field_reference_cycle: The Compute field’s `value` option refers to `{$name}`, another Compute field that refers back to this field, directly or through other fields, so their values never settle.
     # Don’t localize `localize_format`, `true` and `de`
     localize_format_without_i18n: The `localize_format` option is `true`, but i18n isn’t enabled for the collection, so the value is written in English. Set the option to a locale code like `de` instead.
     # {$locale} is the locale code from the configuration; Don’t localize `localize_format`

@@ -45,7 +45,7 @@ test('refuses a user who can’t push code to the project', async ({ cms, gitlab
 
   await cms.open();
   await expect(page.getByRole('alert')).toContainText(
-    /You don’t have access to the .*e2e-site.* repository/,
+    /You don’t have write access to the .*e2e-site.* repository/,
   );
 });
 

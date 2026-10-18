@@ -659,9 +659,23 @@
  * tags, which support transformations like `{{fields.title | upper}}`, `{{index}}` is the position
  * of the item in a list, which is saved as a number when used alone, and `{{uuid}}`,
  * `{{uuid_short}}` and `{{uuid_shorter}}` generate a UUID, which is kept once the value is saved.
- * The field is always hidden in the editor, and its value can’t be edited.
+ * In a list item, a `*` in a `fields.*` tag stands for the current item, so
+ * `{{fields.lines.*.price}}` is the price of the item the field is in. With a numeric
+ * `value_type`, it’s an arithmetic expression instead, like `{{fields.price}} *
+ * {{fields.quantity}}`, which can have numbers, template tags other than the UUID tags, the `+`,
+ * `-`, `*`, `/` and `%` operators, parentheses, the `abs`, `ceil`, `floor` and `round` functions
+ * and the `avg`, `count`, `max`, `min` and `sum` aggregate functions, in which the last `*` of a
+ * tag stands for every item of the list, like `sum({{fields.lines.*.amount}})`, and empty values
+ * are left out. The field is always hidden in the editor, and its value can’t be edited.
+ * @property {'string' | 'int' | 'float' | 'int/string' | 'float/string'} [value_type] Type of the
+ * value. `string` makes the `value` option a template and saves the result as a string. The other
+ * types make it an arithmetic expression: `int` and `float` save the result as an integer or a
+ * floating-point number, respectively, and `int/string` and `float/string` save it as a string.
+ * An integer is rounded to the nearest one, and the result is left empty if a template tag resolves
+ * to an empty value or something other than a number. Default: `string`.
  * @see https://github.com/sveltia/sveltia-cms/issues/111
  * @see https://github.com/sveltia/sveltia-cms/issues/122
+ * @see https://github.com/sveltia/sveltia-cms/discussions/1086
  */
 
 /**
@@ -1238,6 +1252,15 @@
  */
 
 /**
+ * Sort options for a Relation field, which define the order of the options.
+ * @typedef {object} RelationFieldSortOptions
+ * @property {FieldKeyPath} field Field name in the referenced collection to sort the entries by. It
+ * can also be `slug`, `commit_author`, `commit_date` or `_manual` (the manual order of a collection
+ * with the `reorder` option).
+ * @property {'ascending' | 'descending'} [direction] Sort direction. Default: `ascending`.
+ */
+
+/**
  * Relation field properties.
  * @typedef {object} RelationFieldProps
  * @property {'relation'} widget Field type.
@@ -1262,6 +1285,10 @@
  * @property {(FieldKeyPath | string)[]} [search_fields] Name of fields to be searched. It can
  * contain string templates. Default: `display_fields` field value.
  * @property {RelationFieldFilterOptions[]} [filters] Entry filter options.
+ * @property {RelationFieldSortOptions} [sort_by] Sort options for the referenced entries. Default:
+ * the manual order for a collection with the `reorder` option, the order of the list items for a
+ * referenced file, and the alphabetical order of the labels otherwise. Not applicable to a
+ * referenced file.
  * @see https://decapcms.org/docs/widgets/#Relation
  * @see https://sveltiacms.app/en/docs/fields/relation
  */

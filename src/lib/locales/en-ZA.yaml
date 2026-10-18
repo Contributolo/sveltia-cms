@@ -2167,6 +2167,10 @@ config:
     code_field_invalid_default_object: The Code field’s `default` option must be a string because the `output_code_only` option is `true`.
     # {$key} is a property name of the default object, {$code} and {$lang} are the configured property names; Don’t localize `default` and `keys`
     code_field_invalid_default_key: The Code field’s `default` option has the `{$key}` property, but the `keys` option only allows `{$code}` and `{$lang}`.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_invalid_expression: The Compute field’s `value` option must be a valid arithmetic expression, like `\{\{fields.price\}\} * \{\{fields.quantity\}\}`, because the `value_type` option is `{$valueType}`.
+    # {$valueType} is the configured value type; Don’t localize `value` and `value_type`
+    compute_field_uuid_in_expression: The Compute field’s `value` option can’t use a UUID tag like `\{\{uuid\}\}` because the `value_type` option is `{$valueType}`, which makes it an arithmetic expression.
     # {$value} is the default value and {$valueType} is the configured value type; Don’t localize `default` and `value_type`
     number_field_default_not_integer: The Number field’s `default` option is set to `{$value}`, but it must be an integer because the `value_type` option is `{$valueType}`.
     number_field_default_not_number: The Number field’s `default` option is set to `{$value}`, but it must be a number because the `value_type` option is `{$valueType}`.
@@ -2226,6 +2230,12 @@ config:
     conflicting_timezone_options: Both `picker_utc` and newer timezone options (`input_timezone` or `output_utc`) are set. The new options take precedence. Consider removing `picker_utc` from your configuration.
     # Don’t localize `localize_format` and `format`
     localize_format_without_format: The `localize_format` option has no effect, because the field has no `format` option and its value is stored in the ISO 8601 format.
+    # {$name} is a template tag like `fields.lines.*.price`; Don’t localize `value`, `*` and `sum()`
+    compute_field_wildcard_without_item: The Compute field’s `value` option refers to `{$name}`, but the field isn’t in an item of the list that `*` stands for, so it resolves to nothing. Only an aggregate function like `sum()` can use every item of a list.
+    # {$name} is a template tag like `fields.lines.*.amount`; Don’t localize `value`
+    compute_field_self_reference: The Compute field’s `value` option refers to the field itself as `{$name}`, so its value changes every time it’s computed and never settles.
+    # {$name} is a template tag like `fields.total`; Don’t localize `value`
+    compute_field_reference_cycle: The Compute field’s `value` option refers to `{$name}`, another Compute field that refers back to this field, directly or through other fields, so their values never settle.
     # Don’t localize `localize_format`, `true` and `de`
     localize_format_without_i18n: The `localize_format` option is `true`, but i18n isn’t enabled for the collection, so the value is written in English. Set the option to a locale code like `de` instead.
     # {$locale} is the locale code from the configuration; Don’t localize `localize_format`
