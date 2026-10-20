@@ -443,6 +443,27 @@ describe('GitHub Editorial Workflow service', () => {
       await expect(createBranch('cms/posts/hello')).rejects.toThrow('Failed to create the branch.');
     });
 
+    test('doesn’t retry a refused mutation without Open Authoring', async () => {
+      // The fork is the configured repository itself, so there is no other copy to start from
+      vi.mocked(fetchGraphQL)
+        .mockResolvedValueOnce({
+          fork: { id: 'R_1', ref: { name: 'main' }, defaultBranchRef: { name: 'main' } },
+          base: { ref: { target: { oid: 'abc' } } },
+        })
+        .mockRejectedValueOnce(
+          new Error('Server responded with an error', {
+            cause: {
+              status: 200,
+              message: 'user does not have the correct permissions to execute `CreateRef`',
+            },
+          }),
+        );
+
+      await expect(createBranch('cms/posts/hello')).rejects.toThrow('Failed to create the branch.');
+      expect(fetchGraphQL).toHaveBeenCalledTimes(2);
+      expect(fetchAPI).not.toHaveBeenCalled();
+    });
+
     test('rethrows an error that carries no cause', async () => {
       mockBase();
       vi.mocked(fetchGraphQL).mockRejectedValueOnce(new Error('Failed to send the request'));
@@ -1287,6 +1308,153 @@ describe('GitHub Editorial Workflow service', () => {
         expect(fetchGraphQL).toHaveBeenLastCalledWith(expect.stringContaining('createRef'), {
           input: expect.objectContaining({ repositoryId: 'R_fork', oid: 'upstream-head' }),
         });
+      });
+
+      // What GitHub says when an OAuth token without the `workflow` scope would bring changes to
+      // GitHub Actions workflow files into the fork
+      const refusal = 'contributor does not have the correct permissions to execute `CreateRef`';
+
+      const refused = new Error('Server responded with an error', {
+        cause: { status: 200, message: refusal },
+      });
+
+      /**
+       * Mock the base query, with the fork’s own copy of the configured branch, if it has one, and
+       * its default branch.
+       * @param {object} [options] Options.
+       * @param {boolean} [options.hasCopy] Whether the fork has a copy of the configured branch.
+       * @param {string | null} [options.defaultBranch] Name of the fork’s default branch.
+       */
+      const mockBase = ({ hasCopy = true, defaultBranch = 'main' } = {}) => {
+        vi.mocked(fetchGraphQL).mockResolvedValueOnce({
+          fork: {
+            id: 'R_fork',
+            ref: hasCopy ? { name: 'main' } : null,
+            defaultBranchRef: defaultBranch ? { name: defaultBranch } : null,
+          },
+          base: { ref: { target: { oid: 'upstream-head' } } },
+        });
+      };
+
+      test('starts from where the fork’s copy of the branch meets it when the head upstream is refused', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL)
+          .mockRejectedValueOnce(refused)
+          .mockResolvedValueOnce({ createRef: { ref: { name: 'x' } } });
+        vi.mocked(fetchAPI).mockResolvedValueOnce({ merge_base_commit: { sha: 'merge-base' } });
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).resolves.toEqual({
+          headOid: 'merge-base',
+        });
+
+        // Compared in the configured repository, with the fork’s branch as the head
+        expect(fetchAPI).toHaveBeenCalledWith(
+          '/repos/owner/repo/compare/main...contributor:main?per_page=1',
+        );
+        expect(fetchGraphQL).toHaveBeenCalledTimes(3);
+        expect(fetchGraphQL).toHaveBeenLastCalledWith(expect.stringContaining('createRef'), {
+          input: {
+            repositoryId: 'R_fork',
+            name: 'refs/heads/cms/contributor/repo/posts/hello',
+            oid: 'merge-base',
+          },
+        });
+      });
+
+      test('compares the fork’s default branch when it has no copy of the branch', async () => {
+        // The configured branch was created upstream after the fork was made, e.g. for a deploy
+        // preview
+        mockBase({ hasCopy: false, defaultBranch: 'trunk' });
+        vi.mocked(fetchGraphQL)
+          .mockRejectedValueOnce(refused)
+          .mockResolvedValueOnce({ createRef: { ref: { name: 'x' } } });
+        vi.mocked(fetchAPI).mockResolvedValueOnce({ merge_base_commit: { sha: 'merge-base' } });
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).resolves.toEqual({
+          headOid: 'merge-base',
+        });
+        expect(fetchAPI).toHaveBeenCalledWith(
+          '/repos/owner/repo/compare/main...contributor:trunk?per_page=1',
+        );
+      });
+
+      test('keeps a branch that turns out to exist when retried from the fork', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL)
+          .mockRejectedValueOnce(refused)
+          .mockRejectedValueOnce(
+            new Error('Server responded with an error', {
+              cause: { status: 200, message: 'A ref named "x" already exists in the repository.' },
+            }),
+          );
+        vi.mocked(fetchAPI).mockResolvedValueOnce({ merge_base_commit: { sha: 'merge-base' } });
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).resolves.toEqual({});
+      });
+
+      test('reports a refusal of the retry too', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(refused).mockRejectedValueOnce(refused);
+        vi.mocked(fetchAPI).mockResolvedValueOnce({ merge_base_commit: { sha: 'merge-base' } });
+
+        const error = await createBranch('cms/contributor/repo/posts/hello').catch((ex) => ex);
+
+        expect(error.message).toBe('Failed to create the branch.');
+        expect(error.cause.message).toBe(refusal);
+      });
+
+      test('doesn’t retry when the fork has no branch to compare', async () => {
+        mockBase({ hasCopy: false, defaultBranch: null });
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(refused);
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).rejects.toThrow(
+          'Failed to create the branch.',
+        );
+        expect(fetchAPI).not.toHaveBeenCalled();
+        expect(fetchGraphQL).toHaveBeenCalledTimes(2);
+      });
+
+      test('doesn’t retry when the comparison fails', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(refused);
+        vi.mocked(fetchAPI).mockRejectedValueOnce(new Error('Not Found'));
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).rejects.toThrow(
+          'Failed to create the branch.',
+        );
+        expect(fetchGraphQL).toHaveBeenCalledTimes(2);
+      });
+
+      test('doesn’t retry when the comparison reports no merge base', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(refused);
+        vi.mocked(fetchAPI).mockResolvedValueOnce({});
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).rejects.toThrow(
+          'Failed to create the branch.',
+        );
+        expect(fetchGraphQL).toHaveBeenCalledTimes(2);
+      });
+
+      test('doesn’t retry when the fork’s branch meets it at the head upstream', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(refused);
+        vi.mocked(fetchAPI).mockResolvedValueOnce({ merge_base_commit: { sha: 'upstream-head' } });
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).rejects.toThrow(
+          'Failed to create the branch.',
+        );
+        expect(fetchGraphQL).toHaveBeenCalledTimes(2);
+      });
+
+      test('doesn’t retry after a failure other than a refusal', async () => {
+        mockBase();
+        vi.mocked(fetchGraphQL).mockRejectedValueOnce(new Error('Failed to send the request'));
+
+        await expect(createBranch('cms/contributor/repo/posts/hello')).rejects.toThrow(
+          'Failed to create the branch.',
+        );
+        expect(fetchAPI).not.toHaveBeenCalled();
       });
     });
 
