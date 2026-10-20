@@ -1991,6 +1991,8 @@ config:
     open_authoring_no_workflow: Die Option `open_authoring` erfordert den Veröffentlichungsmodus `editorial_workflow` oder `preview`. Details stehen in der <a>Dokumentation</a>.
     # Don’t localize `auth_methods`
     no_auth_methods: Die Option `auth_methods` muss mindestens eine Methode enthalten.
+    # Don’t localize `auth_scope`, `repo` and `public_repo`
+    auth_scope_no_repo: Die Option `auth_scope` muss `repo` oder `public_repo` enthalten.
     missing_media_folder: Der Medienordner ist nicht definiert.
     public_folder_relative_path: Der konfigurierte öffentliche Ordner ist ungültig. Er muss ein absoluter Pfad sein, der mit „/“ beginnt.
     public_folder_absolute_url: Eine absolute URL für die Option des öffentlichen Ordners wird in Sveltia CMS nicht unterstützt.
@@ -2390,6 +2392,14 @@ workflow:
   status_updated: Status aktualisiert.
   # Error notification when the status could not be changed
   status_change_failed: Der Status konnte nicht geändert werden. Bitte erneut versuchen.
+  # Workflow page: toolbar button that reads the pull requests again, to pick up the changes made
+  # by anyone else since the board was loaded, and the toast notifications shown while doing so and
+  # once done
+  refresh: Neu laden
+  refreshing: Wird neu geladen…
+  refreshed: Die Übersicht ist auf dem neuesten Stand.
+  # Error notification when the board could not be refreshed
+  refresh_failed: Die Übersicht konnte nicht neu geladen werden. Bitte erneut versuchen.
   # Error notification when the status can’t be changed because the entry is incomplete. Required
   # fields can be left empty while the entry is a draft, but not once it moves on from there
   status_change_blocked: Der Eintrag enthält Fehler. Bitte beheben Sie sie, bevor Sie den Status ändern.
