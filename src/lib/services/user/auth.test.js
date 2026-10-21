@@ -120,6 +120,15 @@ vi.mock('$lib/services/backends/branch-access', () => ({
 }));
 
 vi.mock('$lib/services/backends/git/shared/head', () => ({
+  /**
+   * Like the real one, compare the generation at creation with the current one.
+   * @returns {() => boolean} Check.
+   */
+  createStaleCheck: () => {
+    const generation = mockDataGeneration.current;
+
+    return () => generation !== mockDataGeneration.current;
+  },
   dataGeneration: mockDataGeneration,
   repositoryHead: mockRepositoryHead,
 }));
@@ -868,6 +877,44 @@ describe('auth service', () => {
       // Started before the files, so the two requests overlap, and handed over afterwards
       expect(mockStartLoadingPullRequests).toHaveBeenCalledBefore(mockBackend.fetchFiles);
       expect(mockLoadUnpublishedEntries).toHaveBeenCalledWith(pullRequests);
+    });
+
+    describe('when signed out while the data is being loaded', () => {
+      const cachedUser = { backendName: 'github', token: 'cached-token', login: 'user' };
+
+      beforeEach(() => {
+        mockLocalStorage.get.mockImplementation((key) =>
+          Promise.resolve(key === 'sveltia-cms.user' ? cachedUser : null),
+        );
+        mockBackendStore.current = mockBackend;
+        mockCmsConfigStore.current = mockCmsConfig;
+        mockBackend.signIn.mockResolvedValue(cachedUser);
+        mockBackend.fetchFiles.mockResolvedValue(undefined);
+        mockStartLoadingPullRequests.mockReturnValue(Promise.resolve([]));
+      });
+
+      it('should drop the pull requests after the file fetch', async () => {
+        mockBackend.fetchFiles.mockImplementationOnce(async () => {
+          mockDataGeneration.current += 1;
+        });
+
+        await authModule.signInAutomatically();
+
+        expect(mockLoadUnpublishedEntries).not.toHaveBeenCalled();
+        // The polling stopped by the sign-out isn’t started again
+        expect(mockStartRemoteChangePolling).not.toHaveBeenCalled();
+      });
+
+      it('should not start the polling after the unpublished entries', async () => {
+        mockLoadUnpublishedEntries.mockImplementationOnce(async () => {
+          mockDataGeneration.current += 1;
+        });
+
+        await authModule.signInAutomatically();
+
+        expect(mockLoadUnpublishedEntries).toHaveBeenCalled();
+        expect(mockStartRemoteChangePolling).not.toHaveBeenCalled();
+      });
     });
 
     it.each([
