@@ -154,6 +154,9 @@ work_with_local_repo_description_no_repo: Wählen Sie im folgenden Dialog das St
 work_with_test_repo: Mit Test-Repository arbeiten
 # Button label for the test repository when sample content is seeded, e.g. on a demo site
 start_demo: Demo starten
+# Shown below the disabled test repository option in a browser that can’t save files to its
+# storage, e.g. Safari before version 26
+test_repo_unsupported_browser: Ihr Browser kann die Dateien des Test-Repositorys nicht speichern. Bitte aktualisieren Sie ihn auf die neueste Version oder verwenden Sie einen anderen Browser.
 
 # Authentication errors
 # Error messages shown during sign-in failures
@@ -1981,6 +1984,8 @@ config:
     unsupported_backend_suggestion: Verwenden Sie stattdessen eines der <a>unterstützten Backends</a>.
     missing_repository: Das Repository ist nicht definiert.
     invalid_repository: Das konfigurierte Repository ist ungültig. Es muss im Format „owner/repo“ angegeben werden.
+    # Don’t localize `api_root`
+    missing_api_root: Die Option `api_root` ist nicht definiert. Sie ist für das Forgejo-Backend erforderlich.
     invalid_root_dir: Das Stammverzeichnis ist ungültig. Es muss ein Pfad innerhalb des Repositorys sein, ohne „..“.
     invalid_root_dir_branch: Das Stammverzeichnis kann nicht in den Branch-Namen der Veröffentlichungsmodi `editorial_workflow` und `preview` verwendet werden. Kein Teil seines Pfads darf mit einem Punkt beginnen, auf „.lock“ enden oder ein Leerzeichen oder ein Sonderzeichen wie einen Doppelpunkt oder ein Sternchen enthalten.
     path_outside_root_dir: Der Pfad „{$path}“ führt aus dem Stammverzeichnis heraus, dort kann das CMS keine Dateien auflisten.
@@ -2068,6 +2073,8 @@ config:
     unsupported_bulk_edit_field: Das Feld `{$name}` in der Liste `fields` der Option `bulk_edit` lässt sich nicht gesammelt bearbeiten. Unterstützt wird nur ein Feld vom Typ Boolean, Color, DateTime, Number, Relation, Select oder String, das nicht schreibgeschützt ist, die Option `multiple` nicht aktiviert hat und beim Speichern nicht automatisch gesetzt wird.
     # {$name} is the field name from the configuration; Don’t localize `sortable_fields`
     invalid_sortable_field: Die Option `sortable_fields` verweist auf ein Feld namens `{$name}`, in der Sammlung ist aber kein solches Feld definiert.
+    # Don’t localize `sortable_fields` and `default_sort`
+    multiple_sortable_field_defaults: Nur ein Element der Option `sortable_fields` darf die Option `default_sort` haben.
     # {$option} is `table_columns` or `summary_fields`, and {$name} is the field name from the configuration
     invalid_table_column_field: Die Option `{$option}` verweist auf ein Feld namens `{$name}`, in der Sammlung ist aber kein solches Feld definiert.
     # {$name} is the field name from the configuration; Don’t localize `view_groups`
@@ -2257,6 +2264,10 @@ config:
     unsupported_ignored_option: Die Option `{$prop}` wird in Sveltia CMS nicht unterstützt. Sie wird ignoriert.
     # Don’t localize `stages`, `publish_mode`, `editorial_workflow` and {$type}, which is `preview` or `simple`
     publish_mode_stages_ignored: Die Option `stages` von `publish_mode` gilt nur für den Veröffentlichungsmodus `editorial_workflow` und wird daher bei `{$type}` ignoriert.
+    # Don’t localize `pattern`, `m` and `s`
+    inline_component_multiline_pattern: Die Option `pattern` dieser Inline-Komponente hat das Flag `m` oder `s` oder erfasst Zeilenumbrüche, eine Inline-Komponente wird aber nur innerhalb eines Absatzes erkannt.
+    # {$name} is a button or component name and {$option} is `buttons` or `editor_components`; Don’t localize them and `multiline: false`
+    single_line_block_item: 'Das Element `{$name}` der Option `{$option}` wird ignoriert, da ein Feld mit `multiline: false` nur Inline-Inhalte aufnehmen kann.'
     # Don’t localize `picker_utc`, `input_timezone`, and `output_utc`
     conflicting_timezone_options: Es sind sowohl `picker_utc` als auch neuere Zeitzonen-Optionen (`input_timezone` oder `output_utc`) gesetzt. Die neuen Optionen haben Vorrang. Entfernen Sie `picker_utc` am besten aus Ihrer Konfiguration.
     # Don’t localize `localize_format` and `format`
@@ -2476,6 +2487,12 @@ workflow:
   # Workflow page: note on a card in the Deploying tray, marking an entry that’s being removed from
   # the site rather than published to it
   deploying_deletion: Löschung
+  # Workflow page: note on a card listing the new entries that were created from a Relation field
+  # of the entry and are published along with it, e.g. “Also adds Section: Getting Started”
+  companion_entries: Fügt außerdem {$entries} hinzu
+  # Workflow page: one of the new entries listed by `companion_entries`, named by its collection’s
+  # singular label and its title
+  companion_entry: '{$collection}: {$title}'
 
 # Dialog asking the user for a commit message every time changes are saved, when the site is
 # configured to. The message is recorded in the repository’s history along with the changes
@@ -2672,7 +2689,7 @@ prefs:
       not_ready: Änderungen können gerade nicht committet werden. {$reason}
     deploy_hook:
       title: Deploy-Hook
-      description: Geben Sie eine Webhook-URL ein, die aufgerufen wird, wenn Sie über „Änderungen veröffentlichen“ manuell eine Bereitstellung auslösen. Bei Verwendung von GitHub Actions kann das Feld leer bleiben.
+      description: Geben Sie eine Webhook-URL ein, die aufgerufen wird, wenn Sie über „Änderungen veröffentlichen“ manuell eine Bereitstellung auslösen. Bei Verwendung von GitHub Actions oder GitLab CI/CD kann das Feld leer bleiben.
       # Hook URL input
       url:
         field_label: Hook-URL
