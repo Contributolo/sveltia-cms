@@ -192,7 +192,7 @@ export const listedEntries = createDerivedState(() => {
   }
 
   /**
-   * Limit the entries to the folder currently browsed in a nested collection.
+   * Limit the entries to the folder currently browsed in a collection with nested entries.
    * @param {Entry[]} entries Entries to be filtered.
    * @returns {Entry[]} Filtered entries.
    */
@@ -263,16 +263,6 @@ export const listedUnpublishedEntries = createDerivedState(() => {
 
   return entries;
 });
-
-/**
- * Map from entry ID to the entry’s index in {@link listedEntries}, used by list rows to resolve
- * their `aria-rowindex` in O(1). Rows are appended by an infinite scroller and never unmounted, so
- * once a large collection has been scrolled through, an `indexOf()` per row would make every
- * subsequent list update O(n²).
- */
-export const listedEntryIndexMap = createDerivedState(
-  () => new Map(listedEntries.current.map((entry, index) => [entry.id, index])),
-);
 
 /**
  * Threshold for when to show a warning about nearing the quota of entries in an entry collection.
@@ -383,7 +373,13 @@ export const entryGroups = createDerivedState(() => {
 
   const { current: group } = groupConditions;
 
-  return groupEntries(filteredEntries.current, collection, group, viewTime.current);
+  return groupEntries(
+    filteredEntries.current,
+    collection,
+    group,
+    viewTime.current,
+    sortConditions.current,
+  );
 });
 
 /**
@@ -397,6 +393,18 @@ const shownEntries = createDerivedState(
       ...listedUnpublishedEntries.current,
       ...entryGroups.current.flatMap(({ entries }) => entries),
     ]),
+);
+
+/**
+ * Map from entry ID to the entry’s row index in the list, used by list rows to resolve their
+ * `aria-rowindex` in O(1). The index follows the displayed order of {@link shownEntries}: the
+ * unpublished entries come first, then the entries of every group, sorted and filtered, as the rows
+ * of every group make up one grid. Rows are appended by an infinite scroller and never unmounted,
+ * so once a large collection has been scrolled through, an `indexOf()` per row would make every
+ * subsequent list update O(n²).
+ */
+export const listedEntryIndexMap = createDerivedState(
+  () => new Map([...shownEntries.current].map((entry, index) => [entry.id, index])),
 );
 
 /**

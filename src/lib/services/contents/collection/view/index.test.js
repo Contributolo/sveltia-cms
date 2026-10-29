@@ -95,7 +95,7 @@ vi.mock('$lib/services/contents/collection', () => ({
 
 vi.mock('$lib/services/contents/collection/predicates', () => ({
   isArrayFileCollection: vi.fn((collection) => !!collection?._file?.arrayFile),
-  // Used by the nested collection helpers, which the entry list runs through
+  // Used by the nested entry helpers, which the entry list runs through
   isEntryCollection: vi.fn(
     (collection) => typeof collection?.folder === 'string' && !Array.isArray(collection?.files),
   ),
@@ -321,6 +321,12 @@ describe('collection/view/index', () => {
     expect(sortEntries).toHaveBeenCalledTimes(2);
     expect(filterEntries).toHaveBeenCalledTimes(3);
     expect(groupEntries).toHaveBeenCalledTimes(3);
+    // The groups follow the sort order, which is passed in rather than read from the view, so
+    // that another change to the view doesn’t make the groups anew
+    expect(vi.mocked(groupEntries).mock.lastCall?.[4]).toEqual({
+      key: 'title',
+      order: 'descending',
+    });
   });
 
   test('entryGroups skips processing for file/singleton collections', async () => {
@@ -567,29 +573,51 @@ describe('collection/view/index', () => {
     expect(getEntriesByCollection).toHaveBeenCalledWith('posts');
   });
 
-  test('listedEntryIndexMap maps each entry ID to its position in listedEntries', async () => {
+  test('listedEntryIndexMap maps each entry ID to its position in the displayed order', async () => {
     /** @type {any} */
     const mockEntries = [
       { id: 'a', slug: 'post-a', locales: {}, sha: 'a' },
       { id: 'b', slug: 'post-b', locales: {}, sha: 'b' },
       { id: 'c', slug: 'post-c', locales: {}, sha: 'c' },
+      { id: 'd', slug: 'post-d', locales: {}, sha: 'd' },
     ];
 
     vi.mocked(getEntriesByCollection).mockReturnValue(mockEntries);
+    vi.mocked(getCollectionFilesByEntry).mockReturnValue([]);
+    // Sorted in reverse, filtered without `b`, then split into two groups
+    vi.mocked(sortEntries).mockImplementation((entries) => [...entries].reverse());
+    vi.mocked(filterEntries).mockImplementation((entries) =>
+      entries.filter((/** @type {any} */ { id }) => id !== 'b'),
+    );
+    vi.mocked(groupEntries).mockImplementation((entries) => [
+      { name: 'first', entries: entries.slice(0, 1) },
+      { name: 'rest', entries: entries.slice(1) },
+    ]);
 
     _allEntries.current = mockEntries;
     await wait();
-    _selectedCollection.current = /** @type {any} */ ({ name: 'posts', folder: '_posts' });
+    _selectedCollection.current = /** @type {any} */ ({
+      name: 'posts',
+      folder: '_posts',
+      _type: 'entry',
+    });
     await wait();
+    currentView.current = /** @type {any} */ ({
+      type: 'list',
+      sort: { key: 'title', order: 'descending' },
+      filters: [{ field: 'status', pattern: 'published' }],
+      group: { field: 'category' },
+    });
 
     const indexMap = listedEntryIndexMap.current;
 
     expect([...indexMap]).toEqual([
-      ['a', 0],
-      ['b', 1],
-      ['c', 2],
+      ['d', 0],
+      ['c', 1],
+      ['a', 2],
     ]);
-    // Unknown entries are absent, so callers fall back to -1
+    // Filtered-out and unknown entries are absent, so callers omit the row index
+    expect(indexMap.get('b')).toBeUndefined();
     expect(indexMap.get('missing')).toBeUndefined();
   });
 
@@ -640,6 +668,7 @@ describe('collection/view/index', () => {
       // Restore the pass-through implementations, which earlier tests replace with fixed lists
       vi.mocked(sortEntries).mockImplementation((entries) => entries);
       vi.mocked(filterEntries).mockImplementation((entries) => entries);
+      vi.mocked(groupEntries).mockImplementation((entries) => [{ name: '*', entries }]);
       _allEntries.current = publishedEntries;
       await wait();
       _selectedCollection.current = /** @type {any} */ ({ name: 'posts', _type: 'entry' });
@@ -711,6 +740,18 @@ describe('collection/view/index', () => {
       // The draft for `needed` replaces the published entry instead
       expect(read(listedUnpublishedEntries).map((/** @type {any} */ e) => e.id)).toEqual([
         'draft-brand-new',
+      ]);
+    });
+
+    test('listedEntryIndexMap puts the never-published drafts first', async () => {
+      _unpublishedEntries.current = [createDraft('needed'), createDraft('brand-new')];
+      await wait();
+
+      // They are listed in a separate group above the published entries
+      expect([...read(listedEntryIndexMap)]).toEqual([
+        ['draft-brand-new', 0],
+        ['draft-needed', 1],
+        ['p2', 2],
       ]);
     });
 
@@ -1417,7 +1458,7 @@ describe('collection/view/index', () => {
       expect(state.remaining).toBe(7);
     });
 
-    test('quota counts every entry in a nested collection, not just the listed folder', async () => {
+    test('quota counts every nested entry, not just the listed folder', async () => {
       const mockEntries = /** @type {any[]} */ ([
         { id: '1', slug: '_index', subPath: '_index' },
         { id: '2', slug: 'docs/_index', subPath: 'docs/_index' },
@@ -1465,7 +1506,7 @@ describe('collection/view/index', () => {
       expect(collectionState.current.creationDisabled).toBe(false);
     });
 
-    test('quota leaves out the index file of a nested collection', async () => {
+    test('quota leaves out the index file of a collection with nested entries', async () => {
       const mockEntries = /** @type {any[]} */ ([
         { id: '1', slug: '_index', subPath: '_index', _isIndexFile: true },
         { id: '2', slug: 'docs/_index', subPath: 'docs/_index' },
@@ -2150,7 +2191,13 @@ describe('collection/view/index', () => {
       expect(viewTime.current).toEqual(start);
       expect(entryGroups.current).toEqual([{ name: '*', entries }]);
       expect(filterEntries).toHaveBeenLastCalledWith(entries, collection, filters, start);
-      expect(groupEntries).toHaveBeenLastCalledWith(entries, collection, undefined, start);
+      expect(groupEntries).toHaveBeenLastCalledWith(
+        entries,
+        collection,
+        undefined,
+        start,
+        undefined,
+      );
 
       vi.clearAllMocks();
       vi.advanceTimersByTime(60000);
@@ -2161,7 +2208,13 @@ describe('collection/view/index', () => {
       expect(viewTime.current).toEqual(tick);
       expect(entryGroups.current).toEqual([{ name: '*', entries }]);
       expect(filterEntries).toHaveBeenLastCalledWith(entries, collection, filters, tick);
-      expect(groupEntries).toHaveBeenLastCalledWith(entries, collection, undefined, tick);
+      expect(groupEntries).toHaveBeenLastCalledWith(
+        entries,
+        collection,
+        undefined,
+        tick,
+        undefined,
+      );
 
       // The timer is stopped once the filter is removed
       currentView.current = { type: 'list', filters: [] };
