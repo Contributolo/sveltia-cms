@@ -32,7 +32,7 @@
 /**
  * Name of a cloud media storage service with an S3-compatible API.
  * @typedef {'aws_s3' | 'backblaze_b2' | 'bunny_storage' | 'cloudflare_r2' | 'digitalocean_spaces' |
- * 'scaleway_object_storage' | 'supabase_storage'} S3MediaLibraryName
+ * 'neon_object_storage' | 'scaleway_object_storage' | 'supabase_storage'} S3MediaLibraryName
  */
 
 /**
@@ -216,7 +216,8 @@
  * @property {string} bucket Bucket name. For Bunny Storage, this is the storage zone name.
  * @property {string} [region] Region, e.g. `us-east-1`. Required for Amazon S3, Backblaze B2, Bunny
  * Storage (two-letter storage region code, e.g. `de`), DigitalOcean Spaces and Scaleway Object
- * Storage. For Supabase Storage, set it to the project’s region; it defaults to `us-east-1`.
+ * Storage. For Supabase Storage, set it to the project’s region; it defaults to `us-east-1`. For
+ * Neon Object Storage, it defaults to the region in the `endpoint` hostname.
  * Ignored for Cloudflare R2, which always uses `auto`. With a custom `endpoint`, it’s only used to
  * sign requests and must match the server’s region, e.g. Garage’s `s3_region` (`garage` by
  * default) or MinIO’s `us-east-1`; otherwise every request fails with a signature mismatch.
@@ -228,7 +229,9 @@
  * @property {string} [endpoint] Custom endpoint URL for another S3-compatible service, such as a
  * self-hosted Garage or MinIO server, configured as `aws_s3`, e.g. `https://s3.example.com`.
  * Objects are addressed with path-style URLs (`{endpoint}/{bucket}/{key}`), so no wildcard DNS is
- * needed. Ignored for the other services, whose endpoints are derived from their own options.
+ * needed. Required for Neon Object Storage; set it to the branch’s `AWS_ENDPOINT_URL_S3` shown in
+ * the Neon Console, e.g. `https://br-cool-darkness-a1b2c3d4.storage.c-1.us-east-2.aws.neon.tech`.
+ * Ignored for the other services, whose endpoints are derived from their own options.
  * @property {string} [prefix] Path prefix within the bucket, e.g. `uploads/`. A trailing slash is
  * added if missing.
  * @property {boolean} [force_path_style] Whether to use path-style URLs
@@ -243,7 +246,9 @@
  * `https://my-zone.b-cdn.net`) or a custom domain. Optional for Amazon S3 and DigitalOcean Spaces —
  * use when serving assets through a CDN or custom domain (e.g. CloudFront or Route 53 for S3, CDN
  * endpoint for Spaces). Backblaze B2, DigitalOcean Spaces, Scaleway Object Storage and Supabase
- * Storage have a default public URL derived from the other options.
+ * Storage have a default public URL derived from the other options. For Neon Object Storage, the
+ * default `{endpoint}/{bucket}/{key}` URL only works with a `public_read` bucket; set `public_url`
+ * for a private bucket fronted by a CDN.
  */
 
 /**
@@ -359,6 +364,8 @@
  * to `false` to explicitly disable.
  * @property {S3MediaLibrary | false} [bunny_storage] Options for the Bunny Storage media storage.
  * Set to `false` to explicitly disable.
+ * @property {S3MediaLibrary | false} [neon_object_storage] Options for the Neon Object Storage
+ * media storage. Set to `false` to explicitly disable.
  * @property {S3MediaLibrary | false} [scaleway_object_storage] Options for the Scaleway Object
  * Storage media storage. Set to `false` to explicitly disable.
  * @property {S3MediaLibrary | false} [supabase_storage] Options for the Supabase Storage media
@@ -1609,6 +1616,10 @@
  * icon](https://fonts.google.com/icons?icon.set=Material+Symbols) to be displayed in the collection
  * file list and other places. See the
  * [documentation](https://sveltiacms.app/en/docs/collections#icons) for details.
+ * @property {string} [summary] Summary template displayed in the file list of a file collection in
+ * place of the label, e.g. `Home Page ({{locales}})`. It can use the file’s fields and the same
+ * special tags and transformations as an entry collection’s `summary` option; `{{title}}` falls
+ * back to the label without a `title` field. Default: the `label` option value.
  * @property {string} file File path relative to the project root.
  * @property {Field[]} fields Set of fields to be included in the file.
  * @property {string} [media_folder] Internal media folder path for the collection. This overrides
@@ -1900,6 +1911,11 @@
  * @property {string} [icon] Name of a [Material Symbols
  * icon](https://fonts.google.com/icons?icon.set=Material+Symbols) to be displayed in the editor UI.
  * Default: `home`.
+ * @property {string} [summary] Summary template displayed in place of the label in the entry list,
+ * search results and other places where the collection’s `summary` option applies to the entries,
+ * e.g. `{{title}} ({{locales}})`. It can use the index file’s fields and the same special tags and
+ * transformations as the collection’s `summary` option; `{{title}}` falls back to the label without
+ * a `title` field. Default: the `label` option value.
  * @property {Field[]} [fields] Set of fields for the index file. If omitted, the regular entry
  * collection `fields` will be used instead.
  * @property {EditorOptions} [editor] Editor view options.

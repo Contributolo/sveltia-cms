@@ -7,7 +7,7 @@ import { TAG_PLACEHOLDER, TEMPLATE_TAG_REGEX } from '$lib/services/common/templa
  * @param {-1 | 1} step `-1` to look backward, `1` to look forward.
  * @returns {string} Character, or an empty string if there is none.
  */
-const getAdjacentChar = (str, index, step) => {
+export const getAdjacentChar = (str, index, step) => {
   let cursor = index + step;
 
   while (/\s/.test(str[cursor] ?? '')) {
@@ -20,12 +20,17 @@ const getAdjacentChar = (str, index, step) => {
 /**
  * Replace template tags in a string while leaving nested template tags inside transformation
  * arguments untouched. For example, this keeps `default('{{title}}')` from being treated as a
- * separate replacement target when the outer template is processed.
+ * separate replacement target when the outer template is processed. A tag escaped with a backslash,
+ * e.g. `\{{ title | slugify }}`, is output as is without the backslash, so a template meant for
+ * another tool, like a static site generator, can be passed through.
  * @param {string} str The string containing template tags.
  * @param {(match: string, placeholder: string) => string} replacer Replacement callback.
+ * @param {object} [options] Options.
+ * @param {boolean} [options.unescape] Whether to remove the backslash from an escaped tag. Turn it
+ * off to keep the template as it is besides the replacements.
  * @returns {string} Result of the replacements.
  */
-export const replaceTemplateTags = (str, replacer) => {
+export const replaceTemplateTags = (str, replacer, { unescape = true } = {}) => {
   let result = '';
   let searchIndex = 0;
 
@@ -60,6 +65,15 @@ export const replaceTemplateTags = (str, replacer) => {
       if (!quoteState && char === '}' && nextChar === '}') {
         const closeIndex = cursor;
         const placeholder = str.slice(openIndex + 2, closeIndex);
+
+        // An escaped tag is kept as is, minus the backslash. The backslash is always at the end of
+        // the literal text just added to the result, because a preceding tag ends with `}}`
+        if (str[openIndex - 1] === '\\') {
+          result = unescape ? result.slice(0, -1) : result;
+          result += str.slice(openIndex, closeIndex + 2);
+          searchIndex = closeIndex + 2;
+          break;
+        }
 
         // A tag nested in a transformation argument, as in `default('{{slug}}')`, never gets here:
         // it’s inside the quotes the outer tag is scanned through, so it’s kept as part of that
@@ -107,6 +121,28 @@ export const splitTemplateTags = (str) => {
   }).split(TAG_PLACEHOLDER);
 
   return { tags, literals };
+};
+
+/**
+ * Get the template tags in a string, finding them like {@link replaceTemplateTags} does, so a tag
+ * escaped with a backslash or nested in a transformation argument isn’t one.
+ * @param {string} str The string containing template tags.
+ * @returns {{ tag: string, content: string, name: string }[]} Each tag in the order they appear,
+ * e.g. `{{ fields.title | upper }}`, with its content between the braces and its name, the content
+ * before any transformation, e.g. `fields.title`. A name never contains a pipe, so it’s found even
+ * when a transformation argument does.
+ */
+export const getTemplateTags = (str) => {
+  /** @type {{ tag: string, content: string, name: string }[]} */
+  const tags = [];
+
+  replaceTemplateTags(str, (tag, content) => {
+    tags.push({ tag, content, name: content.split('|')[0].trim() });
+
+    return tag;
+  });
+
+  return tags;
 };
 
 /**
