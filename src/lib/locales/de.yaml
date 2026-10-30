@@ -1923,6 +1923,12 @@ cloud_storage:
   uploadcare:
     auth_key_label: Geheimer API-Schlüssel
 
+  azure_blob_storage:
+    auth_key_label: SAS-Token
+
+  backblaze_b2:
+    auth_key_label: Application Key
+
   bunny_storage:
     auth_key_label: Passwort der Storage Zone
 
