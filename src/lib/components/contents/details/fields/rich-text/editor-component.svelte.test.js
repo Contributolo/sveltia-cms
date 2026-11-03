@@ -186,6 +186,8 @@ describe('EditorComponent', () => {
       onChange.mockClear();
 
       component.setValues({ title: 'Undone' });
+      // The same values passed again before they’re taken are ignored
+      component.setValues({ title: 'Undone' });
 
       await expect.element(title).toHaveValue('Undone');
       // The node’s data replaces the stored values as a whole
@@ -194,7 +196,7 @@ describe('EditorComponent', () => {
       // The node already holds the values, so reporting them would add a step to the history
       expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'update' }));
 
-      // The same values are ignored
+      // Taking the node’s values again doesn’t keep a later edit from being reported
       component.setValues({ title: 'Undone' });
       await title.fill('Edited');
       await vi.waitFor(() =>
@@ -983,6 +985,65 @@ describe('EditorComponent', () => {
         .element()
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
       expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'remove' }));
+    });
+
+    test('does nothing once unmounted before the next frame', async () => {
+      // Hold the frames back, so the component can be unmounted before the next one comes
+      /** @type {Map<number, FrameRequestCallback>} */
+      const frames = new Map();
+      let lastFrame = 0;
+
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        lastFrame += 1;
+        frames.set(lastFrame, callback);
+
+        return lastFrame;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+        frames.delete(id);
+      });
+
+      const draft = createMockDraft({
+        fields: [{ name: 'body', widget: 'markdown' }],
+        values: { _default: { body: '' } },
+      });
+
+      const entryDraft = new EntryDraftState();
+      const wrapper = document.createElement('div');
+
+      entryDraft.current = draft;
+      wrapper.dataset.locale = '_default';
+      wrapper.dataset.keyPath = 'body';
+      wrapper.setAttribute('role', 'textbox');
+      wrapper.setAttribute('aria-readonly', 'false');
+      document.body.appendChild(wrapper);
+      wrappers.push(wrapper);
+      setEntryDraftRoot(wrapper, entryDraft);
+
+      // A freshly inserted component, which would open the dialog in the next frame
+      const { unmount } = await render(EditorComponent, {
+        target: wrapper,
+        props: /** @type {any} */ ({
+          componentName: 'card',
+          label: 'Card',
+          fields,
+          mode: 'dialog',
+          onChange: vi.fn(),
+        }),
+      });
+
+      await unmount();
+
+      const closest = vi.spyOn(Element.prototype, 'closest');
+
+      frames.forEach((callback) => callback(performance.now()));
+      vi.restoreAllMocks();
+
+      // The component neither looks up the draft, the locale and the read-only state through the
+      // DOM, nor opens the dialog
+      expect(closest).not.toHaveBeenCalled();
+      expect(draft.extraValues._default).toEqual({});
+      expect(page.getByRole('dialog').elements()).toHaveLength(0);
     });
 
     test('opens the dialog with the Space key, which doesn’t reach the editor', async () => {

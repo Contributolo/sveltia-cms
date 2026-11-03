@@ -399,14 +399,22 @@
  */
 
 /**
+ * Field-level i18n strategy supported by every field type. Some field types support another
+ * strategy as well: see {@link KeyValueFieldI18nProps} and {@link SimpleFieldI18nProps}.
+ * @typedef {boolean | 'duplicate' | 'sync' | 'translate' | 'none'} FieldI18nStrategy
+ */
+
+/**
  * Field-level i18n option shared among most field types.
  * @typedef {object} FieldI18nProps
- * @property {boolean | 'duplicate' | 'translate' | 'none'} [i18n] Whether to enable the editor UI
- * in locales other than the default locale. Default: `false`, or `duplicate` for a subfield of a
- * field using `duplicate`. `duplicate` makes the field read-only in non-default locales and
- * automatically copies the default locale’s value to them. `translate` and `none` are aliases of
- * `true` and `false`, respectively. This option only works
- * when i18n is set up with the global and collection-level `i18n` option. See the
+ * @property {FieldI18nStrategy} [i18n] Whether to enable the editor UI in locales other than the
+ * default locale. Default: `false`, or the option of a field using `duplicate` or `sync` for its
+ * subfield. `duplicate` makes the field read-only in non-default locales and automatically copies
+ * the default locale’s value to them. `sync` keeps the value the same in every locale as well, but
+ * the field can be edited in any locale, and the value is copied from there to the others. In a
+ * rich text editor component, whose values are stored in each locale’s text, it works like
+ * `translate`. `translate` and `none` are aliases of `true` and `false`, respectively. This option
+ * only works when i18n is set up with the global and collection-level `i18n` option. See the
  * [documentation](https://sveltiacms.app/en/docs/i18n/options#field-level-configuration) for
  * details.
  */
@@ -415,14 +423,16 @@
  * Field-level i18n option for the KeyValue field, which supports the `duplicate_keys` strategy in
  * addition to the common ones.
  * @typedef {object} KeyValueFieldI18nProps
- * @property {boolean | 'duplicate' | 'duplicate_keys' | 'translate' | 'none'} [i18n] Whether to
- * enable the editor UI in locales other than the default locale. Default: `false`, or `duplicate`
- * for a subfield of a field using `duplicate`. `duplicate` makes the field read-only in non-default
- * locales and automatically copies the default locale’s key-value pairs to them. `duplicate_keys`
- * copies the keys only: the keys are read-only in non-default locales and kept in sync with the
- * default locale, while the values can be edited in each locale. `translate` and `none` are aliases
- * of `true` and `false`, respectively. This option only works when i18n is set up with the global
- * and collection-level `i18n` option. See the
+ * @property {FieldI18nStrategy | 'duplicate_keys'} [i18n] Whether to enable the editor UI in
+ * locales other than the default locale. Default: `false`, or the option of a field using
+ * `duplicate` or `sync` for its subfield. `duplicate` makes the field read-only in non-default
+ * locales and automatically copies the default locale’s key-value pairs to them. `sync` keeps the
+ * pairs the same in every locale as well, but the field can be edited in any locale, and the pairs
+ * are copied from there to the others, except in a rich text editor component, where it works like
+ * `translate`. `duplicate_keys` copies the keys only: the keys are read-only in non-default locales
+ * and kept in sync with the default locale, while the values can be edited in each locale.
+ * `translate` and `none` are aliases of `true` and `false`, respectively. This option only works
+ * when i18n is set up with the global and collection-level `i18n` option. See the
  * [documentation](https://sveltiacms.app/en/docs/i18n/options#field-level-configuration) for
  * details.
  */
@@ -431,15 +441,18 @@
  * Field-level i18n option for the fields holding a single, simple value, which support the
  * `duplicate_if_empty` strategy in addition to the common ones.
  * @typedef {object} SimpleFieldI18nProps
- * @property {boolean | 'duplicate' | 'duplicate_if_empty' | 'translate' | 'none'} [i18n] Whether
- * to enable the editor UI in locales other than the default locale. Default: `false`, or
- * `duplicate` for a subfield of a field using `duplicate`. `duplicate` makes the field read-only in
- * non-default locales and automatically copies the default locale’s value to them.
- * `duplicate_if_empty` copies the default locale’s value to non-default locales only where the
- * value is empty, or still the same as the default locale’s value, while the field can be edited
- * in every locale. It’s not supported for a File or Image field that accepts multiple files.
- * `translate` and `none` are aliases of `true` and `false`, respectively. This option only works
- * when i18n is set up with the global and collection-level `i18n` option. See the
+ * @property {FieldI18nStrategy | 'duplicate_if_empty'} [i18n] Whether to enable the editor UI in
+ * locales other than the default locale. Default: `false`, or the option of a field using
+ * `duplicate` or `sync` for its subfield. `duplicate` makes the field read-only in non-default
+ * locales and automatically copies the default locale’s value to them. `sync` keeps the value the
+ * same in every locale as well, but the field can be edited in any locale, and the value is copied
+ * from there to the others, except in a rich text editor component, where it works like
+ * `translate`. `duplicate_if_empty` copies the default locale’s value to non-default locales only
+ * where the value is empty, or still the same as the default locale’s value, while the field can be
+ * edited in every locale. It’s not supported for a File, Image, Relation or Select field that
+ * accepts multiple values. `translate` and `none` are aliases of `true` and `false`, respectively.
+ * This option only works when i18n is set up with the global and collection-level `i18n` option.
+ * See the
  * [documentation](https://sveltiacms.app/en/docs/i18n/options#field-level-configuration) for
  * details.
  */
@@ -917,12 +930,13 @@
  * List field properties.
  * @typedef {object} ListFieldProps
  * @property {'list'} widget Field type.
- * @property {string[] | Record<string, any>[]} [default] Default value. The format depends on how
- * the field is configured, with or without `field`, `fields` or `types`. See the
- * [documentation](https://sveltiacms.app/en/docs/fields/list) for details.
- * @property {Record<LocaleCode, string[] | Record<string, any>[]>} [default_localized] Default
- * values for specific locales, keyed by locale code. A value given for a locale takes precedence
- * over `default` in that locale. See the
+ * @property {any[]} [default] Default value. The format depends on how the field is configured,
+ * with or without `field`, `fields` or `types`: strings for a simple list, values of the subfield
+ * for a list with `field`, e.g. numbers for a Number subfield, or objects for a list with `fields`
+ * or `types`. See the [documentation](https://sveltiacms.app/en/docs/fields/list) for details.
+ * @property {Record<LocaleCode, any[]>} [default_localized] Default values for specific locales,
+ * keyed by locale code. A value given for a locale takes precedence over `default` in that locale.
+ * See the
  * [documentation](https://sveltiacms.app/en/docs/i18n/options#localized-field-options) for details.
  * @property {string} [label_singular] Label to be displayed on the Add button. Default: `label`
  * field value.
@@ -1347,7 +1361,7 @@
 
 /**
  * Relation field definition.
- * @typedef {CommonFieldProps & VisibleFieldProps & MultiValueFieldValidationProps &
+ * @typedef {SimpleCommonFieldProps & VisibleFieldProps & MultiValueFieldValidationProps &
  * RelationFieldProps & MultiOptionFieldProps & UniqueValueProps} RelationField
  */
 
@@ -1384,7 +1398,7 @@
 
 /**
  * Select field definition.
- * @typedef {CommonFieldProps & VisibleFieldProps & MultiValueFieldValidationProps &
+ * @typedef {SimpleCommonFieldProps & VisibleFieldProps & MultiValueFieldValidationProps &
  * SelectFieldProps & MultiOptionFieldProps & UniqueValueProps} SelectField
  */
 

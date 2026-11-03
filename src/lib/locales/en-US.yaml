@@ -759,6 +759,8 @@ enter_new_name_for_asset_error:
   duplicate: This file name is used for another asset.
   # A name starting with a dot hides the file, which the CMS wouldn’t list any more
   leading_dot: File name cannot start with a dot.
+  # The name of a file next to the asset that isn’t an asset, like an entry file
+  file_duplicate: Another file with this name already exists here.
   # The name of a folder next to the file
   folder_duplicate: A folder with this name already exists here.
 # Shown while renaming a file whose name will be changed on saving, e.g. by the `slugify_filename`
@@ -1258,6 +1260,9 @@ edit_singleton_announcement: You’re now editing the “{$file}” file.
 # Shown when CI skip is enabled/disabled
 save_and_publish: Save and Publish
 save_without_publishing: Save without Publishing
+# Shown disabled in place of `save_and_publish` while entries created or edited from a Relation
+# field are in a collection whose review can’t be skipped with the `direct_publish` option
+save_and_publish_needs_review: Save and Publish (Related Entries Need Review)
 
 # Editor options menu
 show_editor_options: Show Editor Options
@@ -1746,12 +1751,37 @@ opacity: Opacity
 # Select field: empty option placeholder
 unselected_option: (None)
 
-# Relation field: creating a referenced entry without leaving the editor
+# Relation field: creating or editing a referenced entry without leaving the editor
 relation_field:
   # Note shown in the dialog. {$name} is the singular label of the referenced collection
   save_together_hint: The new {$name} will be saved along with the entry you’re editing.
   # Error shown when the entry couldn’t be prepared. {$name} is the singular label of the collection
   add_failed: The {$name} couldn’t be added. Check the browser console for details.
+  # Title of the dialog to edit an entry selected in the field. {$name} is the singular label of the
+  # referenced collection
+  edit_entry_title: Editing {$name}
+  # Note shown in the dialog. {$name} is the singular label of the referenced collection
+  edit_together_hint: Your changes to the {$name} will be saved along with the entry you’re editing.
+  # Error shown when the changes couldn’t be prepared. {$name} is the singular label of the collection
+  edit_failed: The changes to the {$name} couldn’t be applied. Check the browser console for details.
+  # Error shown when the changes would move the entry to another file path, e.g. through a path
+  # template using a field. {$name} is the singular label of the collection
+  move_unsupported: These changes would move the {$name} to another location, which can only be done by editing it on its own.
+  # Error shown when saving, if someone else has changed an entry edited from the field since. {$name}
+  # is the summary of that entry
+  edit_conflict: “{$name}” has been changed by someone else since you edited it. Open it again from the field to review your changes against the latest version.
+  # Error shown when saving, if someone else has deleted an entry edited from the field since.
+  # {$name} is the summary of that entry
+  edit_deleted: “{$name}” has been deleted by someone else since you edited it. Remove it from the field to save the entry.
+  # Accessible label of the menu listing the selected entries that can be edited
+  select_entry_to_edit: Select an Entry to Edit
+  # Warning shown in the editor of an entry that has been edited from a Relation field of another
+  # entry, while the changes wait in that entry’s pull request. {$name} is the summary of that
+  # entry
+  edited_with_entry: Changes to this entry are waiting to be published along with “{$name}”. If you save it now, the two sets of changes will be combined when that entry is published, which may fail if they overlap.
+  # Warning shown in the dialog when an entry edited from the field has been changed by someone else
+  # since. {$name} is the singular label of the collection
+  changed_since_edit: This {$name} has been changed by someone else since you edited it. Your changes are shown on top of the latest version. Review them before updating.
 
 # Select Assets dialog
 assets_dialog:
@@ -2491,8 +2521,11 @@ workflow:
   # Workflow page: note on a card listing the new entries that were created from a Relation field
   # of the entry and are published along with it, e.g. “Also adds Section: Getting Started”
   companion_entries: Also adds {$entries}
-  # Workflow page: one of the new entries listed by `companion_entries`, named by its collection’s
-  # singular label and its title
+  # Workflow page: note on a card listing the existing entries that were edited from a Relation
+  # field of the entry and are published along with it, e.g. “Also changes Author: Ada Lovelace”
+  edited_companion_entries: Also changes {$entries}
+  # Workflow page: one of the entries listed by `companion_entries` or `edited_companion_entries`,
+  # named by its collection’s singular label and its title
   companion_entry: '{$collection}: {$title}'
 
 # Dialog asking the user for a commit message every time changes are saved, when the site is
@@ -2614,7 +2647,7 @@ prefs:
         select_service: Select Service
       api_keys:
         title: Translation Service API Keys
-        description: Manage API keys for <a>translation services</a>.
+        description: Manage API keys for <a>translation services</a>. API keys for generic AI services can be managed in the AI settings.
       # API key input label, e.g., “DeepL Key”
       # {$service} is the translation service name
       field_label: '{$service} Key'
@@ -2647,6 +2680,16 @@ prefs:
       # {$service} is the cloud storage service name
       field_label: '{$service} API Key'
       no_services: No <a>cloud storage services</a> are configured.
+
+  # AI panel
+  ai:
+    title: AI
+    api_keys:
+      title: AI Service API Keys
+      description: Manage API keys for AI services.
+    # API key input label, e.g., “OpenAI GPT API Key”
+    # {$service} is the AI service name
+    field_label: '{$service} API Key'
 
   # Accessibility panel
   accessibility:

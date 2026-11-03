@@ -1607,6 +1607,52 @@ describe('Test getOptions()', async () => {
         expect(getReferencedOptionLabel(args)).toBe('jane-doe');
       });
 
+      test('should resolve a value referring to an entry edited from a Relation field', () => {
+        /** @type {RelationField} */
+        const fieldConfig = {
+          ...baseFieldConfig,
+          collection: 'members',
+          display_fields: ['name.first'],
+        };
+
+        vi.mocked(getFieldDisplayValue).mockImplementation(
+          ({ keyPath, valueMap }) => valueMap?.[keyPath] || 'display-value',
+        );
+
+        const [savedEntry] = comprehensiveMemberEntries;
+
+        /** @type {PendingEntry[]} */
+        const pendingEntries = [
+          {
+            collectionName: 'members',
+            entry: {
+              ...savedEntry,
+              locales: {
+                _default: {
+                  ...savedEntry.locales._default,
+                  content: { ...savedEntry.locales._default.content, 'name.first': 'Mel' },
+                },
+              },
+            },
+            changes: [],
+            savingAssets: [],
+            values: ['melvin-lucas'],
+            baseEntry: savedEntry,
+          },
+        ];
+
+        // The edited version takes the place of the saved one
+        expect(
+          getReferencedOptionLabel({
+            fieldConfig,
+            valueMap: { author: 'melvin-lucas' },
+            keyPath: 'author',
+            locale,
+            pendingEntries,
+          }),
+        ).toBe('Mel');
+      });
+
       test('should reuse the options while the pending entries stay the same', () => {
         /** @type {RelationField} */
         const fieldConfig = {
@@ -1660,6 +1706,18 @@ describe('Test getOptions()', async () => {
         expect(getFieldDisplayValue).toHaveBeenCalledTimes(callCount);
         expect(optionCacheMap.size).toBe(cacheSize);
 
+        // So is a list put together anew with the same entries, as the entries in the pull request
+        // of the host entry are added to those of the draft on each call
+        expect(
+          getReferencedOptionLabel({
+            ...args,
+            valueMap: { author: 'jane-doe' },
+            pendingEntries: [...pendingEntries],
+          }),
+        ).toBe('Jane');
+        expect(getFieldDisplayValue).toHaveBeenCalledTimes(callCount);
+        expect(optionCacheMap.size).toBe(cacheSize);
+
         // An entry added to the same array is picked up
         pendingEntries.push(createPendingMember('john-doe', 'John'));
 
@@ -1667,6 +1725,13 @@ describe('Test getOptions()', async () => {
           'John',
         );
         expect(optionCacheMap.size).toBe(cacheSize + 1);
+
+        // An entry opened again and changed takes the place of its earlier version in the array
+        pendingEntries[0] = createPendingMember('jane-doe', 'Janet');
+
+        expect(getReferencedOptionLabel({ ...args, valueMap: { author: 'jane-doe' } })).toBe(
+          'Janet',
+        );
 
         // Pending entries of another collection leave the saved entries as they are
         expect(

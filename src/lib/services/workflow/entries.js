@@ -5,8 +5,12 @@ import { isInRootDir } from '$lib/services/backends/root-dir';
 import { isReadonly } from '$lib/services/config/readonly';
 import { allEntries, findEntryByPaths } from '$lib/services/contents';
 import { getCollection } from '$lib/services/contents/collection';
+import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
+import { getCollectionFileEntry } from '$lib/services/contents/collection/files';
+import { isEntryEditableAlong } from '$lib/services/contents/entry/editable';
 import { getEntryPaths } from '$lib/services/contents/entry/paths';
 import { prepareEntries } from '$lib/services/contents/file/process';
+import { usesMultiFileStructure } from '$lib/services/contents/i18n/config';
 import { parseBranchName } from '$lib/services/workflow/branch';
 
 /**
@@ -16,6 +20,7 @@ import { parseBranchName } from '$lib/services/workflow/branch';
  * BaseFileListItemProps,
  * CompanionEntry,
  * Entry,
+ * InternalEntryCollection,
  * WorkflowStatus,
  * UnpublishedEntry,
  * WorkflowPullRequest,
@@ -23,23 +28,82 @@ import { parseBranchName } from '$lib/services/workflow/branch';
  */
 
 /**
+ * Get the key that links the localized files of an entry with the multi-file i18n structure, as
+ * {@link prepareEntries} does: the canonical slug if one of the files has it, or the sub path.
+ * @param {Entry} entry Entry.
+ * @param {string} canonicalSlugKey Property name of the canonical slug.
+ * @returns {string} Key.
+ */
+const getLinkingKey = (entry, canonicalSlugKey) =>
+  Object.values(entry.locales)
+    .map(({ content }) => content[canonicalSlugKey])
+    .find((value) => typeof value === 'string') ?? entry.subPath;
+
+/**
+ * Find the published version of an entry parsed from a pull request.
+ * @param {object} args Arguments.
+ * @param {Entry} args.entry Entry parsed from the pull request.
+ * @param {string[]} args.previousPaths File paths the pull request renamed the entry from.
+ * @param {string} args.collectionName Collection name.
+ * @param {string} [args.fileName] Collection file name.
+ * @returns {Entry | undefined} Published entry.
+ */
+const findPublishedEntry = ({ entry, previousPaths, collectionName, fileName }) => {
+  // `allEntries` holds the version currently on the configured branch
+  const publishedEntry = findEntryByPaths(new Set([...getEntryPaths(entry), ...previousPaths]));
+
+  if (publishedEntry) {
+    return publishedEntry;
+  }
+
+  // A locale turned on for the entry adds a file the published version doesn’t have, so a pull
+  // request carrying only that file shares no path with it. Link the files the way the entry list
+  // does instead: a collection file by its name, and an entry by its canonical slug or sub path
+  if (fileName) {
+    return getCollectionFileEntry(collectionName, fileName);
+  }
+
+  const collection = getCollection(collectionName);
+
+  // Other structures keep every locale in the same file, which a path always finds
+  if (!collection || !usesMultiFileStructure(collection._i18n.structureMap)) {
+    return undefined;
+  }
+
+  const canonicalSlugKey = collection._i18n.canonicalSlug.key;
+  const linkingKey = getLinkingKey(entry, canonicalSlugKey);
+
+  return getEntriesByCollection(collectionName).find(
+    (published) => getLinkingKey(published, canonicalSlugKey) === linkingKey,
+  );
+};
+
+/**
  * Fill in the parts of an unpublished entry that the pull request doesn’t carry. With the
  * multi-file i18n structure, an entry is spread over one file per locale and only the changed ones
  * are committed, so the rest have to come from the published version. Without them the editor shows
  * the untouched locales as disabled, and an entry whose default locale file isn’t in the pull
  * request has no slug at all, because the slug is read from that file alone.
- * @param {Entry} entry Entry parsed from the pull request.
- * @param {string[]} previousPaths File paths the pull request renamed the entry from.
- * @param {Set<string>} deletedPaths File paths the pull request deletes. A locale turned off for
- * the entry has its file deleted, so it’s left out rather than brought back from the published
+ * @param {object} args Arguments.
+ * @param {Entry} args.entry Entry parsed from the pull request.
+ * @param {string[]} args.previousPaths File paths the pull request renamed the entry from.
+ * @param {Set<string>} args.deletedPaths File paths the pull request deletes. A locale turned off
+ * for the entry has its file deleted, so it’s left out rather than brought back from the published
  * version.
+ * @param {string} args.collectionName Collection name.
+ * @param {string} [args.fileName] Collection file name.
+ * @param {Entry} [args.publishedEntry] Published version of the entry, if already known. Looked up
+ * otherwise.
  * @returns {Entry} Entry with the unchanged locales merged in.
  */
-const completeEntry = (entry, previousPaths, deletedPaths) => {
-  const paths = new Set([...getEntryPaths(entry), ...previousPaths]);
-  // `allEntries` holds the version currently on the configured branch
-  const publishedEntry = findEntryByPaths(paths);
-
+const completeEntry = ({
+  entry,
+  previousPaths,
+  deletedPaths,
+  collectionName,
+  fileName,
+  publishedEntry = findPublishedEntry({ entry, previousPaths, collectionName, fileName }),
+}) => {
   if (!publishedEntry) {
     return entry;
   }
@@ -66,46 +130,86 @@ const completeEntry = (entry, previousPaths, deletedPaths) => {
 };
 
 /**
- * Parse the new entries of other collections that ride along in a pull request: those created from
- * a Relation field of the entry the pull request was opened for, and committed with it. A file
- * that is already on the configured branch isn’t one of them: it belongs to an entry the CMS has
- * rewritten along with the entry, e.g. to update a reference to it, which the entry list shows as
- * published. Nor is the file of a file collection, which a Relation field can’t add to, or of a
- * collection the CMS can’t create entries in: such a file is left for the publish check to refuse.
+ * Parse the entries of other collections that ride along in a pull request: those created or
+ * edited from a Relation field of the entry the pull request was opened for, and committed with it.
+ * A new entry is one the configured branch doesn’t have yet, in a collection the CMS can create
+ * entries in. An existing one is changed in the pull request; its unchanged locales come from the
+ * published version, whose ID it keeps. That’s also how the CMS rewrites another entry along with
+ * the entry, e.g. to update a reference to it on a rename, so such an entry is listed as edited
+ * too.
+ * A file of a file collection, which a Relation field can’t add to or edit, or of a collection the
+ * CMS can’t write to that way, isn’t one of them: such a file is left for the publish check to
+ * refuse.
  * @param {BaseEntryListItem[]} entryFiles Entry files in the pull request, with their text.
  * @param {string} collectionName Name of the collection the pull request was opened for.
+ * @param {Set<string>} deletedPaths File paths the pull request deletes, such as the file of a
+ * locale turned off for an edited entry.
  * @returns {Promise<CompanionEntry[]>} Entries.
  */
-const parseCompanions = async (entryFiles, collectionName) => {
+const parseCompanions = async (entryFiles, collectionName, deletedPaths) => {
+  /**
+   * Get the given entry collection, which the files are filtered for below.
+   * @param {string} name Collection name.
+   * @returns {InternalEntryCollection} Collection.
+   */
+  const getEntryCollection = (name) => /** @type {InternalEntryCollection} */ (getCollection(name));
   /**
    * Check whether the CMS can create an entry in the given collection.
    * @param {string} name Collection name.
    * @returns {boolean} Result.
    */
-  const isCreatable = (name) => {
-    const collection = getCollection(name);
+  const isCreatable = (name) => getEntryCollection(name).create !== false;
+
+  // Neither kind can be in a collection the CMS can’t write to, so its files aren’t parsed at all
+  const files = entryFiles.filter(({ folder, text }) => {
+    const collection = getCollection(folder.collectionName);
 
     return (
-      collection?._type === 'entry' && collection.create !== false && !isReadonly({ collection })
-    );
-  };
-
-  const files = entryFiles.filter(
-    ({ path, folder, text }) =>
       folder.collectionName !== collectionName &&
       folder.fileName === undefined &&
       text !== undefined &&
-      isCreatable(folder.collectionName) &&
-      !findEntryByPaths([path]),
-  );
+      collection?._type === 'entry' &&
+      !isReadonly({ collection })
+    );
+  });
 
   const results = await Promise.all(
     [...Map.groupBy(files, ({ folder }) => folder.collectionName)].map(
       async ([companionCollectionName, companionFiles]) =>
-        (await prepareEntries(companionFiles)).entries.map((entry) => ({
-          collectionName: companionCollectionName,
-          entry,
-        })),
+        (await prepareEntries(companionFiles)).entries.flatMap((entry) => {
+          const publishedEntry = findPublishedEntry({
+            entry,
+            previousPaths: [],
+            collectionName: companionCollectionName,
+          });
+
+          if (!publishedEntry) {
+            return isCreatable(companionCollectionName)
+              ? [{ collectionName: companionCollectionName, entry }]
+              : [];
+          }
+
+          if (!isEntryEditableAlong(getEntryCollection(companionCollectionName), publishedEntry)) {
+            return [];
+          }
+
+          return [
+            {
+              collectionName: companionCollectionName,
+              entry: {
+                ...completeEntry({
+                  entry,
+                  previousPaths: [],
+                  deletedPaths,
+                  collectionName: companionCollectionName,
+                  publishedEntry,
+                }),
+                id: publishedEntry.id,
+              },
+              edited: true,
+            },
+          ];
+        }),
     ),
   );
 
@@ -246,11 +350,11 @@ export const convertPullRequest = async (pullRequest) => {
 
   const { entries } = await prepareEntries(targetFiles);
   const { fileName } = targetFiles[0].folder;
-  const companions = await parseCompanions(entryFiles, collectionName);
+  const companions = await parseCompanions(entryFiles, collectionName, deletedPaths);
 
   return {
     entries: entries.map((entry) => ({
-      ...completeEntry(entry, previousPaths, deletedPaths),
+      ...completeEntry({ entry, previousPaths, deletedPaths, collectionName, fileName }),
       workflow: {
         pullRequest,
         status: pullRequest.status,

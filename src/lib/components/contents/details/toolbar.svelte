@@ -35,6 +35,7 @@
   import { hasNestedEntries, nestedFilterPath } from '$lib/services/contents/collection/nested';
   import { collectionState } from '$lib/services/contents/collection/view';
   import { createDraft } from '$lib/services/contents/draft/create';
+  import { getReferencedPendingEntrySet } from '$lib/services/contents/draft/pending-entries';
   import { getEntryDraftContext } from '$lib/services/contents/draft/state.svelte';
   import { canResetEntry } from '$lib/services/contents/draft/update/reset';
   import {
@@ -58,6 +59,7 @@
   import { env } from '$lib/services/user/env.svelte';
   import { prefs } from '$lib/services/user/prefs.svelte';
   import {
+    canSkipReviewAlong,
     checkPublishedVersion,
     getUnpublishedEntryByDraft,
     isDirectPublishAllowed,
@@ -181,11 +183,13 @@
   const controlsDisabled = $derived(disabled || busy);
   // A change still on its way to the draft counts, so a save can be started right after it
   const modified = $derived(isNew || entryDraft.modified || fieldUpdatePending.current);
+  /* v8 ignore start -- only read in the deletion dialog, which a new entry doesn’t offer */
   const associatedAssets = $derived(
     collectionName && originalEntry
       ? getEntryRelativeAssets({ entry: originalEntry, collectionName, fileName })
       : [],
   );
+  /* v8 ignore stop */
   // Look the entry up in the store rather than using `originalEntry` directly, so the status button
   // stays in sync when the status is changed elsewhere, e.g. on the Editorial Workflow page
   const unpublishedEntry = $derived(
@@ -214,6 +218,18 @@
   // A workflow draft can also be saved and published in one go, if the publish mode allows it
   const directPublish = $derived(
     useWorkflow && isDirectPublishAllowed(collection, unpublishedEntry),
+  );
+  // The entries created or edited from the Relation fields would be published along with it, and
+  // one in a collection whose review can’t be skipped would miss its review
+  const directPublishBlocked = $derived(
+    directPublish &&
+      !canSkipReviewAlong([
+        // A deselected entry isn’t saved at all
+        ...(entryDraft.current?.pendingEntries.length
+          ? getReferencedPendingEntrySet(entryDraft.current)
+          : []),
+        ...(unpublishedEntry?.workflow.companions ?? []),
+      ]),
   );
   // The review prompt hands the entry over for review, or marks it ready when there’s no review
   const reviewDialogLabel = $derived(
@@ -431,7 +447,8 @@
       {#snippet popup()}
         <Menu>
           <MenuItem
-            label={_('save_and_publish')}
+            label={_(directPublishBlocked ? 'save_and_publish_needs_review' : 'save_and_publish')}
+            disabled={directPublishBlocked}
             onclick={() => {
               // A change published directly has to be deployed, whatever the `skip_ci` option says
               save({ publish: true, skipCI: false });

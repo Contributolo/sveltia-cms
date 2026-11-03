@@ -17,7 +17,10 @@ import {
   resolveWorkflowRepository,
   runOpenAuthoringSetUp,
   setUpForkFor,
+  warnForkNotFastForwarded,
+  warnForkSyncError,
 } from '$lib/services/backends/git/shared/fork';
+import { getRepositoryPath, isSameRepository } from '$lib/services/backends/git/shared/repository';
 import { user } from '$lib/services/user/account.svelte';
 import { encodePathSegments } from '$lib/services/utils/url';
 
@@ -107,22 +110,20 @@ export const fetchRepositoryAccess = async () => {
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoGet
  */
 export const fetchForkByName = async () => {
-  const { owner, repo } = repository;
+  const { repo } = repository;
   const userName = /** @type {string} */ (user.account?.login);
 
   // Only a missing repository means there’s no fork at the name. Reading a rate limit or an outage
   // the same way would have the contributor asked to create another one, so that is passed on
   const result = /** @type {Record<string, any> | undefined} */ (
-    await fetchAPIOrUndefined(`/repos/${encodeURIComponent(userName)}/${repo}`)
+    await fetchAPIOrUndefined(getRepositoryPath({ owner: userName, repo }))
   );
 
   if (!result) {
     return undefined;
   }
 
-  const parent = result.parent?.full_name?.toLowerCase();
-
-  if (!result.fork || parent !== `${owner}/${repo}`.toLowerCase()) {
+  if (!result.fork || !isSameRepository(result.parent?.full_name, repository)) {
     return undefined;
   }
 
@@ -144,10 +145,8 @@ export const fetchForkByName = async () => {
  * @see https://docs.gitea.com/api/next/#tag/repository/operation/repoSearch
  */
 export const fetchForkBySearch = async () => {
-  const { owner, repo } = repository;
   // Nothing here runs before the user has signed in
   const { id, login } = /** @type {User} */ (user.account);
-  const repoPath = `${owner}/${repo}`.toLowerCase();
 
   const { data = [] } = /** @type {{ data?: Record<string, any>[] }} */ (
     await fetchAPI(`/repos/search?uid=${id}&exclusive=true&mode=fork&limit=${MAX_FORKS}`)
@@ -157,7 +156,7 @@ export const fetchForkBySearch = async () => {
     (item) =>
       // Check the owner rather than trusting the filter to have applied: committing to someone
       // else’s fork would fail in a way that’s hard to make sense of
-      item.owner?.login === login && item.parent?.full_name?.toLowerCase() === repoPath,
+      item.owner?.login === login && isSameRepository(item.parent?.full_name, repository),
   );
 
   return result ? toRepositoryPath(result) : undefined;
@@ -202,7 +201,7 @@ const isRepositoryNameTaken = async (name) => {
   const userName = /** @type {string} */ (user.account?.login);
 
   const response = /** @type {Response} */ (
-    await fetchAPI(`/repos/${encodeURIComponent(userName)}/${name}`, { responseType: 'raw' })
+    await fetchAPI(getRepositoryPath({ owner: userName, repo: name }), { responseType: 'raw' })
   );
 
   return response.ok;
@@ -217,7 +216,7 @@ const isRepositoryNameTaken = async (name) => {
  */
 export const createFork = async () => {
   const { owner, repo } = repository;
-  const endpoint = `/repos/${owner}/${repo}/forks`;
+  const endpoint = `${getRepositoryPath(repository)}/forks`;
 
   const result = await requestForkWithFallbackName({
     repoPath: `${owner}/${repo}`,
@@ -262,7 +261,7 @@ const fetchForgejoSyncState = async ({ owner, repo }, branch) => {
     fork_commit: forkCommit,
     base_commit: baseCommit,
   } = /** @type {{ allowed?: boolean, fork_commit?: string, base_commit?: string }} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/sync_fork/${encodePathSegments(branch)}`)
+    await fetchAPI(`${getRepositoryPath({ owner, repo })}/sync_fork/${encodePathSegments(branch)}`)
   );
 
   if (forkCommit && forkCommit === baseCommit) {
@@ -284,7 +283,6 @@ const fetchForgejoSyncState = async ({ owner, repo }, branch) => {
  * @see https://codeberg.org/api/swagger#/repository/repoSyncForkBranch
  */
 export const syncFork = async (fork) => {
-  const { owner, repo } = fork;
   // The branch is resolved before the fork is set up
   const { branch } = /** @type {{ branch: string }} */ (repository);
   /** @type {Response | undefined} */
@@ -301,10 +299,7 @@ export const syncFork = async (fork) => {
       // The fork has commits of its own on the branch, which is a state the CMS can’t resolve on
       // the contributor’s behalf
       if (state === 'diverged') {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `The ${owner}/${repo} fork could not be fast-forwarded to the upstream repository.`,
-        );
+        warnForkNotFastForwarded(fork);
 
         return;
       }
@@ -313,8 +308,8 @@ export const syncFork = async (fork) => {
     response = /** @type {Response} */ (
       await fetchAPI(
         instance.isForgejo
-          ? `/repos/${owner}/${repo}/sync_fork/${encodePathSegments(branch)}`
-          : `/repos/${owner}/${repo}/merge-upstream`,
+          ? `${getRepositoryPath(fork)}/sync_fork/${encodePathSegments(branch)}`
+          : `${getRepositoryPath(fork)}/merge-upstream`,
         {
           method: 'POST',
           ...(instance.isForgejo ? {} : { body: { branch } }),
@@ -323,8 +318,7 @@ export const syncFork = async (fork) => {
       )
     );
   } catch (/** @type {any} */ ex) {
-    // eslint-disable-next-line no-console
-    console.warn(`Failed to sync the ${owner}/${repo} fork with the upstream repository.`, ex);
+    warnForkSyncError(fork, ex);
 
     return;
   }
@@ -332,10 +326,7 @@ export const syncFork = async (fork) => {
   // Gitea refuses the request when the fork’s commits conflict with the upstream ones, which it
   // can’t merge
   if (!response.ok) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `The ${owner}/${repo} fork could not be fast-forwarded to the upstream repository.`,
-    );
+    warnForkNotFastForwarded(fork);
   }
 };
 
@@ -353,7 +344,7 @@ export const checkForkBranch = async ({ owner, repo }) => {
   const { branch } = /** @type {{ branch: string }} */ (repository);
 
   const response = /** @type {Response} */ (
-    await fetchAPI(`/repos/${owner}/${repo}/branches/${encodePathSegments(branch)}`, {
+    await fetchAPI(`${getRepositoryPath({ owner, repo })}/branches/${encodePathSegments(branch)}`, {
       responseType: 'raw',
     })
   );

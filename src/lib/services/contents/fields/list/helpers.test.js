@@ -762,6 +762,16 @@ describe('Test hasDuplicatedSubField()', () => {
     ).toBe(true);
   });
 
+  test('should find a subfield using the `sync` strategy', () => {
+    expect(
+      hasDuplicatedSubField(
+        /** @type {any} */ ({
+          fields: [translatable, { name: 'url', widget: 'string', i18n: 'sync' }],
+        }),
+      ),
+    ).toBe(true);
+  });
+
   test('should find a subfield using the `duplicate_if_empty` strategy', () => {
     expect(
       hasDuplicatedSubField(
@@ -779,7 +789,14 @@ describe('Test hasDuplicatedSubField()', () => {
         /** @type {any} */ ({
           fields: [
             translatable,
-            { name: 'color', widget: 'select', options: ['red'], i18n: 'duplicate_if_empty' },
+            { name: 'draft', widget: 'boolean', i18n: 'duplicate_if_empty' },
+            {
+              name: 'colors',
+              widget: 'select',
+              options: ['red'],
+              multiple: true,
+              i18n: 'duplicate_if_empty',
+            },
             { name: 'photos', widget: 'image', multiple: true, i18n: 'duplicate_if_empty' },
           ],
         }),

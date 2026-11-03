@@ -169,6 +169,7 @@ const FETCH_BLOBS_QUERY = `
         blobs(ref: $branch, paths: $paths) {
           nodes {
             path
+            size
             rawTextBlob
           }
         }
@@ -413,11 +414,62 @@ export const fetchBlobs = async (paths, query, variables = {}) => {
  */
 export const parseFileContents = ({ fetchingFiles, blobs }) =>
   Object.fromEntries(
-    fetchingFiles.map(({ path, sha }) => [
-      path,
-      { sha, size: 0, text: blobs[path]?.rawTextBlob ?? undefined, meta: {} },
-    ]),
+    fetchingFiles.map(({ path, sha, type }) => {
+      const text = blobs[path]?.rawTextBlob ?? undefined;
+
+      return [
+        path,
+        // An entry or config file without content, e.g. one that went missing from the branch or
+        // came back as binary data, is left out of the cache, so its content is requested again on
+        // the next load instead. An asset’s content is never requested, so it’s complete as it is
+        { sha, size: 0, text, meta: text === undefined && type !== 'asset' ? undefined : {} },
+      ];
+    }),
   );
+
+/**
+ * Get the API path to read the raw content of a repository file.
+ * @param {object} args Arguments.
+ * @param {string} args.projectId Project ID.
+ * @param {string} args.path File path.
+ * @param {string} args.ref Branch name or commit SHA to read the file at.
+ * @param {boolean} [args.lfs] Whether to return the content of a file tracked by Git LFS rather
+ * than its pointer.
+ * @returns {string} API path.
+ * @see https://docs.gitlab.com/api/repository_files/#get-raw-file-from-repository
+ */
+const getRawFilePath = ({ projectId, path, ref, lfs = false }) =>
+  `/projects/${projectId}/repository/files/${encodeURIComponent(path)}/raw` +
+  `?${lfs ? 'lfs=true&' : ''}ref=${encodeURIComponent(ref)}`;
+
+/**
+ * Read the full text of the blobs that GitLab has cut short. The GraphQL API caps the data of each
+ * blob, so a text shorter in bytes than the blob is requested again with the raw file endpoint.
+ * @param {Record<string, BlobItem>} blobs Blobs mapped by file path. Updated in place.
+ * @param {string} ref Branch name or commit SHA the blobs were read at.
+ * @see https://docs.gitlab.com/api/graphql/reference/#repositoryblob
+ * @see https://docs.gitlab.com/api/repository_files/#get-raw-file-from-repository
+ */
+const fetchTruncatedBlobs = async (blobs, ref) => {
+  const encoder = new TextEncoder();
+
+  const truncated = Object.entries(blobs).filter(
+    ([, { size, rawTextBlob }]) =>
+      typeof rawTextBlob === 'string' &&
+      // `size` is a `BigInt`, encoded as a string. A text isn’t shorter in bytes than in UTF-16
+      // code units, so only a text with fewer code units than the size has to be encoded to tell
+      rawTextBlob.length < Number(size ?? 0) &&
+      encoder.encode(rawTextBlob).length < Number(size),
+  );
+
+  await mapConcurrently(truncated, async ([path, blob]) => {
+    blob.rawTextBlob = /** @type {string} */ (
+      await fetchAPI(getRawFilePath({ projectId: getProjectId(), path, ref }), {
+        responseType: 'text',
+      })
+    );
+  });
+};
 
 /**
  * Fetch the metadata of entry/asset files as well as text file contents.
@@ -439,6 +491,7 @@ export const fetchFileContents = async (fetchingFiles, lastHash) => {
   try {
     // The `$branch` variable takes a commit SHA as well as a branch name
     blobs = await fetchBlobs(textPaths, FETCH_BLOBS_QUERY, lastHash ? { branch: lastHash } : {});
+    await fetchTruncatedBlobs(blobs, lastHash ?? /** @type {string} */ (repository.branch));
   } finally {
     // Also on failure, so the interval doesn’t keep running behind the error message
     stopProgress();
@@ -486,10 +539,6 @@ export const fetchBlob = async (asset) => {
   const projectId = getProjectId(workflow ? getWorkflowRepository() : undefined);
 
   return /** @type {Promise<Blob>} */ (
-    fetchAPI(
-      `/projects/${projectId}/repository/files` +
-        `/${encodeURIComponent(path)}/raw?lfs=true&ref=${encodeURIComponent(ref)}`,
-      { responseType: 'blob' },
-    )
+    fetchAPI(getRawFilePath({ projectId, path, ref, lfs: true }), { responseType: 'blob' })
   );
 };

@@ -4,9 +4,10 @@ import { getCollection } from '$lib/services/contents/collection';
 import {
   COLUMN_LABELS,
   getBoardAnnouncement,
-  getCompanionNote,
+  getCompanionNotes,
   getDiscardMessages,
   getPublishMessages,
+  getUnpublishedEntryLabel,
   groupEntriesByStatus,
   STATUS_UPDATE_MESSAGES,
 } from '$lib/services/workflow/board';
@@ -15,6 +16,7 @@ vi.mock('@sveltia/i18n', async () =>
   (await import('$lib/test/i18n')).createI18nMock({
     strings: {
       'workflow.companion_entries': 'Also adds {entries}',
+      'workflow.edited_companion_entries': 'Also changes {entries}',
       'workflow.companion_entry': '{collection}: {title}',
     },
   }),
@@ -130,17 +132,50 @@ describe('getBoardAnnouncement()', () => {
   });
 });
 
-describe('getCompanionNote()', () => {
+describe('getUnpublishedEntryLabel()', () => {
+  const entry = /** @type {any} */ ({
+    slug: 'hello',
+    locales: { _default: { content: { title: 'Hello' } } },
+    workflow: { collectionName: 'posts' },
+  });
+
+  test('names the entry by its summary, or the collection file by its label', () => {
+    vi.mocked(getCollection).mockReturnValue(/** @type {any} */ ({ name: 'posts' }));
+    expect(getUnpublishedEntryLabel(entry)).toBe('Hello');
+
+    vi.mocked(getCollection).mockReturnValue(
+      /** @type {any} */ ({
+        name: 'pages',
+        _fileMap: { about: { name: 'about', label: 'About' } },
+      }),
+    );
+    expect(
+      getUnpublishedEntryLabel({
+        ...entry,
+        workflow: { collectionName: 'pages', fileName: 'about' },
+      }),
+    ).toBe('About');
+  });
+
+  test('falls back to the slug when the collection has been removed', () => {
+    vi.mocked(getCollection).mockReturnValue(undefined);
+    expect(getUnpublishedEntryLabel(entry)).toBe('hello');
+  });
+});
+
+describe('getCompanionNotes()', () => {
   /**
    * Create an entry of the given collection.
    * @param {string} collectionName Collection name.
    * @param {string} slug Slug.
    * @param {string} title Title.
+   * @param {boolean} [edited] Whether the entry is an existing one changed in the pull request.
    * @returns {any} Companion entry.
    */
-  const createCompanion = (collectionName, slug, title) => ({
+  const createCompanion = (collectionName, slug, title, edited = false) => ({
     collectionName,
     entry: { slug, locales: { _default: { content: { title } } } },
+    ...(edited ? { edited } : {}),
   });
 
   test('lists the new entries riding along in the pull request', () => {
@@ -163,11 +198,42 @@ describe('getCompanionNote()', () => {
       },
     });
 
-    expect(getCompanionNote(entry, 'en')).toBe('Also adds Section: Guides, Tile: Help, faq');
+    expect(getCompanionNotes(entry, 'en')).toEqual(['Also adds Section: Guides, Tile: Help, faq']);
+    // Nothing is listed until the app locale is set
+    expect(getCompanionNotes(entry, undefined)).toEqual([]);
   });
 
-  test('returns an empty string when there’s nothing riding along', () => {
-    expect(getCompanionNote(/** @type {any} */ ({ workflow: {} }), 'en')).toBe('');
-    expect(getCompanionNote(/** @type {any} */ ({ workflow: { companions: [] } }), 'en')).toBe('');
+  test('lists the existing entries changed in the pull request apart from the new ones', () => {
+    vi.mocked(getCollection).mockImplementation(
+      (name) =>
+        /** @type {any} */ ({
+          sections: { _type: 'entry', label_singular: 'Section' },
+          authors: { _type: 'entry', label_singular: 'Author' },
+        })[name],
+    );
+
+    const entry = /** @type {any} */ ({
+      workflow: {
+        companions: [
+          createCompanion('authors', 'ada', 'Ada', true),
+          createCompanion('sections', 'guides', 'Guides'),
+        ],
+      },
+    });
+
+    expect(getCompanionNotes(entry, 'en')).toEqual([
+      'Also adds Section: Guides',
+      'Also changes Author: Ada',
+    ]);
+
+    entry.workflow.companions.pop();
+    expect(getCompanionNotes(entry, 'en')).toEqual(['Also changes Author: Ada']);
+  });
+
+  test('returns nothing when there’s nothing riding along', () => {
+    expect(getCompanionNotes(/** @type {any} */ ({ workflow: {} }), 'en')).toEqual([]);
+    expect(getCompanionNotes(/** @type {any} */ ({ workflow: { companions: [] } }), 'en')).toEqual(
+      [],
+    );
   });
 });

@@ -10,10 +10,11 @@
   import { getAssetUsedEntries } from '$lib/services/assets/details';
   import { getAssetFolderHistoryState } from '$lib/services/assets/navigation';
   import { renamingAsset } from '$lib/services/assets/state';
-  import { getFolderNamesInDir } from '$lib/services/assets/subfolders';
+  import { getFolderNamesInDir, getNonAssetFileNamesInDir } from '$lib/services/assets/subfolders';
   import { runCommit } from '$lib/services/backends/commit-prompt';
   import { getReadonlyEntryLabel, isEntryReadonly } from '$lib/services/contents/entry/readonly';
   import { getDefaultMediaLibraryOptions } from '$lib/services/integrations/media-libraries/default';
+  import { createPath } from '$lib/services/utils/file';
   import { watchAsync } from '$lib/services/utils/state.svelte';
   import { encodePathSegments } from '$lib/services/utils/url';
 
@@ -40,15 +41,22 @@
       : undefined,
   );
   const { dirname = '', basename = '' } = $derived(getPathInfo(asset?.path ?? ''));
-  const otherNames = $derived(
+  /**
+   * Names of the other files next to the asset, and those of the subfolders there, which a file
+   * can’t take either.
+   */
+  const { otherNames, fileNames, folderNames } = $derived(
     asset
-      ? getAssetsByDirName(dirname)
-          .map((a) => a.name)
-          .filter((n) => n !== asset.name)
-      : [],
+      ? {
+          otherNames: getAssetsByDirName(dirname)
+            .map((a) => a.name)
+            .filter((n) => n !== asset.name),
+          // An entry file next to the asset would be overwritten
+          fileNames: getNonAssetFileNamesInDir(dirname),
+          folderNames: getFolderNamesInDir(dirname),
+        }
+      : { otherNames: [], fileNames: [], folderNames: [] },
   );
-  /** Names of the subfolders next to the asset, which a file can’t take either. */
-  const folderNames = $derived(asset ? getFolderNamesInDir(dirname) : []);
 
   /**
    * Rename the asset by moving it to a new path. Also, update the URL hash silently to reflect the
@@ -62,7 +70,8 @@
     }
 
     const oldPath = asset.path;
-    const newPath = `${dirname}/${newName}`;
+    // An asset in a root media folder has no directory
+    const newPath = createPath([dirname, newName]);
 
     const { ok, cancelled } = await runCommit(() =>
       moveAssets('rename', [{ asset, path: newPath }]),
@@ -102,6 +111,7 @@
   bind:open
   name={basename}
   {otherNames}
+  {fileNames}
   {folderNames}
   usedEntryCount={usedEntries.length}
   {blockedMessage}

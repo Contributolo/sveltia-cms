@@ -1,15 +1,20 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, onTestFinished, test, vi } from 'vitest';
 
 import { backend, backendName } from '$lib/services/backends';
 import { lockedBranch, mergeLockedBranch } from '$lib/services/backends/branch-access';
 import { cmsConfig } from '$lib/services/config';
 import { allEntries } from '$lib/services/contents';
+import { getCollection } from '$lib/services/contents/collection';
 import { createDerivedState } from '$lib/services/utils/state.svelte';
 import {
   canMergePullRequest,
+  canSkipReviewAlong,
   checkPublishedVersion,
+  findEditingUnpublishedEntry,
   getCompanionEntries,
   getDeletionSelection,
+  getEditedCompanionEntries,
+  getEditedCompanionPaths,
   getPublishedVersion,
   getPullRequestEntries,
   getUnpublishedEntriesByCollection,
@@ -32,6 +37,40 @@ import {
   workflowEnabled,
 } from '$lib/services/workflow';
 import { forkedRepository } from '$lib/services/workflow/open-authoring';
+
+vi.mock('$lib/services/contents/collection', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+
+  return { ...actual, getCollection: vi.fn(actual.getCollection) };
+});
+
+/**
+ * Collections the entries riding along with another one can belong to: one without Editorial
+ * Workflow, one whose review can be skipped, and one whose review can’t.
+ * @type {Record<string, any>}
+ */
+const alongCollections = {
+  tags: { name: 'tags', publish_mode: 'simple' },
+  authors: { name: 'authors', publish_mode: { type: 'editorial_workflow', direct_publish: true } },
+  reviewed: { name: 'reviewed', publish_mode: 'editorial_workflow' },
+};
+
+/**
+ * Look the collections up in {@link alongCollections} for the current test.
+ */
+const mockAlongCollections = () => {
+  const { current: config } = cmsConfig;
+  const { current: name } = backendName;
+
+  backendName.current = 'github';
+  cmsConfig.current = /** @type {any} */ ({ publish_mode: 'editorial_workflow' });
+  vi.mocked(getCollection).mockImplementation((collectionName) => alongCollections[collectionName]);
+  onTestFinished(() => {
+    cmsConfig.current = config;
+    backendName.current = name;
+    vi.mocked(getCollection).mockReset();
+  });
+};
 
 /**
  * Create a minimal unpublished entry for testing.
@@ -283,6 +322,72 @@ describe('workflow/index', () => {
       unpublishedEntries.current = [createHost([{ collectionName: 'sections', entry: guides }])];
 
       expect(getCompanionEntries('sections', [host])).toEqual([help]);
+    });
+
+    test('tells the existing entries changed in a pull request apart from the new ones', () => {
+      const ada = /** @type {any} */ ({ id: 'ada' });
+      const alan = /** @type {any} */ ({ id: 'alan' });
+
+      const host = createHost([
+        { collectionName: 'authors', entry: jane },
+        { collectionName: 'authors', entry: ada, edited: true },
+      ]);
+
+      unpublishedEntries.current = [
+        host,
+        createHost(),
+        createHost([{ collectionName: 'authors', entry: alan, edited: true }]),
+      ];
+
+      expect(getCompanionEntries('authors')).toEqual([jane]);
+      expect(getEditedCompanionEntries('authors')).toEqual([ada, alan]);
+      expect(getEditedCompanionEntries('authors', [host])).toEqual([ada]);
+      expect(getEditedCompanionEntries('sections')).toEqual([]);
+
+      expect(findEditingUnpublishedEntry(ada)).toBe(host);
+      // A new entry isn’t edited
+      expect(findEditingUnpublishedEntry(jane)).toBeUndefined();
+      expect(findEditingUnpublishedEntry(guides)).toBeUndefined();
+    });
+
+    test('collects the paths of the edited entries on both branches, found by ID', () => {
+      /**
+       * Create an entry with the given locale file paths.
+       * @param {string} id Entry ID.
+       * @param {string[]} paths File paths.
+       * @returns {any} Entry.
+       */
+      const createPathEntry = (id, paths) => ({
+        id,
+        locales: Object.fromEntries(paths.map((path, index) => [`l${index}`, { path }])),
+      });
+
+      allEntries.current = [
+        createPathEntry('ada', ['authors/ada.md', 'authors/ja/ada.md']),
+        createPathEntry('grace', ['authors/grace.md']),
+      ];
+
+      expect(
+        getEditedCompanionPaths([
+          // Renamed on the branch, and the Japanese locale turned off
+          {
+            collectionName: 'authors',
+            entry: createPathEntry('ada', ['authors/ada-l.md']),
+            edited: true,
+          },
+          // No longer on the configured branch
+          {
+            collectionName: 'authors',
+            entry: createPathEntry('alan', ['authors/alan.md']),
+            edited: true,
+          },
+          // A new one isn’t edited
+          { collectionName: 'authors', entry: createPathEntry('grace', ['authors/grace.md']) },
+        ]),
+      ).toEqual({
+        paths: ['authors/ada-l.md', 'authors/alan.md'],
+        publishedPaths: new Set(['authors/ada.md', 'authors/ja/ada.md']),
+      });
     });
   });
 
@@ -944,6 +1049,51 @@ describe('Test isPublishAllowed()', () => {
         publish_mode: { type: 'editorial_workflow', direct_publish: true },
       }),
     ).toBe(true);
+  });
+
+  test('refuses to skip the review of an entry riding along that has to be reviewed', () => {
+    mockAlongCollections();
+
+    const directPublish = {
+      ...collection,
+      publish_mode: { type: 'editorial_workflow', direct_publish: true },
+    };
+
+    /**
+     * Create a draft riding along with entries of the given collections.
+     * @param {string[]} names Collection names.
+     * @returns {any} Entry.
+     */
+    const createDraftWith = (names) => {
+      const entry = createWorkflowEntry('draft');
+
+      entry.workflow.companions = names.map((collectionName) => ({ collectionName }));
+
+      return entry;
+    };
+
+    expect(isPublishAllowed(createDraftWith(['tags', 'authors']), directPublish)).toBe(true);
+    expect(isPublishAllowed(createDraftWith(['tags', 'reviewed']), directPublish)).toBe(false);
+
+    // Once reviewed, the entries riding along are published with it
+    const ready = createDraftWith(['reviewed']);
+
+    ready.workflow.status = 'pending_publish';
+    expect(isPublishAllowed(ready, directPublish)).toBe(true);
+  });
+});
+
+describe('Test canSkipReviewAlong()', () => {
+  test('allows skipping the review of the entries whose collections allow it', () => {
+    mockAlongCollections();
+
+    expect(canSkipReviewAlong([])).toBe(true);
+    expect(canSkipReviewAlong([{ collectionName: 'tags' }, { collectionName: 'authors' }])).toBe(
+      true,
+    );
+    expect(canSkipReviewAlong([{ collectionName: 'tags' }, { collectionName: 'reviewed' }])).toBe(
+      false,
+    );
   });
 });
 

@@ -1,15 +1,11 @@
 import equal from 'fast-deep-equal';
 
 import { checkForRemoteChanges } from '$lib/services/backends/refresh';
-import { saveChanges } from '$lib/services/backends/save';
 import { isConfigReadonly } from '$lib/services/config/readonly';
-import {
-  contentUpdatesToast,
-  UPDATE_TOAST_DEFAULT_STATE,
-} from '$lib/services/contents/collection/data';
 import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
 import { findFieldByName } from '$lib/services/contents/collection/entries/bulk-edit/config';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
+import { saveEntryUpdates } from '$lib/services/contents/collection/entries/save';
 import { resolveCacheDB } from '$lib/services/contents/draft/save/file-changes';
 import { validateAnyField } from '$lib/services/contents/draft/validate/fields';
 import { getFieldValidationMessages } from '$lib/services/contents/draft/validate/messages';
@@ -27,6 +23,7 @@ import {
   followsDefaultLocale,
   isDuplicateIfEmptyField,
 } from '$lib/services/contents/i18n/duplicate-if-empty';
+import { isFieldMirrored } from '$lib/services/contents/i18n/fields';
 import { getOrCreate } from '$lib/services/utils/cache';
 import { isValueEmpty } from '$lib/services/utils/object';
 import { getCompanionEntries, getUnpublishedEntriesByCollection } from '$lib/services/workflow';
@@ -185,7 +182,7 @@ export const applyBulkEdits = ({ collection, entry, entryEdits }) => {
       }
 
       if (
-        fieldConfig?.i18n === 'duplicate' ||
+        isFieldMirrored(fieldConfig?.i18n) ||
         (fillEmpty &&
           followsDefaultLocale({
             fieldConfig: /** @type {Field} */ (fieldConfig),
@@ -401,21 +398,5 @@ export const saveBulkEdits = async ({ collection, entries, edits }) => {
 
   const { changes, savingEntries } = await buildBulkEditChanges({ collection, entries, edits });
 
-  if (!changes.length) {
-    return 0;
-  }
-
-  await saveChanges({
-    changes,
-    savingEntries,
-    options: { commitType: 'update', collection },
-  });
-
-  contentUpdatesToast.current = {
-    ...UPDATE_TOAST_DEFAULT_STATE,
-    saved: true,
-    count: savingEntries.length,
-  };
-
-  return savingEntries.length;
+  return saveEntryUpdates({ collection, changes, savingEntries });
 };

@@ -6,23 +6,31 @@ import { getValueMapVersion } from '$lib/services/contents/draft/create/versione
 import { getLocalizedFieldValue } from '$lib/services/contents/fields/locale';
 
 import {
-  copyDefaultLocaleValue,
   copyDefaultLocaleValueIfEmpty,
+  copyMirroredValue,
   createProxy,
   getListItemMatcher,
-  isDuplicatedField,
 } from './proxy.svelte.js';
 
-const { resolveCollectionAndFile, getField, revalidateField, isAutoDuplicationEnabled } =
-  vi.hoisted(() => ({
-    resolveCollectionAndFile: vi.fn(),
-    getField: vi.fn(),
-    revalidateField: vi.fn(),
-    isAutoDuplicationEnabled: vi.fn(() => true),
-  }));
+const {
+  resolveCollectionAndFile,
+  getField,
+  revalidateField,
+  isAutoDuplicationEnabled,
+  suspendAutoDuplication,
+} = vi.hoisted(() => ({
+  resolveCollectionAndFile: vi.fn(),
+  getField: vi.fn(),
+  revalidateField: vi.fn(),
+  isAutoDuplicationEnabled: vi.fn(() => true),
+  suspendAutoDuplication: vi.fn((/** @type {() => any} */ fn) => fn()),
+}));
 
 vi.mock('$lib/services/contents/collection/files', () => ({ resolveCollectionAndFile }));
-vi.mock('$lib/services/contents/draft', () => ({ isAutoDuplicationEnabled }));
+vi.mock('$lib/services/contents/draft', () => ({
+  isAutoDuplicationEnabled,
+  suspendAutoDuplication,
+}));
 vi.mock('$lib/services/contents/entry/fields', () => ({
   getField,
   /**
@@ -88,14 +96,14 @@ describe('contents/draft/create/proxy.svelte', () => {
     isAutoDuplicationEnabled.mockReturnValue(true);
   });
 
-  describe('copyDefaultLocaleValue', () => {
+  describe('copyMirroredValue', () => {
     /**
-     * Run {@link copyDefaultLocaleValue} against a draft made of plain value maps.
+     * Run {@link copyMirroredValue} against a draft made of plain value maps.
      * @param {Record<string, object>} currentValues Values per locale.
      * @param {object} args Arguments other than the draft.
      */
     const copy = (currentValues, args) => {
-      copyDefaultLocaleValue({ draft: { currentValues }, ...args });
+      copyMirroredValue({ draft: { currentValues }, ...args });
     };
 
     it('should copy value to other locales but not the source locale', () => {
@@ -583,6 +591,46 @@ describe('contents/draft/create/proxy.svelte', () => {
       expect(draft.currentValues.ja.other).toBeUndefined();
     });
 
+    it('should fill in the option of a `duplicate_if_empty` Select or Relation field', () => {
+      /** @type {Record<string, any>} */
+      const fields = {
+        size: { name: 'size', widget: 'select', options: [1, 2], i18n: 'duplicate_if_empty' },
+        author: {
+          name: 'author',
+          widget: 'relation',
+          collection: 'authors',
+          value_field: '{{locale}}/{{slug}}',
+          i18n: 'duplicate_if_empty',
+        },
+      };
+
+      getField.mockImplementation(({ keyPath }) => fields[keyPath]);
+
+      const draft = createDraft({ locales: ['en', 'fr', 'ja'], values: { ja: { size: 2 } } });
+
+      draft.currentValues.en.size = 1;
+
+      expect(draft.currentValues.fr.size).toBe(1);
+      expect(draft.currentValues.ja.size).toBe(2);
+
+      // The locale prefix of a related entry is replaced with the target locale, both when the
+      // value is copied and when a locale that follows the default locale is told apart
+      draft.currentValues.en.author = 'en/alice';
+      draft.currentValues.ja.author = 'ja/carol';
+      draft.currentValues.en.author = 'en/bob';
+
+      expect(draft.currentValues.fr.author).toBe('fr/bob');
+      expect(draft.currentValues.ja.author).toBe('ja/carol');
+
+      // A field taking multiple values works like a translatable one. Each value is stored under a
+      // numbered key path, which resolves to the field itself
+      fields.tags = { ...fields.size, name: 'tags', multiple: true };
+      fields['tags.0'] = fields.tags;
+      draft.currentValues.en['tags.0'] = 1;
+
+      expect(draft.currentValues.fr['tags.0']).toBeUndefined();
+    });
+
     it('should duplicate values to other locales when i18n is duplicate', () => {
       getField.mockReturnValue({ widget: 'string', i18n: 'duplicate' });
 
@@ -668,6 +716,72 @@ describe('contents/draft/create/proxy.svelte', () => {
       draft.currentValues.en.related = 'en/my-post';
 
       expect(draft.currentValues.ja.related).toBe('ja/my-post');
+    });
+
+    describe('a field using the `sync` strategy', () => {
+      // https://github.com/sveltia/sveltia-cms/issues/1128
+      beforeEach(() => {
+        // Suspend the duplication for real, so a copy isn’t copied on again
+        suspendAutoDuplication.mockImplementation((fn) => {
+          isAutoDuplicationEnabled.mockReturnValue(false);
+
+          try {
+            return fn();
+          } finally {
+            isAutoDuplicationEnabled.mockReturnValue(true);
+          }
+        });
+      });
+
+      it('should copy a value written in any locale to the other locales', () => {
+        getField.mockReturnValue({
+          widget: 'relation',
+          i18n: 'sync',
+          value_field: '{{locale}}/{{slug}}',
+        });
+
+        const draft = createDraft({ locales: ['en', 'fr', 'ja'] });
+
+        draft.currentValues.fr.related = 'fr/my-post';
+
+        expect(draft.currentValues.en.related).toBe('en/my-post');
+        expect(draft.currentValues.ja.related).toBe('ja/my-post');
+        // The copies aren’t copied on again from the locales they’re written to
+        expect(suspendAutoDuplication).toHaveBeenCalledOnce();
+        expect(getLocalizedFieldValue).toHaveBeenCalledTimes(2);
+
+        draft.currentValues.en.related = 'en/other-post';
+
+        expect(draft.currentValues.fr.related).toBe('fr/other-post');
+        expect(draft.currentValues.ja.related).toBe('ja/other-post');
+      });
+
+      it('should delete a value deleted in any locale from the other locales', () => {
+        getField.mockReturnValue({ widget: 'string', i18n: 'sync' });
+
+        const draft = createDraft({
+          locales: ['en', 'fr', 'ja'],
+          values: { en: { title: 'Hi' }, fr: { title: 'Hi' }, ja: { title: 'Hi' } },
+        });
+
+        delete draft.currentValues.ja.title;
+
+        expect('title' in draft.currentValues.en).toBe(false);
+        expect('title' in draft.currentValues.fr).toBe(false);
+        expect(suspendAutoDuplication).toHaveBeenCalledOnce();
+      });
+
+      it('should not copy a value while auto-duplication is suspended', () => {
+        getField.mockReturnValue({ widget: 'string', i18n: 'sync' });
+        isAutoDuplicationEnabled.mockReturnValue(false);
+
+        const draft = createDraft();
+
+        draft.currentValues.ja.title = 'Title';
+
+        expect(draft.currentValues.en.title).toBeUndefined();
+        isAutoDuplicationEnabled.mockReturnValue(true);
+      });
     });
 
     it('should skip revalidation and duplication for the canonical slug field', () => {
@@ -793,13 +907,20 @@ describe('contents/draft/create/proxy.svelte', () => {
     it('should delete properties from other locales when auto-duplication is enabled', () => {
       getField.mockReturnValue({ widget: 'string', i18n: 'duplicate' });
 
-      const draft = createDraft({ values: { en: { title: 'Title' }, ja: { title: 'Title' } } });
+      const draft = createDraft({
+        locales: ['en', 'ja', 'fr'],
+        values: { en: { title: 'Title' }, ja: { title: 'Title' }, fr: { body: 'Body' } },
+      });
 
       delete draft.currentValues.en.title;
 
       expect(draft.currentValues.en.title).toBeUndefined();
       expect(draft.currentValues.ja.title).toBeUndefined();
       expect('title' in draft.currentValues.ja).toBe(false);
+      // A locale without the value is left alone, rather than having a deletion of its own handled
+      expect(revalidateField).toHaveBeenCalledWith(expect.objectContaining({ locale: 'ja' }));
+      expect(revalidateField).not.toHaveBeenCalledWith(expect.objectContaining({ locale: 'fr' }));
+      expect({ ...draft.currentValues.fr }).toEqual({ body: 'Body' });
     });
 
     it('should not delete from other locales when auto-duplication is suspended', () => {
@@ -830,53 +951,6 @@ describe('contents/draft/create/proxy.svelte', () => {
 
       expect(draft.currentValues.en.other).toBeUndefined();
       expect(draft.currentValues.ja.other).toBe('x');
-    });
-  });
-
-  describe('isDuplicatedField', () => {
-    /** @type {Record<string, any>} */
-    const fields = {
-      title: { name: 'title', widget: 'string', i18n: true },
-      meta: { name: 'meta', widget: 'object', i18n: 'duplicate' },
-      'meta.caption': { name: 'caption', widget: 'string', i18n: true },
-      'meta.box': { name: 'box', widget: 'object', i18n: true },
-      'meta.box.note': { name: 'note', widget: 'string' },
-      'meta.tags': { name: 'tags', widget: 'list' },
-      'meta.tags.0.label': { name: 'label', widget: 'string' },
-      blocks: { name: 'blocks', widget: 'list', i18n: true },
-      'blocks.0.text': { name: 'text', widget: 'string' },
-    };
-
-    beforeEach(() => {
-      getField.mockImplementation(({ keyPath }) => fields[keyPath]);
-    });
-
-    /**
-     * Check the field at the given key path.
-     * @param {string} keyPath Key path.
-     * @returns {boolean} Result.
-     */
-    const check = (keyPath) =>
-      isDuplicatedField({
-        fieldConfig: fields[keyPath],
-        getFieldArgs: { collectionName: 'posts', keyPath },
-      });
-
-    it('should detect the field’s own duplicate strategy', () => {
-      expect(check('meta')).toBe(true);
-      expect(check('title')).toBe(false);
-    });
-
-    it('should let an explicit `i18n` option of the field or a nearer ancestor win', () => {
-      expect(check('meta.caption')).toBe(false);
-      expect(check('meta.box.note')).toBe(false);
-    });
-
-    it('should detect a duplicated ancestor, skipping the list item indexes', () => {
-      expect(check('meta.tags')).toBe(true);
-      expect(check('meta.tags.0.label')).toBe(true);
-      expect(check('blocks.0.text')).toBe(false);
-      expect(getField).not.toHaveBeenCalledWith(expect.objectContaining({ keyPath: 'blocks.0' }));
     });
   });
 

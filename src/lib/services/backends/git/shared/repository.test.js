@@ -5,8 +5,11 @@ import {
   applyDefaultBranch,
   createBaseURLsGetter,
   getInstanceURL,
+  getPullRequestPath,
+  getRepositoryPath,
   getRepoURL,
   initRepositoryInfo,
+  isSameRepository,
   REPOSITORY_INFO_PLACEHOLDER,
 } from './repository';
 
@@ -99,6 +102,45 @@ describe('git/shared/repository', () => {
         blobBaseURL: '',
         commitBaseURL: 'https://example.com/owner/repo/c',
       });
+    });
+  });
+
+  describe('getRepositoryPath', () => {
+    it('should return the REST API path of the repository', () => {
+      expect(getRepositoryPath({ owner: 'owner', repo: 'my.repo' })).toBe('/repos/owner/my.repo');
+    });
+
+    it('should encode the owner and repository names', () => {
+      expect(getRepositoryPath({ owner: 'a b', repo: 'c/d' })).toBe('/repos/a%20b/c%2Fd');
+    });
+  });
+
+  describe('isSameRepository', () => {
+    const repository = { owner: 'Owner', repo: 'Repo' };
+
+    it('should match the full name regardless of case', () => {
+      expect(isSameRepository('owner/repo', repository)).toBe(true);
+      expect(isSameRepository('OWNER/REPO', repository)).toBe(true);
+    });
+
+    it('should not match another repository or a missing name', () => {
+      expect(isSameRepository('owner/other', repository)).toBe(false);
+      expect(isSameRepository('other/repo', repository)).toBe(false);
+      expect(isSameRepository(undefined, repository)).toBe(false);
+    });
+
+    it('should match a GitLab project in a subgroup', () => {
+      expect(isSameRepository('Group/Sub/Project', { owner: 'group/sub', repo: 'project' })).toBe(
+        true,
+      );
+    });
+  });
+
+  describe('getPullRequestPath', () => {
+    it('should return the REST API path of the pull request', () => {
+      expect(getPullRequestPath({ owner: 'owner', repo: 'repo' }, 42)).toBe(
+        '/repos/owner/repo/pulls/42',
+      );
     });
   });
 

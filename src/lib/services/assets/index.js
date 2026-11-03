@@ -8,10 +8,21 @@ import {
   selectedAssetFolder,
 } from '$lib/services/assets/folders';
 import { allAssets, focusedAsset } from '$lib/services/assets/state';
-import { focusedSubfolder, selectedSubfolderPath } from '$lib/services/assets/subfolders';
+import {
+  focusedSubfolder,
+  getFolderNamesInDir,
+  getNonAssetFileNamesInDir,
+  selectedSubfolderPath,
+} from '$lib/services/assets/subfolders';
 import { fillTemplate } from '$lib/services/common/template';
 import { hasTemplateTags } from '$lib/services/common/template/tags';
 import { getTemplatePattern } from '$lib/services/common/template/utils';
+import {
+  hasTags,
+  replaceFolderTags,
+  resolveGlobalFolders,
+} from '$lib/services/config/folders/assets';
+import { cmsConfig } from '$lib/services/config/state';
 import { getCollection } from '$lib/services/contents/collection';
 import { isCollectionIndexFile } from '$lib/services/contents/collection/entries/index-file';
 import { getAssociatedCollections } from '$lib/services/contents/entry/collections';
@@ -125,6 +136,28 @@ export const fillInternalPathTemplate = ({ internalPath, collectionName, entry, 
 };
 
 /**
+ * Replace the `{{media_folder}}` and `{{public_folder}}` tags in the raw `media_folder` or
+ * `public_folder` option of a collection or collection file, e.g. `{{media_folder}}/blog`, with the
+ * global folders, the same way as the asset folders are normalized. Otherwise the tags would be
+ * taken for entry template tags and filled in with something else.
+ * @param {string | undefined} folder Folder option.
+ * @param {object} [options] Options.
+ * @param {boolean} [options.isPublicFolder] Whether the option is `public_folder`.
+ * @returns {string | undefined} Folder with the tags replaced, or the given folder as is if it has
+ * no such tags or the global `media_folder` option is not configured.
+ */
+const replaceGlobalFolderTags = (folder, options) => {
+  // Check for the tags first, so the global folders are only resolved when needed
+  if (folder === undefined || !hasTags(folder)) {
+    return folder;
+  }
+
+  const globalFolders = cmsConfig.current ? resolveGlobalFolders(cmsConfig.current) : undefined;
+
+  return replaceFolderTags(folder, globalFolders, options) ?? folder;
+};
+
+/**
  * Find an asset by a relative path, using the associated entry and collection to help locate it.
  * @param {object} context Context.
  * @param {string} context.path Saved relative path.
@@ -175,12 +208,14 @@ export const getAssetByRelativePathAndCollection = ({
     ? fieldFolder.entryRelative
       ? (fieldFolder.internalSubPath ?? '')
       : `/${fieldFolder.internalPath}`
-    : /** @type {string | undefined} */ (folderOptions.media_folder);
+    : replaceGlobalFolderTags(/** @type {string | undefined} */ (folderOptions.media_folder));
 
   let publicFolder =
     fieldFolder?.publicPath !== undefined
       ? fieldFolder.publicPath
-      : /** @type {string | undefined} */ (folderOptions.public_folder);
+      : replaceGlobalFolderTags(/** @type {string | undefined} */ (folderOptions.public_folder), {
+          isPublicFolder: true,
+        });
 
   const localeFile = /** @type {LocalizedEntry} */ (
     getEntryLocaleFile(entry, { locale, defaultLocale })
@@ -636,6 +671,20 @@ export const countAssetsInFolder = (folder) =>
  */
 export const getAssetsByDirName = (dirname) =>
   allAssets.current.filter((a) => getDirName(a.path) === dirname);
+
+/**
+ * Get the names a new file saved in the given internal directory can’t take: those of the assets,
+ * the entry and Git config files and the subfolders there. A file would overwrite another, and a
+ * Git tree can’t hold a file and a folder under one name.
+ * @param {string} dirname Directory path. An empty string for the repository root.
+ * @returns {string[]} Names, normalized to NFC.
+ */
+export const getTakenNamesInDir = (dirname) =>
+  [
+    ...getAssetsByDirName(dirname).map((a) => a.name),
+    ...getNonAssetFileNamesInDir(dirname),
+    ...getFolderNamesInDir(dirname),
+  ].map((name) => name.normalize());
 
 // Reset the asset selection when a different folder or subfolder is selected
 createRootEffect(() => {

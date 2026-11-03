@@ -4,7 +4,7 @@ import { getAssetFolder } from '$lib/services/assets/folders';
 import { findEntriesByAssets } from '$lib/services/assets/references';
 import { allAssets } from '$lib/services/assets/state';
 import { createLocalizedError } from '$lib/services/backends/git/shared/errors';
-import { findEntryByPaths } from '$lib/services/contents';
+import { allEntries, findEntryByPaths } from '$lib/services/contents';
 import { getCollection } from '$lib/services/contents/collection';
 import { buildNestedMoveChanges } from '$lib/services/contents/collection/nested/move';
 import { getMovedFolders } from '$lib/services/contents/draft/save/asset-move';
@@ -57,7 +57,10 @@ vi.mock('$lib/services/backends/process', () => ({
 vi.mock('$lib/services/assets/folders', () => ({ getAssetFolder: vi.fn() }));
 vi.mock('$lib/services/assets/references', () => ({ findEntriesByAssets: vi.fn() }));
 vi.mock('$lib/services/assets/state', () => ({ allAssets: { current: [] } }));
-vi.mock('$lib/services/contents', () => ({ findEntryByPaths: vi.fn() }));
+vi.mock('$lib/services/contents', () => ({
+  allEntries: { current: [] },
+  findEntryByPaths: vi.fn(),
+}));
 vi.mock('$lib/services/contents/collection', () => ({
   getCollection: vi.fn((name) => ({ name })),
 }));
@@ -144,10 +147,11 @@ const createEntry = ({
 });
 
 /**
- * Make {@link findEntryByPaths} find the given published entries.
+ * Make {@link findEntryByPaths} and {@link allEntries} find the given published entries.
  * @param {any[]} entries Published entries.
  */
 const mockPublishedEntries = (entries) => {
+  allEntries.current = /** @type {any} */ (entries);
   vi.mocked(findEntryByPaths).mockImplementation((paths) => {
     const set = new Set(paths);
 
@@ -681,6 +685,53 @@ describe('workflow/verify', () => {
           { path: 'content/authors/ja/me.md', status: 'removed' },
         ]),
       ).toEqual(['content/authors/me.md', 'content/authors/ja/me.md']);
+    });
+
+    test('allows the existing entries listed on the entry’s card as changed', async () => {
+      // They were edited from a Relation field of the entry and committed along with it
+      // @see https://github.com/sveltia/sveltia-cms/issues/1129
+      const entry = createEntry();
+
+      mockPublishedEntries([
+        createPublishedEntry('ada', ['content/authors/ada.md', 'content/authors/ja/ada.md']),
+      ]);
+
+      entry.workflow.companions = [
+        {
+          collectionName: 'authors',
+          // The Japanese locale has been turned off
+          entry: createPublishedEntry('ada', [
+            'content/authors/ada.md',
+            'content/authors/fr/ada.md',
+          ]),
+          edited: true,
+        },
+        {
+          collectionName: 'authors',
+          // Not on the configured branch any more
+          entry: createPublishedEntry('alan', ['content/authors/alan.md']),
+          edited: true,
+        },
+      ];
+
+      expect(
+        await findUnexpectedChanges(entry, [
+          { path: 'content/authors/ada.md', status: 'modified', mode },
+          { path: 'content/authors/ja/ada.md', status: 'removed' },
+          { path: 'content/authors/fr/ada.md', status: 'added', mode },
+          { path: 'content/authors/alan.md', status: 'modified', mode },
+          // Not one of them
+          { path: 'content/authors/grace.md', status: 'modified', mode },
+        ]),
+      ).toEqual(['content/authors/grace.md']);
+
+      // A published file added by the pull request is an entry that has appeared on the configured
+      // branch since the pull request added it, which would be overwritten
+      expect(
+        await findUnexpectedChanges(entry, [
+          { path: 'content/authors/ada.md', status: 'added', mode },
+        ]),
+      ).toEqual(['content/authors/ada.md']);
     });
 
     test('allows a nested entry to move the entries below its folder, as moved', async () => {

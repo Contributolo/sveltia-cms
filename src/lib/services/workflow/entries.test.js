@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createFileList } from '$lib/services/backends/process';
 import { cmsConfig } from '$lib/services/config';
 import { allEntries } from '$lib/services/contents';
+import { getEntriesByCollection } from '$lib/services/contents/collection/entries';
+import { getCollectionFileEntry } from '$lib/services/contents/collection/files';
 import { prepareEntries } from '$lib/services/contents/file/process';
 import { convertPullRequest, convertPullRequests } from '$lib/services/workflow/entries';
 
@@ -11,16 +13,60 @@ vi.mock('$lib/services/backends/git/shared/parse-files', () => ({
   parseAssetFileInfo: vi.fn((file) => ({ ...file, kind: 'image' })),
 }));
 vi.mock('$lib/services/contents/file/process');
+vi.mock('$lib/services/contents/entry/readonly', () => ({
+  isEntryReadonly: vi.fn((entry) => entry.id === 'pinned'),
+}));
 vi.mock('$lib/services/contents/collection', () => ({
   getCollection: vi.fn(
     (name) =>
       /** @type {Record<string, any>} */ ({
-        sections: { name, _type: 'entry' },
-        tiles: { name, _type: 'entry' },
-        fixed: { name, _type: 'entry', create: false },
+        sections: {
+          name,
+          _type: 'entry',
+          _file: {},
+          _i18n: { structureMap: {}, canonicalSlug: { key: 'translationKey' } },
+        },
+        tiles: {
+          name,
+          _type: 'entry',
+          _file: {},
+          _i18n: {
+            structureMap: { i18nMultiFolder: true },
+            canonicalSlug: { key: 'translationKey' },
+          },
+        },
+        fixed: {
+          name,
+          _type: 'entry',
+          create: false,
+          _file: {},
+          _i18n: { structureMap: {}, canonicalSlug: { key: 'translationKey' } },
+        },
         frozen: { name, _type: 'entry', readonly: true },
+        guides: {
+          name,
+          _type: 'entry',
+          _i18n: {
+            structureMap: { i18nMultiFolder: true },
+            canonicalSlug: { key: 'translationKey' },
+          },
+        },
+        places: {
+          name,
+          _type: 'entry',
+          _i18n: {
+            structureMap: { i18nSingleFile: true },
+            canonicalSlug: { key: 'translationKey' },
+          },
+        },
       })[name],
   ),
+}));
+vi.mock('$lib/services/contents/collection/entries', () => ({
+  getEntriesByCollection: vi.fn(() => []),
+}));
+vi.mock('$lib/services/contents/collection/files', () => ({
+  getCollectionFileEntry: vi.fn(),
 }));
 
 /**
@@ -203,7 +249,7 @@ describe('workflow/entries', () => {
       });
     });
 
-    test('attaches the new entries of other collections riding along in the pull request', async () => {
+    test('attaches the entries of other collections riding along in the pull request', async () => {
       /**
        * Build an entry file.
        * @param {string} path File path.
@@ -224,8 +270,12 @@ describe('workflow/entries', () => {
       ];
 
       const tileFile = file('content/tiles/help.md', { collectionName: 'tiles' });
-      // An entry rewritten along with the post, e.g. to update a reference, is a published one
-      const rewrittenFile = file('content/tiles/home.md', { collectionName: 'tiles' });
+      // A published entry edited along with the post, or rewritten to update a reference
+      const editedFile = file('content/tiles/home.md', { collectionName: 'tiles' });
+      // Not one the CMS can change along with the post, e.g. in a read-only collection
+      const lockedFile = file('content/frozen/locked.md', { collectionName: 'frozen' });
+      // Nor a read-only entry
+      const pinnedFile = file('content/tiles/pinned.md', { collectionName: 'tiles' });
       // A Relation field can’t add a file to a file collection, nor parse a binary file
       const settingsFile = file('data/site.yml', { collectionName: 'settings', fileName: 'site' });
 
@@ -242,7 +292,21 @@ describe('workflow/entries', () => {
       allEntries.current = [
         /** @type {any} */ ({
           id: 'home',
-          locales: { _default: { path: 'content/tiles/home.md' } },
+          slug: 'home',
+          subPath: 'home',
+          locales: { _default: { path: 'content/tiles/home.md', content: { title: 'Home' } } },
+        }),
+        /** @type {any} */ ({
+          id: 'pinned',
+          slug: 'pinned',
+          subPath: 'pinned',
+          locales: { _default: { path: 'content/tiles/pinned.md', content: {} } },
+        }),
+        /** @type {any} */ ({
+          id: 'locked',
+          slug: 'locked',
+          subPath: 'locked',
+          locales: { _default: { path: 'content/frozen/locked.md', content: {} } },
         }),
       ];
 
@@ -252,7 +316,9 @@ describe('workflow/entries', () => {
             postFile,
             ...sectionFiles,
             tileFile,
-            rewrittenFile,
+            editedFile,
+            pinnedFile,
+            lockedFile,
             settingsFile,
             binaryFile,
             fixedFile,
@@ -266,12 +332,41 @@ describe('workflow/entries', () => {
       const section = { id: 's', slug: 'guides', subPath: 'guides', locales: {} };
       const tile = { id: 't', slug: 'help', subPath: 'help', locales: {} };
 
+      const home = {
+        id: 'parsed',
+        slug: 'home',
+        subPath: 'home',
+        locales: { _default: { path: 'content/tiles/home.md', content: { title: 'Welcome' } } },
+      };
+
+      const locked = {
+        id: 'parsed-locked',
+        slug: 'locked',
+        subPath: 'locked',
+        locales: { _default: { path: 'content/frozen/locked.md', content: {} } },
+      };
+
+      /** @type {Record<string, any[]>} */
+      const parsedEntries = {
+        'content/posts/hello.md': [{ id: 'x', slug: 'hello', subPath: 'hello', locales: {} }],
+        'content/sections/en/guides.md': [section],
+        'content/tiles/help.md': [tile],
+        'content/tiles/home.md': [home],
+        'content/frozen/locked.md': [locked],
+        'content/tiles/pinned.md': [
+          {
+            id: 'parsed-pinned',
+            slug: 'pinned',
+            subPath: 'pinned',
+            locales: { _default: { path: 'content/tiles/pinned.md', content: {} } },
+          },
+        ],
+        // A new entry in a collection the CMS can’t create entries in
+        'content/fixed/a.md': [{ id: 'f', slug: 'a', subPath: 'a', locales: {} }],
+      };
+
       vi.mocked(prepareEntries).mockImplementation(async (files) => ({
-        entries: /** @type {any} */ ({
-          'content/posts/hello.md': [{ id: 'x', slug: 'hello', subPath: 'hello', locales: {} }],
-          'content/sections/en/guides.md': [section],
-          'content/tiles/help.md': [tile],
-        })[files[0].path],
+        entries: files.flatMap(({ path }) => parsedEntries[path] ?? []),
         errors: [],
       }));
 
@@ -282,10 +377,119 @@ describe('workflow/entries', () => {
       );
 
       expect(prepareEntries).toHaveBeenCalledWith(sectionFiles);
-      expect(prepareEntries).toHaveBeenCalledWith([tileFile]);
+      expect(prepareEntries).toHaveBeenCalledWith([tileFile, editedFile, pinnedFile]);
+      // The files of a collection the CMS can’t write to aren’t parsed
+      expect(prepareEntries).not.toHaveBeenCalledWith([lockedFile]);
       expect(entries[0].workflow.companions).toEqual([
         { collectionName: 'sections', entry: section },
         { collectionName: 'tiles', entry: tile },
+        // An existing entry keeps the ID of its published version
+        { collectionName: 'tiles', entry: { ...home, id: 'home' }, edited: true },
+      ]);
+    });
+
+    test('keeps a locale file an edited entry adds, wherever entries can be created', async () => {
+      // Turning on a locale for an existing entry adds its file, which isn’t a new entry
+      const enFile = {
+        path: 'content/fixed/a.md',
+        text: '#',
+        folder: { collectionName: 'fixed', fileName: undefined },
+      };
+
+      const frFile = { ...enFile, path: 'content/fixed/fr/a.md' };
+
+      allEntries.current = [
+        /** @type {any} */ ({
+          id: 'a',
+          slug: 'a',
+          subPath: 'a',
+          locales: { en: { path: 'content/fixed/a.md', content: {} } },
+        }),
+      ];
+
+      const postFile = {
+        path: 'content/posts/hello.md',
+        text: '#',
+        folder: { collectionName: 'posts', fileName: undefined },
+      };
+
+      vi.mocked(createFileList).mockReturnValue(
+        /** @type {any} */ ({ entryFiles: [postFile, enFile, frFile], assetFiles: [] }),
+      );
+
+      const parsed = {
+        id: 'parsed',
+        slug: 'a',
+        subPath: 'a',
+        locales: {
+          en: { path: 'content/fixed/a.md', content: {} },
+          fr: { path: 'content/fixed/fr/a.md', content: {} },
+        },
+      };
+
+      const post = { id: 'x', slug: 'hello', subPath: 'hello', locales: {} };
+
+      vi.mocked(prepareEntries).mockImplementation(async (files) => ({
+        entries: /** @type {any} */ (files[0].path === 'content/fixed/a.md' ? [parsed] : [post]),
+        errors: [],
+      }));
+
+      const { entries } = await convertPullRequest(createPullRequest({ files: [] }));
+
+      expect(prepareEntries).toHaveBeenCalledWith([enFile, frFile]);
+      expect(entries[0].workflow.companions).toEqual([
+        { collectionName: 'fixed', entry: { ...parsed, id: 'a' }, edited: true },
+      ]);
+    });
+
+    test('tells an edit that only turns on a locale from a new entry', async () => {
+      const frFile = {
+        path: 'content/tiles/fr/home.md',
+        text: '#',
+        folder: { collectionName: 'tiles', fileName: undefined },
+      };
+
+      const postFile = {
+        path: 'content/posts/hello.md',
+        text: '#',
+        folder: { collectionName: 'posts', fileName: undefined },
+      };
+
+      const published = {
+        id: 'home',
+        slug: 'home',
+        subPath: 'home',
+        locales: { en: { path: 'content/tiles/home.md', content: { title: 'Home' } } },
+      };
+
+      const parsed = {
+        id: 'parsed',
+        slug: 'home',
+        subPath: 'home',
+        locales: { fr: { path: 'content/tiles/fr/home.md', content: { title: 'Accueil' } } },
+      };
+
+      const post = { id: 'x', slug: 'hello', subPath: 'hello', locales: {} };
+
+      allEntries.current = [/** @type {any} */ (published)];
+      vi.mocked(getEntriesByCollection).mockReturnValue([/** @type {any} */ (published)]);
+      vi.mocked(createFileList).mockReturnValue(
+        /** @type {any} */ ({ entryFiles: [postFile, frFile], assetFiles: [] }),
+      );
+      vi.mocked(prepareEntries).mockImplementation(async (files) => ({
+        entries: /** @type {any} */ (files[0] === frFile ? [parsed] : [post]),
+        errors: [],
+      }));
+
+      const { entries } = await convertPullRequest(createPullRequest({ files: [] }));
+
+      expect(getEntriesByCollection).toHaveBeenCalledWith('tiles');
+      expect(entries[0].workflow.companions).toEqual([
+        {
+          collectionName: 'tiles',
+          entry: { ...published, locales: { ...published.locales, ...parsed.locales } },
+          edited: true,
+        },
       ]);
     });
 
@@ -639,6 +843,156 @@ describe('workflow/entries', () => {
 
         expect(Object.keys(entries[0].locales)).toEqual(['en']);
         expect(entries[0].slug).toBe('new');
+      });
+
+      describe('a locale turned on for a published entry', () => {
+        /**
+         * Run a pull request that only adds the file of a locale turned on for a published entry,
+         * a path the published entry doesn’t have.
+         * @param {object} args Arguments.
+         * @param {string} args.collectionName Collection name.
+         * @param {string} args.path Path of the added file.
+         * @param {any} args.entry Entry parsed from the added file.
+         * @param {string} [args.fileName] Collection file name.
+         * @returns {Promise<any>} Converted entry.
+         */
+        const convertAdded = async ({ collectionName, path, entry, fileName }) => {
+          vi.mocked(createFileList).mockReturnValue(
+            /** @type {any} */ ({
+              entryFiles: [{ path, text: 'x', folder: { collectionName, fileName } }],
+              assetFiles: [],
+            }),
+          );
+          vi.mocked(prepareEntries).mockResolvedValue({ entries: [entry], errors: [] });
+
+          const { entries } = await convertPullRequest(
+            createPullRequest({
+              branch: `cms/${collectionName}/kyoto`,
+              files: [{ path, sha: 'a', size: 1, text: 'x', deleted: false }],
+            }),
+          );
+
+          return entries[0];
+        };
+
+        /**
+         * Create a published entry.
+         * @param {string} subPath Sub path.
+         * @param {Record<string, any>} [content] English content.
+         * @returns {any} Entry.
+         */
+        const published = (subPath, content = {}) => ({
+          id: subPath,
+          slug: subPath,
+          subPath,
+          locales: { en: { slug: subPath, path: `content/en/guides/${subPath}.md`, content } },
+        });
+
+        test('finds the published entry by its sub path', async () => {
+          // Saving the entry with Japanese turned on and English unchanged commits the Japanese
+          // file only. Without the published English locale, the editor showed it as disabled
+          vi.mocked(getEntriesByCollection).mockReturnValue([
+            published('nara'),
+            published('kyoto'),
+          ]);
+
+          const entry = await convertAdded({
+            collectionName: 'guides',
+            path: 'content/ja/guides/kyoto.md',
+            entry: {
+              id: 'draft',
+              slug: 'kyoto',
+              subPath: 'kyoto',
+              locales: {
+                ja: {
+                  slug: 'kyoto',
+                  path: 'content/ja/guides/kyoto.md',
+                  content: { title: '京都' },
+                },
+              },
+            },
+          });
+
+          expect(getEntriesByCollection).toHaveBeenCalledWith('guides');
+          expect(entry.locales.en.path).toBe('content/en/guides/kyoto.md');
+          expect(Object.keys(entry.locales).toSorted()).toEqual(['en', 'ja']);
+          expect(entry.locales.ja.content.title).toBe('京都');
+        });
+
+        test('finds the published entry by its canonical slug', async () => {
+          // With a localized slug, the Japanese file has a sub path of its own, linked to the
+          // English one by the translation key, which also outranks a matching sub path
+          vi.mocked(getEntriesByCollection).mockReturnValue([
+            published('kyoto-no-tera', { translationKey: 'nara' }),
+            published('kyoto-temples', { translationKey: 'kyoto-temples' }),
+          ]);
+
+          const entry = await convertAdded({
+            collectionName: 'guides',
+            path: 'content/ja/guides/kyoto-no-tera.md',
+            entry: {
+              id: 'draft',
+              slug: 'kyoto-no-tera',
+              subPath: 'kyoto-no-tera',
+              locales: {
+                ja: {
+                  slug: 'kyoto-no-tera',
+                  path: 'content/ja/guides/kyoto-no-tera.md',
+                  content: { translationKey: 'kyoto-temples' },
+                },
+              },
+            },
+          });
+
+          expect(entry.locales.en.path).toBe('content/en/guides/kyoto-temples.md');
+          expect(Object.keys(entry.locales).toSorted()).toEqual(['en', 'ja']);
+          expect(entry.slug).toBe('kyoto-temples');
+        });
+
+        test('finds the published collection file by its name', async () => {
+          vi.mocked(getCollectionFileEntry).mockReturnValue(
+            /** @type {any} */ ({
+              id: 'about',
+              slug: 'about',
+              subPath: 'content/pages/about.en.md',
+              locales: { en: { slug: 'about', path: 'content/pages/about.en.md', content: {} } },
+            }),
+          );
+
+          const entry = await convertAdded({
+            collectionName: 'pages',
+            fileName: 'about',
+            path: 'content/pages/about.ja.md',
+            entry: {
+              id: 'draft',
+              slug: 'about',
+              subPath: 'content/pages/about.ja.md',
+              locales: { ja: { slug: 'about', path: 'content/pages/about.ja.md', content: {} } },
+            },
+          });
+
+          expect(getCollectionFileEntry).toHaveBeenCalledWith('pages', 'about');
+          expect(Object.keys(entry.locales).toSorted()).toEqual(['en', 'ja']);
+        });
+
+        test('leaves an entry alone when its locales share a file', async () => {
+          // A new file of a single-file collection is a new entry, whatever its sub path
+          vi.mocked(getEntriesByCollection).mockReturnValue([published('kyoto')]);
+
+          const entry = await convertAdded({
+            collectionName: 'places',
+            path: 'data/places/kyoto.yml',
+            entry: {
+              id: 'draft',
+              slug: 'kyoto',
+              subPath: 'kyoto',
+              locales: { ja: { slug: 'kyoto', path: 'data/places/kyoto.yml', content: {} } },
+            },
+          });
+
+          expect(getEntriesByCollection).not.toHaveBeenCalled();
+          expect(Object.keys(entry.locales)).toEqual(['ja']);
+        });
       });
 
       describe('a locale turned off for a published entry', () => {

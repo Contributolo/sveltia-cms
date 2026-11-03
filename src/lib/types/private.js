@@ -207,6 +207,8 @@
  * store.
  * @property {string} [refreshToken] OAuth refresh token. If not provided, it will be taken from the
  * `user` store.
+ * @property {boolean} [retryable] Whether the request can be sent again after a transient error.
+ * See `sendRequest()`.
  */
 
 /**
@@ -408,6 +410,11 @@
  */
 
 /**
+ * Color tone of a status pill, following the Alert and Infobar components of Sveltia UI.
+ * @typedef {'info' | 'warning' | 'success' | 'error'} StatusPillTone
+ */
+
+/**
  * An entry whose pull request has been merged, and whose change is on its way to the site.
  * @typedef {object} DeployingEntry
  * @property {UnpublishedEntry} entry Entry as it was published, with the workflow properties it
@@ -465,18 +472,21 @@
  * @property {string[]} [previousPaths] File paths the entry occupied before the pull request
  * renamed it, which happens when the slug is edited. They’re used to match the draft with its
  * published counterpart, which would otherwise be listed as a separate entry.
- * @property {CompanionEntry[]} [companions] New entries in other collections that were created
- * from a Relation field of the entry and committed to its pull request, so they’re reviewed and
- * published along with it.
+ * @property {CompanionEntry[]} [companions] Entries in other collections that were created or
+ * edited from a Relation field of the entry and committed to its pull request, so they’re reviewed
+ * and published along with it.
  */
 
 /**
- * A new entry that rides along in the pull request of another entry, which it was created for from
- * a Relation field with the quick-add dialog. It isn’t on the board on its own: the pull request
- * stands for the entry it was opened for.
+ * An entry that rides along in the pull request of another entry, which it was created or edited
+ * for from a Relation field with the quick-add dialog. It isn’t on the board on its own: the pull
+ * request stands for the entry it was opened for, whose card lists it.
  * @typedef {object} CompanionEntry
  * @property {string} collectionName Name of the collection the entry belongs to.
- * @property {Entry} entry Entry as it stands on the pull request’s branch.
+ * @property {Entry} entry Entry as it stands on the pull request’s branch. An existing entry keeps
+ * the ID of its published version.
+ * @property {boolean} [edited] Whether the entry is an existing one that the pull request changes,
+ * rather than a new one.
  */
 
 /**
@@ -711,6 +721,20 @@
  * @property {'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'} [reasoning]
  * Reasoning effort. Only supported by certain providers (e.g., OpenAI, DeepSeek, Mistral AI).
  * Default varies by provider. Anthropic Claude only supports `none`, which disables thinking.
+ */
+
+/**
+ * Generic AI service, such as a large language model provider.
+ * @typedef {object} AiService
+ * @property {string} serviceId Service ID, also used as the key of the API key in the user
+ * preferences.
+ * @property {string} serviceLabel Service label.
+ * @property {string} apiLabel API label, used in error messages.
+ * @property {string} developerURL URL of the page that provides the API/developer service.
+ * @property {string} apiKeyURL URL of the page that provides an API key.
+ * @property {RegExp} apiKeyPattern API key pattern.
+ * @property {(options: AiCompletionOptions) => Promise<string>} complete Function to send a
+ * message and return the response text.
  */
 
 /**
@@ -1117,9 +1141,18 @@
  * @typedef {object} EntryBacklink
  * @property {string} collectionName Source collection name.
  * @property {string} collectionLabel Source collection label.
+ * @property {string} [fileName] Source collection file name, for file/singleton collections.
  * @property {string} fieldLabel Relation field label.
  * @property {Entry} entry Source entry referencing the target.
  * @property {string} summary Display summary for the source entry.
+ */
+
+/**
+ * Field that owns a value stored under a key path without a field configuration of its own, like a
+ * KeyValue pair. See `getValueOwnerField()`.
+ * @typedef {object} OwnerField
+ * @property {FieldKeyPath} keyPath Key path of the field.
+ * @property {Field} fieldConfig Field configuration.
  */
 
 /**
@@ -1311,15 +1344,18 @@
  * the new entries into its pull request.
  * @property {string} [branch] Workflow branch of the entry’s pull request, if it already has one,
  * which may hold entries created from it earlier.
+ * @property {string[]} entryIds IDs of the entry and, in a nested quick-add dialog, the entries
+ * being edited in the dialogs it was opened from, none of which can be edited from a dialog.
  */
 
 /**
- * An entry created with the quick-add dialog of a Relation field while another entry is being
- * edited. It’s kept on that entry’s draft and saved in the same commit as the entry, rather than on
- * its own, so the two never go out of sync. Everything needed to commit it is prepared as soon as
- * it’s added, because the preparation replaces the blob URLs in the content with asset paths, which
- * can only be done once. The `preSave` event hooks are the exception: they’re only called when the
- * entry is committed, so they don’t run for an entry that is discarded along with the draft.
+ * An entry created or edited with the quick-add dialog of a Relation field while another entry is
+ * being edited. It’s kept on that entry’s draft and saved in the same commit as the entry, rather
+ * than on its own, so the two never go out of sync. Everything needed to commit it is prepared as
+ * soon as it’s added, because the preparation replaces the blob URLs in the content with asset
+ * paths, which can only be done once. The `preSave` event hooks are the exception: they’re only
+ * called when the entry is committed, so they don’t run for an entry that is discarded along with
+ * the draft.
  * @typedef {object} PendingEntry
  * @property {string} collectionName Name of the collection the entry belongs to.
  * @property {Entry} entry Entry as it will be saved.
@@ -1327,6 +1363,25 @@
  * @property {Asset[]} savingAssets Assets to be saved along with the entry.
  * @property {any[]} values Values the Relation field that created the entry stores for it, in any
  * of the parent entry’s locales. The entry is only saved while one of them is still there.
+ * @property {Entry} [baseEntry] Existing entry the changes were made to, as it was when the edit
+ * started, so the save can tell whether someone else has changed it since. Missing from a new
+ * entry.
+ * @property {EntryDraftValues} [source] Values of the dialog’s draft, blob URLs included, so the
+ * entry can be opened in the dialog again. Missing from an entry added before it was introduced.
+ */
+
+/**
+ * An entry a Relation field can refer to before it’s among the entries of its collection: one
+ * pending on the draft being edited, see {@link PendingEntry}, or one riding along in the pull
+ * request the draft’s host entry has been saved to, see {@link CompanionEntry}. An existing entry
+ * takes the place of its saved version.
+ * @typedef {Pick<PendingEntry, 'collectionName' | 'entry'>} UnlistedEntry
+ */
+
+/**
+ * The values of an entry draft that a backup restores, see {@link EntryDraftBackup}.
+ * @typedef {Pick<EntryDraftBackup, 'currentLocales' | 'currentSlugs' | 'currentPath' |
+ * 'currentValues' | 'files'>} EntryDraftValues
  */
 
 /**
@@ -2086,6 +2141,8 @@
  * @property {LocaleCode} locale Locale code.
  * @property {InternalLocaleCode} defaultLocale Default locale of the entry draft.
  * @property {string} [dynamicValue] Dynamic default value parsed from the URL query string.
+ * @property {Record<string, string>} [dynamicValues] All the dynamic default values of the entry,
+ * keyed by key path, which tell an optional Object field whether its subfields have any.
  * @property {(args: PopulateDefaultValueArgs) => void} [populateDefault] Callback to populate a
  * default value for a sub-field, injected to avoid a circular dependency between field-type
  * defaults and the centralized `populateDefaultValue` dispatcher.

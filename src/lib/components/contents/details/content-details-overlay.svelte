@@ -18,6 +18,7 @@
 
   import PaneBody from '$lib/components/contents/details/pane-body.svelte';
   import PaneHeader from '$lib/components/contents/details/pane-header.svelte';
+  import PendingEditInfobar from '$lib/components/contents/details/pending-edit-infobar.svelte';
   import RemoteChangeInfobar from '$lib/components/contents/details/remote-change-infobar.svelte';
   import SidebarSheet from '$lib/components/contents/details/sidebar/sidebar-sheet.svelte';
   import Sidebar from '$lib/components/contents/details/sidebar/sidebar.svelte';
@@ -369,7 +370,8 @@
       void $state.snapshot(draft.currentSlugs);
       // The files map holds `File` objects, which can’t be snapshotted; a file can be replaced
       Object.values(draft.files).forEach(({ file }) => void file);
-      void draft.pendingEntries.length;
+      // A pending entry opened again and changed takes the place of its earlier version
+      draft.pendingEntries.forEach((pendingEntry) => void pendingEntry);
       void draft.interacted;
     }
 
@@ -385,8 +387,11 @@
     }
   });
 
+  // The pane state key also changes between the files of a file/singleton collection, which share
+  // the collection
   watch(
     () => [
+      paneStateKey,
       collection,
       showSecondPane,
       showPreview,
@@ -515,6 +520,7 @@
       </EmptyState>
     {:else}
       <RemoteChangeInfobar />
+      <PendingEditInfobar />
       <div role="none" class="body" onpointerdown={markInteracted} onkeydown={markInteracted}>
         {#key `${collectionName}|${fileName}|${isIndexFile}`}
           <div role="none" class="content-area">

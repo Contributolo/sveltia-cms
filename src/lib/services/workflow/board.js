@@ -1,12 +1,18 @@
 import { _ } from '@sveltia/i18n';
 
 import { getCollection, getCollectionLabel } from '$lib/services/contents/collection';
+import { getCollectionFile, getCollectionFileLabel } from '$lib/services/contents/collection/files';
 import { getEntrySummary } from '$lib/services/contents/entry/summary';
 import { getListFormatter } from '$lib/services/contents/i18n';
 import { WORKFLOW_STAGES, WORKFLOW_STATUS_LABELS } from '$lib/services/workflow/constants';
 
 /**
- * @import { InternalLocaleCode, UnpublishedEntry, WorkflowStatus } from '$lib/types/private';
+ * @import {
+ * CompanionEntry,
+ * InternalLocaleCode,
+ * UnpublishedEntry,
+ * WorkflowStatus,
+ * } from '$lib/types/private';
  */
 
 /**
@@ -146,37 +152,82 @@ export const groupEntriesByStatus = (
 };
 
 /**
- * Get the note listing the new entries that ride along in the pull request of the given entry,
- * which are published with it, for the entry’s card on the board.
+ * Get the label naming the given unpublished entry, e.g. its title, or the label of the collection
+ * file it stands for.
  * @param {UnpublishedEntry} entry Unpublished entry.
- * @param {InternalLocaleCode} locale App locale, which the list is formatted for.
- * @returns {string} Note, e.g. `Also adds Section: Getting Started`, or an empty string if there
- * are no such entries.
+ * @returns {string} Label, or the entry slug if its collection has been removed from the
+ * configuration since the entry was saved.
  */
-export const getCompanionNote = (entry, locale) => {
-  const { companions = [] } = entry.workflow;
+export const getUnpublishedEntryLabel = (entry) => {
+  const { collectionName, fileName } = entry.workflow;
+  const collection = getCollection(collectionName);
 
-  if (!companions.length) {
-    return '';
+  if (!collection) {
+    return entry.slug;
   }
 
-  const items = companions.map(({ collectionName, entry: companion }) => {
-    const collection = getCollection(collectionName);
+  const collectionFile = fileName ? getCollectionFile(collection, fileName) : undefined;
 
-    // The collection may have been removed from the configuration since the entry was saved
-    if (collection?._type !== 'entry') {
-      return companion.slug;
+  return collectionFile
+    ? getCollectionFileLabel(collectionFile)
+    : getEntrySummary(collection, entry);
+};
+
+/**
+ * Get the notes listing the entries that ride along in the pull request of the given entry, which
+ * are published with it, for the entry’s card on the board: one for the new entries, and one for
+ * the existing entries it changes.
+ * @param {UnpublishedEntry} entry Unpublished entry.
+ * @param {InternalLocaleCode | null | undefined} locale App locale, which the lists are formatted
+ * for. Nothing is listed until it’s set, which is when the UI strings have been loaded.
+ * @returns {string[]} Notes, e.g. `Also adds Section: Getting Started` and `Also changes Author:
+ * Ada Lovelace`, without the one for which there are no entries.
+ */
+export const getCompanionNotes = (entry, locale) => {
+  const { companions = [] } = entry.workflow;
+
+  if (!locale) {
+    return [];
+  }
+
+  /**
+   * Get a note listing the given entries.
+   * @param {CompanionEntry[]} entries Entries.
+   * @param {string} key Message key of the note.
+   * @returns {string[]} Note, or nothing if there are no entries.
+   */
+  const getNote = (entries, key) => {
+    if (!entries.length) {
+      return [];
     }
 
-    return _('workflow.companion_entry', {
-      values: {
-        collection: getCollectionLabel(collection, { useSingular: true }),
-        title: getEntrySummary(collection, companion),
-      },
-    });
-  });
+    const items = entries.map(({ collectionName, entry: companion }) => {
+      const collection = getCollection(collectionName);
 
-  return _('workflow.companion_entries', {
-    values: { entries: getListFormatter(locale).format(items) },
-  });
+      // The collection may have been removed from the configuration since the entry was saved
+      if (collection?._type !== 'entry') {
+        return companion.slug;
+      }
+
+      return _('workflow.companion_entry', {
+        values: {
+          collection: getCollectionLabel(collection, { useSingular: true }),
+          title: getEntrySummary(collection, companion),
+        },
+      });
+    });
+
+    return [_(key, { values: { entries: getListFormatter(locale).format(items) } })];
+  };
+
+  return [
+    ...getNote(
+      companions.filter(({ edited }) => !edited),
+      'workflow.companion_entries',
+    ),
+    ...getNote(
+      companions.filter(({ edited }) => edited),
+      'workflow.edited_companion_entries',
+    ),
+  ];
 };
