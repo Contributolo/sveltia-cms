@@ -759,6 +759,8 @@ enter_new_name_for_asset_error:
   duplicate: Dieser Dateiname wird bereits von einem anderen Medium verwendet.
   # A name starting with a dot hides the file, which the CMS wouldn’t list any more
   leading_dot: Der Dateiname darf nicht mit einem Punkt beginnen.
+  # The name of a file next to the asset that isn’t an asset, like an entry file
+  file_duplicate: Eine andere Datei mit diesem Namen existiert hier bereits.
   # The name of a folder next to the file
   folder_duplicate: Ein Ordner mit diesem Namen existiert hier bereits.
 # Shown while renaming a file whose name will be changed on saving, e.g. by the `slugify_filename`
@@ -1258,6 +1260,9 @@ edit_singleton_announcement: Die Datei „{$file}“ wird bearbeitet.
 # Shown when CI skip is enabled/disabled
 save_and_publish: Speichern und veröffentlichen
 save_without_publishing: Speichern ohne zu veröffentlichen
+# Shown disabled in place of `save_and_publish` while entries created or edited from a Relation
+# field are in a collection whose review can’t be skipped with the `direct_publish` option
+save_and_publish_needs_review: Speichern und veröffentlichen (verknüpfte Einträge müssen geprüft werden)
 
 # Editor options menu
 show_editor_options: Editor-Optionen anzeigen
@@ -1746,12 +1751,37 @@ opacity: Deckkraft
 # Select field: empty option placeholder
 unselected_option: (keine)
 
-# Relation field: creating a referenced entry without leaving the editor
+# Relation field: creating or editing a referenced entry without leaving the editor
 relation_field:
   # Note shown in the dialog. {$name} is the singular label of the referenced collection
   save_together_hint: Der neue Eintrag vom Typ „{$name}“ wird zusammen mit dem Eintrag gespeichert, der gerade bearbeitet wird.
   # Error shown when the entry couldn’t be prepared. {$name} is the singular label of the collection
   add_failed: „{$name}“ konnte nicht hinzugefügt werden. Details stehen in der Browser-Konsole.
+  # Title of the dialog to edit an entry selected in the field. {$name} is the singular label of the
+  # referenced collection
+  edit_entry_title: '{$name} bearbeiten'
+  # Note shown in the dialog. {$name} is the singular label of the referenced collection
+  edit_together_hint: Ihre Änderungen am Eintrag vom Typ „{$name}“ werden zusammen mit dem Eintrag gespeichert, der gerade bearbeitet wird.
+  # Error shown when the changes couldn’t be prepared. {$name} is the singular label of the collection
+  edit_failed: Die Änderungen am Eintrag vom Typ „{$name}“ konnten nicht übernommen werden. Details stehen in der Browser-Konsole.
+  # Error shown when the changes would move the entry to another file path, e.g. through a path
+  # template using a field. {$name} is the singular label of the collection
+  move_unsupported: Diese Änderungen würden den Eintrag vom Typ „{$name}“ an einen anderen Ort verschieben. Das geht nur, wenn Sie ihn einzeln bearbeiten.
+  # Error shown when saving, if someone else has changed an entry edited from the field since. {$name}
+  # is the summary of that entry
+  edit_conflict: Der Eintrag „{$name}“ wurde von jemand anderem geändert, nachdem Sie ihn bearbeitet haben. Öffnen Sie ihn erneut über das Feld, um Ihre Änderungen mit dem neuesten Stand abzugleichen.
+  # Error shown when saving, if someone else has deleted an entry edited from the field since.
+  # {$name} is the summary of that entry
+  edit_deleted: Der Eintrag „{$name}“ wurde von jemand anderem gelöscht, nachdem Sie ihn bearbeitet haben. Entfernen Sie ihn aus dem Feld, um speichern zu können.
+  # Accessible label of the menu listing the selected entries that can be edited
+  select_entry_to_edit: Eintrag zum Bearbeiten auswählen
+  # Warning shown in the editor of an entry that has been edited from a Relation field of another
+  # entry, while the changes wait in that entry’s pull request. {$name} is the summary of that
+  # entry
+  edited_with_entry: Änderungen an diesem Eintrag warten darauf, zusammen mit „{$name}“ veröffentlicht zu werden. Wenn Sie ihn jetzt speichern, werden beide Änderungen zusammengeführt, sobald jener Eintrag veröffentlicht wird. Das kann fehlschlagen, wenn sie sich überschneiden.
+  # Warning shown in the dialog when an entry edited from the field has been changed by someone else
+  # since. {$name} is the singular label of the collection
+  changed_since_edit: Dieser Eintrag vom Typ „{$name}“ wurde von jemand anderem geändert, nachdem Sie ihn bearbeitet haben. Ihre Änderungen werden über dem neuesten Stand angezeigt. Prüfen Sie sie vor dem Aktualisieren.
 
 # Select Assets dialog
 assets_dialog:
@@ -2491,8 +2521,11 @@ workflow:
   # Workflow page: note on a card listing the new entries that were created from a Relation field
   # of the entry and are published along with it, e.g. “Also adds Section: Getting Started”
   companion_entries: Fügt außerdem {$entries} hinzu
-  # Workflow page: one of the new entries listed by `companion_entries`, named by its collection’s
-  # singular label and its title
+  # Workflow page: note on a card listing the existing entries that were edited from a Relation
+  # field of the entry and are published along with it, e.g. “Also changes Author: Ada Lovelace”
+  edited_companion_entries: Ändert außerdem {$entries}
+  # Workflow page: one of the entries listed by `companion_entries` or `edited_companion_entries`,
+  # named by its collection’s singular label and its title
   companion_entry: '{$collection}: {$title}'
 
 # Dialog asking the user for a commit message every time changes are saved, when the site is
@@ -2614,7 +2647,7 @@ prefs:
         select_service: Dienst auswählen
       api_keys:
         title: API-Schlüssel für Übersetzungsdienste
-        description: API-Schlüssel für <a>Übersetzungsdienste</a> verwalten.
+        description: API-Schlüssel für <a>Übersetzungsdienste</a> verwalten. API-Schlüssel für allgemeine KI-Dienste lassen sich in den KI-Einstellungen verwalten.
       # API key input label, e.g., “DeepL Key”
       # {$service} is the translation service name
       field_label: '{$service}-Schlüssel'
@@ -2647,6 +2680,16 @@ prefs:
       # {$service} is the cloud storage service name
       field_label: '{$service}-API-Schlüssel'
       no_services: Es sind keine <a>Cloud-Speicherdienste</a> konfiguriert.
+
+  # AI panel
+  ai:
+    title: KI
+    api_keys:
+      title: API-Schlüssel für KI-Dienste
+      description: API-Schlüssel für KI-Dienste verwalten.
+    # API key input label, e.g., “OpenAI GPT API Key”
+    # {$service} is the AI service name
+    field_label: '{$service}-API-Schlüssel'
 
   # Accessibility panel
   accessibility:
