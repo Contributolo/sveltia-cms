@@ -13,6 +13,8 @@ import {
 } from '$lib/services/contents/draft/save/file-changes';
 import { hasLocalizedSlugs } from '$lib/services/contents/draft/slugs';
 import { createSyntheticDraft } from '$lib/services/contents/entry/changes';
+import { mapEntryContent } from '$lib/services/contents/entry/locales';
+import { refreshPermalinks } from '$lib/services/contents/entry/permalink';
 import { resolveFileConfig } from '$lib/services/contents/file/config';
 
 /**
@@ -146,18 +148,11 @@ const updateCanonicalSlug = ({ collection, entry }) => {
           currentSlug: subPath,
         });
 
-  return {
-    ...entry,
-    locales: Object.fromEntries(
-      Object.entries(locales).map(([locale, localizedEntry]) => [
-        locale,
-        localizedEntry.content
-          ? // Copy the content, which is shared with the entry in the store
-            { ...localizedEntry, content: { ...localizedEntry.content, [key]: canonicalSlug } }
-          : localizedEntry,
-      ]),
-    ),
-  };
+  // Copy the content, which is shared with the entry in the store
+  return mapEntryContent(entry, ({ localizedEntry: { content } }) => ({
+    ...content,
+    [key]: canonicalSlug,
+  }));
 };
 
 /**
@@ -301,7 +296,10 @@ export const buildNestedMoveChanges = async ({
       ? [
           {
             originalEntry: entry,
-            movedEntry: updateCanonicalSlug({ collection, entry: movedEntry }),
+            movedEntry: refreshPermalinks({
+              collection,
+              entry: updateCanonicalSlug({ collection, entry: movedEntry }),
+            }),
           },
         ]
       : [];

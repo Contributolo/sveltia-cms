@@ -14,6 +14,7 @@ import {
 import { resolveCacheDB } from '$lib/services/contents/draft/save/file-changes';
 import { serializeContent } from '$lib/services/contents/draft/save/serialize';
 import { createSyntheticDraft } from '$lib/services/contents/entry/changes';
+import { refreshPermalinks } from '$lib/services/contents/entry/permalink';
 import { formatEntryFile } from '$lib/services/contents/file/format';
 
 vi.mock('$lib/services/common/template', () => ({
@@ -36,6 +37,10 @@ vi.mock('$lib/services/contents/draft/save/content', () => ({
 
 vi.mock('$lib/services/contents/draft/save/serialize', () => ({
   serializeContent: vi.fn(() => ({ title: 'Serialized' })),
+}));
+
+vi.mock('$lib/services/contents/entry/permalink', () => ({
+  refreshPermalinks: vi.fn(({ entry: _entry }) => _entry),
 }));
 
 vi.mock('$lib/services/contents/entry/changes', () => ({
@@ -246,6 +251,29 @@ describe('buildNestedMoveChanges()', () => {
     expect(vi.mocked(formatEntryFile)).toHaveBeenCalledWith(
       expect.objectContaining({ comments: { title: 'Title' } }),
     );
+  });
+
+  test('refreshes the permalink of every moved entry', async () => {
+    vi.mocked(getEntriesByCollection).mockReturnValue([
+      entry('1', 'docs/_index'),
+      entry('2', 'docs/intro/_index'),
+    ]);
+    vi.mocked(refreshPermalinks).mockImplementationOnce(({ entry: moved }) => ({
+      ...moved,
+      refreshed: true,
+    }));
+
+    const { savingEntries } = await buildNestedMoveChanges({
+      collection,
+      originalEntry: entry('1', 'docs/_index'),
+      savingEntry: entry('1', 'guides/_index'),
+    });
+
+    expect(refreshPermalinks).toHaveBeenCalledExactlyOnceWith({
+      collection,
+      entry: expect.objectContaining({ subPath: 'guides/intro/_index' }),
+    });
+    expect(savingEntries[0].refreshed).toBe(true);
   });
 
   test('moves the entries up to the collection folder', async () => {

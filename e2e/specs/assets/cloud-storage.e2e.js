@@ -379,6 +379,7 @@ test.describe('Self-hosted S3-compatible storage', () => {
       aws_s3: {
         access_key_id: 'GKe2e0000000000000000000000',
         bucket: 'e2e-bucket',
+        label: 'Garage',
         region: 'garage',
         endpoint: 'https://s3.example.com',
         public_url: 'https://web.example.com',
@@ -386,7 +387,7 @@ test.describe('Self-hosted S3-compatible storage', () => {
     }),
   });
 
-  test('accepts a secret key longer than an Amazon S3 one, and picks an image', async ({
+  test('goes by its label, accepts a longer secret key than Amazon S3, and picks an image', async ({
     cms,
     page,
   }) => {
@@ -406,9 +407,9 @@ test.describe('Self-hosted S3-compatible storage', () => {
     await cms.open();
     await cms.signIn();
 
-    const { cover, dialog } = await openSelectImageDialog(page, 'Amazon S3');
+    const { cover, dialog } = await openSelectImageDialog(page, 'Garage');
 
-    await enterCredential(dialog, 'Amazon S3', garage.secretAccessKey);
+    await enterCredential(dialog, 'Garage', garage.secretAccessKey);
     await selectOption(
       dialog
         .getByRole('listbox', { name: 'Available Images' })
@@ -420,6 +421,64 @@ test.describe('Self-hosted S3-compatible storage', () => {
       'https://web.example.com/sunset.png',
     );
     expect(garage.refused).toEqual([]);
+  });
+});
+
+test.describe('Amazon S3 with a prefix made of an entry field', () => {
+  const config = createConfig(
+    {
+      aws_s3: {
+        access_key_id: 'AKIAE2ETESTKEY000000',
+        bucket: 'e2e-bucket',
+        region: 'eu-west-3',
+      },
+    },
+    [{ name: 'release', label: 'Release', widget: 'number', value_type: 'int', required: false }],
+  );
+
+  // The bucket and the other options are inherited from the site level
+  config.collections[0].fields[1].media_libraries = { aws_s3: { prefix: '{{fields.release}}/' } };
+  test.use({ config });
+
+  test('waits for the field to be filled in, then stays in the folder it names', async ({
+    cms,
+    page,
+  }) => {
+    const s3 = new MockS3({ bucket: 'e2e-bucket', region: 'eu-west-3', baseURL: S3_URL });
+    const balloon = createPNG({ color: [0, 128, 255] });
+
+    s3.put({ '12/sunset.png': SUNSET, '13/kite.png': KITE });
+    await s3.install(page);
+    await cms.open();
+    await cms.signIn();
+
+    const { editor, cover, dialog } = await openSelectImageDialog(page, 'Amazon S3');
+
+    await expect(dialog.getByText('Fill in the fields this location depends on')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Upload' })).toBeHidden();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toBeHidden();
+
+    await editor.getByRole('spinbutton', { name: 'Release' }).fill('12');
+    await cover.getByRole('button', { name: 'Browse' }).click();
+    await dialog.getByRole('option', { name: 'Amazon S3' }).click();
+    await enterCredential(dialog, 'Amazon S3', s3.secretAccessKey);
+    await expect(
+      dialog.getByRole('listbox', { name: 'Available Images' }).getByRole('option'),
+    ).toHaveText(['sunset.png']);
+
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      dialog.getByRole('button', { name: 'Upload' }).click(),
+    ]);
+
+    await chooser.setFiles({ name: 'balloon.png', mimeType: 'image/png', buffer: balloon });
+    await expect.poll(() => s3.objects.get('12/balloon.png')?.body).toEqual(balloon);
+    await dialog.getByRole('button', { name: 'Insert' }).click();
+    await expect(cover.getByRole('textbox', { name: 'Cover' })).toHaveText(
+      `${S3_URL}/12/balloon.png`,
+    );
+    expect(s3.refused).toEqual([]);
   });
 });
 

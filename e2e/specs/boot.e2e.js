@@ -30,49 +30,8 @@ test.describe('on a subdomain of localhost', () => {
 
 test.describe('in an outdated browser', () => {
   test('asks to update the browser instead of leaving the page blank', async ({ cms, page }) => {
-    // Act like Safari 16, which lacks the `v` regular expression flag the bundle uses, along with
-    // the Base64 conversion the browser check looks for. The bundle turns a `v`-flag literal into
-    // a `RegExp()` call, which throws there, so one created while the bundle loads would stop it
-    // before the message is shown
+    // Act like a browser lacking the Base64 conversion the browser check looks for
     await page.addInitScript(() => {
-      /**
-       * Throw like a browser lacking the `v` flag if it’s given.
-       * @param {any[]} args `RegExp()` arguments.
-       * @throws {SyntaxError} If the flags include `v`.
-       */
-      const checkFlags = ([, flags]) => {
-        if (String(flags ?? '').includes('v')) {
-          throw new SyntaxError('Invalid regular expression: invalid flags');
-        }
-      };
-
-      globalThis.RegExp = new Proxy(RegExp, {
-        /**
-         * Check the flags of `new RegExp()`.
-         * @param {RegExpConstructor} target `RegExp`.
-         * @param {any[]} args Arguments.
-         * @param {NewableFunction} newTarget Constructor.
-         * @returns {RegExp} Regular expression.
-         */
-        construct: (target, args, newTarget) => {
-          checkFlags(args);
-
-          return Reflect.construct(target, args, newTarget);
-        },
-        /**
-         * Check the flags of `RegExp()` called without `new`.
-         * @param {RegExpConstructor} target `RegExp`.
-         * @param {any} thisArg `this`.
-         * @param {any[]} args Arguments.
-         * @returns {RegExp} Regular expression.
-         */
-        apply: (target, thisArg, args) => {
-          checkFlags(args);
-
-          return Reflect.apply(target, thisArg, args);
-        },
-      });
-
       // @ts-ignore
       delete Uint8Array.fromBase64;
     });
@@ -167,6 +126,43 @@ test.describe('with the legacy `media_library` option', () => {
                 name: 'cover',
                 widget: 'image',
                 media_library: { name: 'aws_s3', prefix: 'covers/' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    test('accepts the options the storage requires being left out', async ({ cms, page }) => {
+      await cms.open();
+      await cms.signIn();
+      await expect(page.getByRole('main', { name: /Posts.*Collection/ })).toBeVisible();
+    });
+  });
+
+  test.describe('on a field with the unified option, overriding some of the global options', () => {
+    const [collection] = BASE_CONFIG.collections;
+
+    test.use({
+      config: {
+        ...BASE_CONFIG,
+        media_libraries: {
+          aws_s3: { bucket: 'acme', region: 'us-east-1' },
+          azure_blob_storage: { account_name: 'acme', container: 'media' },
+        },
+        collections: [
+          {
+            ...collection,
+            fields: [
+              ...collection.fields,
+              // The bucket and the container are left to the global options
+              {
+                name: 'cover',
+                widget: 'image',
+                media_libraries: {
+                  aws_s3: { prefix: 'covers/' },
+                  azure_blob_storage: { prefix: 'covers/' },
+                },
               },
             ],
           },

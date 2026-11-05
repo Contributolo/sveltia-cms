@@ -55,7 +55,7 @@
   <Tree
     class={hasAnyNestedEntries ? undefined : 'flat'}
     ariaLabel={_('collection_list')}
-    aria-controls={isSearchPage ? undefined : 'collection-container'}
+    aria-controls={isSearchPage || env.isSmallScreen ? undefined : 'collection-container'}
     expandOnSelect={false}
   >
     {#if collections.length}
@@ -100,7 +100,7 @@
               <Icon name="bookmark_manager" />
             {/snippet}
             {#snippet endIcon()}
-              <span class="count" aria-label="({_('x_entries', { values: { count } })})">
+              <span class="count" aria-label={_('x_entries', { values: { count } })}>
                 {appNumberFormatter.current.format(count)}
               </span>
             {/snippet}
